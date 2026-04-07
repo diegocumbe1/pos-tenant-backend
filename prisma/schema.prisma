@@ -1,0 +1,303 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Multi-tenancy Core ───────────────────────────────────────────────────────
+
+model Tenant {
+  id        String    @id
+  name      String
+  plan      String    @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  users          User[]
+  branches       Branch[]
+  products       Product[]
+  categories     ProductCategory[]
+  areas          Area[]
+  tables         RestaurantTable[]
+  orders         Order[]
+  kitchenTickets KitchenTicket[]
+  paymentSplits  PaymentSplit[]
+
+  @@index([plan])
+  @@map("tenants")
+}
+
+model Branch {
+  id        String   @id
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  address   String?
+  createdAt DateTime @default(now())
+
+  products   Product[]
+  categories ProductCategory[]
+  areas      Area[]
+  tables     RestaurantTable[]
+  orders     Order[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("branches")
+}
+
+// ─── Users & RBAC ────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  email     String
+  name      String
+  role      String // "OWNER" | "MANAGER" | "WAITER" | "KITCHEN" | "CASHIER"
+  createdAt DateTime @default(now())
+
+  orders Order[] @relation("waiters")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ─── Menú ─────────────────────────────────────────────────────────────────────
+
+model ProductCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  branchId  String?
+  branch    Branch?  @relation(fields: [branchId], references: [id])
+  name      String
+  emoji     String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  products Product[]
+
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId])
+  @@map("product_categories")
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  branchId        String?
+  branch          Branch?  @relation(fields: [branchId], references: [id])
+  categoryId      String
+  category        ProductCategory @relation(fields: [categoryId], references: [id])
+  name            String
+  description     String?
+  priceCOP        Int
+  emoji           String?
+  imageUrls       String[]
+  isAvailable     Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  targetMarginPct Int      @default(65)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  orderItems   OrderItem[]
+  kitchenItems KitchenTicketItem[]
+
+  @@index([tenantId])
+  @@index([categoryId])
+  @@map("products")
+}
+
+// ─── Áreas ────────────────────────────────────────────────────────────────────
+
+model Area {
+  id        String  @id @default(cuid())
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  branchId  String
+  branch    Branch  @relation(fields: [branchId], references: [id])
+  name      String
+  emoji     String?
+  createdAt DateTime @default(now())
+
+  tables RestaurantTable[]
+
+  @@unique([branchId, name])
+  @@index([tenantId])
+  @@index([branchId])
+  @@map("areas")
+}
+
+// ─── Mesas ────────────────────────────────────────────────────────────────────
+
+model RestaurantTable {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id])
+  areaId    String?
+  area      Area?    @relation(fields: [areaId], references: [id])
+  code      String
+  seats     Int
+  shape     String   @default("SQUARE") // "SQUARE" | "RECTANGLE" | "ROUND"
+  status    String   @default("AVAILABLE") // "AVAILABLE" | "PREPARING" | "ON_TABLE" | "PAYMENT" | "RESERVED" | "CLOSED"
+  createdAt DateTime @default(now())
+
+  orders Order[]
+
+  @@unique([branchId, code])
+  @@index([branchId])
+  @@map("restaurant_tables")
+}
+
+// ─── Órdenes ──────────────────────────────────────────────────────────────────
+
+model Order {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id])
+  tableId    String
+  table      RestaurantTable @relation(fields: [tableId], references: [id])
+  terminalId String?
+  waiterId   String?
+  waiter     User?    @relation("waiters", fields: [waiterId], references: [id])
+  status     String   @default("OPEN") // "OPEN" | "CLOSED"
+  totalCOP   Int?
+  createdAt  DateTime @default(now())
+  closedAt   DateTime?
+
+  items          OrderItem[]
+  kitchenTickets KitchenTicket[]
+  paymentSplits  PaymentSplit[]
+
+  @@index([tenantId])
+  @@index([branchId, status])
+  @@index([tableId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  name      String
+  priceCOP  Int
+  qty       Int
+  sentQty   Int      @default(0)
+  addedAt   DateTime @default(now())
+
+  @@unique([orderId, productId])
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ─── Kitchen ──────────────────────────────────────────────────────────────────
+
+model KitchenTicket {
+  id       String    @id @default(cuid())
+  tenantId String
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  orderId  String
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status   String    @default("PENDING") // "PENDING" | "PREPARING" | "READY" | "SERVED"
+  priority String    @default("normal")  // "normal" | "urgent"
+  sentAt   DateTime
+  readyAt  DateTime?
+  servedAt DateTime?
+
+  items KitchenTicketItem[]
+
+  @@index([tenantId])
+  @@index([status, priority])
+  @@index([orderId])
+  @@map("kitchen_tickets")
+}
+
+model KitchenTicketItem {
+  id        String        @id @default(cuid())
+  ticketId  String
+  ticket    KitchenTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product       @relation(fields: [productId], references: [id])
+  name      String
+  qty       Int
+
+  @@unique([ticketId, productId])
+  @@map("kitchen_ticket_items")
+}
+
+// ─── Pagos ────────────────────────────────────────────────────────────────────
+
+model PaymentSplit {
+  id       String   @id @default(cuid())
+  tenantId String
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  orderId  String
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  totalCOP Int
+  paidAt   DateTime @default(now())
+
+  contributions PaymentContribution[]
+  items         PaymentSplitItem[]
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@index([paidAt])
+  @@map("payment_splits")
+}
+
+model PaymentContribution {
+  id       String       @id @default(cuid())
+  splitId  String
+  split    PaymentSplit @relation(fields: [splitId], references: [id], onDelete: Cascade)
+  method   String // "cash" | "qr" | "transfer" | "card"
+  amount   Int
+  cardType String? // "credit" | "debit"
+
+  @@unique([splitId, method])
+  @@map("payment_contributions")
+}
+
+model PaymentSplitItem {
+  id        String       @id @default(cuid())
+  splitId   String
+  split     PaymentSplit @relation(fields: [splitId], references: [id], onDelete: Cascade)
+  productId String
+  name      String
+  qty       Int
+  priceCOP  Int
+
+  @@unique([splitId, productId])
+  @@map("payment_split_items")
+}
+
+// ─── Auditoría ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String
+  resourceId String
+  changes    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
