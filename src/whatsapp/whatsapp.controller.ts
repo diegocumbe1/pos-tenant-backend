@@ -30,6 +30,11 @@ interface StatusEvent {
   error?: string;
 }
 
+interface SessionContextBody {
+  tenantId?: string;
+  branchId?: string;
+}
+
 // [DEMO] Auth is not wired yet on the frontend. For the demo we read tenant/branch
 // from X-Tenant-Id / X-Branch-Id headers (or ?tenantId/?branchId for the SSE stream,
 // since EventSource cannot send custom headers). Falls back to the demo barber IDs
@@ -42,10 +47,12 @@ function resolveCtx(
   headerBranch?: string,
   queryTenant?: string,
   queryBranch?: string,
+  bodyTenant?: string,
+  bodyBranch?: string,
 ): { tenantId: string; branchId: string } {
   return {
-    tenantId: headerTenant ?? queryTenant ?? DEMO_TENANT_ID,
-    branchId: headerBranch ?? queryBranch ?? DEMO_BRANCH_ID,
+    tenantId: headerTenant ?? queryTenant ?? bodyTenant ?? DEMO_TENANT_ID,
+    branchId: headerBranch ?? queryBranch ?? bodyBranch ?? DEMO_BRANCH_ID,
   };
 }
 
@@ -69,8 +76,18 @@ export class WhatsAppController {
   pair(
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
+    @Body() body?: SessionContextBody,
   ) {
-    const ctx = resolveCtx(tenantId, branchId);
+    const ctx = resolveCtx(
+      tenantId,
+      branchId,
+      queryTenant,
+      queryBranch,
+      body?.tenantId,
+      body?.branchId,
+    );
     return this.sessions.pair(ctx.tenantId, ctx.branchId);
   }
 
@@ -78,9 +95,22 @@ export class WhatsAppController {
   status(
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
   ) {
-    const ctx = resolveCtx(tenantId, branchId);
+    const ctx = resolveCtx(tenantId, branchId, queryTenant, queryBranch);
     return this.sessions.getStatus(ctx.tenantId, ctx.branchId);
+  }
+
+  @Get('session/diagnostics')
+  diagnostics(
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
+  ) {
+    const ctx = resolveCtx(tenantId, branchId, queryTenant, queryBranch);
+    return this.sessions.getDiagnostics(ctx.tenantId, ctx.branchId);
   }
 
   @Sse('session/stream')
@@ -102,6 +132,19 @@ export class WhatsAppController {
     };
     return new Observable<MessageEvent>((subscriber) => {
       subscriber.next({ data: initialEvent } as MessageEvent);
+      const heartbeat = setInterval(() => {
+        const current = this.sessions.getStatus(ctx.tenantId, ctx.branchId);
+        subscriber.next({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            status: current.status,
+            qr: current.qr,
+            phoneNumber: current.phoneNumber,
+            error: current.error,
+          },
+        } as MessageEvent);
+      }, 25000);
       const sub = this.status$
         .pipe(
           filter(
@@ -110,7 +153,10 @@ export class WhatsAppController {
           map((e) => ({ data: e }) as MessageEvent),
         )
         .subscribe((msg) => subscriber.next(msg));
-      return () => sub.unsubscribe();
+      return () => {
+        clearInterval(heartbeat);
+        sub.unsubscribe();
+      };
     });
   }
 
@@ -119,8 +165,43 @@ export class WhatsAppController {
   disconnect(
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
   ) {
-    const ctx = resolveCtx(tenantId, branchId);
+    const ctx = resolveCtx(tenantId, branchId, queryTenant, queryBranch);
+    return this.sessions.disconnect(ctx.tenantId, ctx.branchId);
+  }
+
+  @Post('session/reset')
+  @HttpCode(HttpStatus.OK)
+  async reset(
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
+    @Body() body?: SessionContextBody,
+  ) {
+    const ctx = resolveCtx(
+      tenantId,
+      branchId,
+      queryTenant,
+      queryBranch,
+      body?.tenantId,
+      body?.branchId,
+    );
+    await this.sessions.disconnect(ctx.tenantId, ctx.branchId);
+    return this.sessions.getDiagnostics(ctx.tenantId, ctx.branchId);
+  }
+
+  @Delete('session/local-auth')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  clearLocalAuth(
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+    @Query('tenantId') queryTenant?: string,
+    @Query('branchId') queryBranch?: string,
+  ) {
+    const ctx = resolveCtx(tenantId, branchId, queryTenant, queryBranch);
     return this.sessions.disconnect(ctx.tenantId, ctx.branchId);
   }
 
