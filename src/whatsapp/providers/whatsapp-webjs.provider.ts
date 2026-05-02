@@ -2,10 +2,13 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { IMessagingProvider } from './messaging-provider.interface';
 import { WhatsAppSessionManager } from '../whatsapp-session.manager';
 
+// TODO: leer countryCode desde tenant/branch settings cuando operemos fuera de CO.
+const DEFAULT_COUNTRY_CODE = '57';
+
 const normalizePhone = (raw: string): string => {
-  const digits = raw.replace(/\s+/g, '').replace(/[^\d]/g, '');
+  const digits = raw.replace(/[^\d]/g, '');
   if (!digits) throw new Error('Phone number is empty after normalization');
-  return `${digits}@c.us`;
+  return digits.length <= 10 ? `${DEFAULT_COUNTRY_CODE}${digits}` : digits;
 };
 
 @Injectable()
@@ -33,8 +36,14 @@ export class WhatsAppWebJsProvider implements IMessagingProvider {
     if (!client) {
       throw new ServiceUnavailableException('WhatsApp client not initialized');
     }
-    const chatId = normalizePhone(to);
-    const message = await client.sendMessage(chatId, body);
+    const phone = normalizePhone(to);
+    const numberId = await client.getNumberId(phone);
+    if (!numberId) {
+      throw new ServiceUnavailableException(
+        `El numero ${phone} no esta registrado en WhatsApp`,
+      );
+    }
+    const message = await client.sendMessage(numberId._serialized, body);
     return { id: message.id?._serialized ?? 'unknown' };
   }
 }
