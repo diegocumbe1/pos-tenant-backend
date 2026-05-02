@@ -2,6 +2,12 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    openssl \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
 RUN npm ci
 
@@ -10,14 +16,17 @@ COPY . .
 # Prisma 7 loads prisma.config.ts during generate.
 # Render runtime env vars are not always available during Docker image build,
 # and prisma generate does not need a real database connection.
-ENV DATABASE_URL="postgresql://postgres.ipmobruvwzgncomhackd:NoPFyQRgdYhJ4dgT@aws-1-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true"
-ENV DIRECT_URL="postgresql://postgres.ipmobruvwzgncomhackd:NoPFyQRgdYhJ4dgT@aws-1-us-west-2.pooler.supabase.com:5432/postgres"
+ENV DATABASE_URL="postgresql://postgres:postgres@localhost:5432/postgres"
+ENV DIRECT_URL="postgresql://postgres:postgres@localhost:5432/postgres"
 
 RUN npx prisma generate
+RUN test -f node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node
 RUN npm run build
 
 
 FROM node:20-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     chromium \
