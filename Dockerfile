@@ -7,6 +7,12 @@ RUN npm ci
 
 COPY . .
 
+# Prisma 7 loads prisma.config.ts during generate.
+# Render runtime env vars are not always available during Docker image build,
+# and prisma generate does not need a real database connection.
+ENV DATABASE_URL="postgresql://postgres.ipmobruvwzgncomhackd:NoPFyQRgdYhJ4dgT@aws-1-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true"
+ENV DIRECT_URL="postgresql://postgres.ipmobruvwzgncomhackd:NoPFyQRgdYhJ4dgT@aws-1-us-west-2.pooler.supabase.com:5432/postgres"
+
 RUN npx prisma generate
 RUN npm run build
 
