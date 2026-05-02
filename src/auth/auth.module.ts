@@ -1,25 +1,33 @@
-import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
+import { Global, Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
-import { StringValue } from 'ms';
+import { AdminModule } from '../admin/admin.module';
+import { AuthController } from './auth.controller';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PasswordSetGuard } from './guards/password-set.guard';
+import { PermissionsGuard } from './guards/permissions.guard';
+import { TenantGuard } from './guards/tenant.guard';
 import { JwtStrategy } from './jwt.strategy';
+import { PermissionsCacheService } from './services/permissions-cache.service';
 
+@Global()
 @Module({
-  imports: [
-    PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        secret: config.getOrThrow<string>('JWT_SECRET'),
-        signOptions: {
-          expiresIn: config.getOrThrow<StringValue>('JWT_EXPIRES_IN'),
-        },
-      }),
-    }),
+  imports: [PassportModule.register({ defaultStrategy: 'jwt' }), AdminModule],
+  controllers: [AuthController],
+  providers: [
+    JwtStrategy,
+    JwtAuthGuard,
+    TenantGuard,
+    PermissionsGuard,
+    PasswordSetGuard,
+    PermissionsCacheService,
   ],
-  providers: [JwtStrategy],
-  exports: [JwtModule, PassportModule],
+  exports: [
+    JwtAuthGuard,
+    TenantGuard,
+    PermissionsGuard,
+    PasswordSetGuard,
+    PermissionsCacheService,
+    PassportModule,
+  ],
 })
 export class AuthModule {}

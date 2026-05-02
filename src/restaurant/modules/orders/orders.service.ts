@@ -5,11 +5,20 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
+import {
+  KITCHEN_TICKET_UPDATED,
+  KitchenTicketUpdatedEvent,
+  ORDER_CLOSED,
+  OrderClosedEvent,
+  TABLE_UPDATED,
+  TableUpdatedEvent,
+} from '../../../realtime/realtime.events';
 
 const ORDER_INCLUDE = {
   items: {
@@ -21,7 +30,10 @@ const ORDER_INCLUDE = {
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
 
   async findAll(ctx: TenantContext, status = 'OPEN', tableId?: string) {
     const orders = await this.prisma.order.findMany({
@@ -49,15 +61,25 @@ export class OrdersService {
 
   async create(ctx: TenantContext, dto: CreateOrderDto) {
     const table = await this.prisma.restaurantTable.findFirst({
-      where: { id: dto.tableId, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      where: {
+        id: dto.tableId,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+      },
     });
     if (!table) throw new NotFoundException(`Table ${dto.tableId} not found`);
     if (table.status !== 'AVAILABLE')
-      throw new ConflictException(`Table is not available (status: ${table.status})`);
+      throw new ConflictException(
+        `Table is not available (status: ${table.status})`,
+      );
 
     const productIds = dto.items.map((i) => i.productId);
     const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, tenantId: ctx.tenantId, deletedAt: null },
+      where: {
+        id: { in: productIds },
+        tenantId: ctx.tenantId,
+        deletedAt: null,
+      },
     });
     if (products.length !== productIds.length)
       throw new NotFoundException('One or more products not found');
@@ -93,6 +115,13 @@ export class OrdersService {
       return newOrder;
     });
 
+    this.events.emit(TABLE_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      tableId: dto.tableId,
+      reason: 'order-opened',
+    } satisfies TableUpdatedEvent);
+
     return this.mapOrder(order);
   }
 
@@ -101,7 +130,11 @@ export class OrdersService {
 
     const productIds = dto.items.map((i) => i.productId);
     const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, tenantId: ctx.tenantId, deletedAt: null },
+      where: {
+        id: { in: productIds },
+        tenantId: ctx.tenantId,
+        deletedAt: null,
+      },
     });
     if (products.length !== productIds.length)
       throw new NotFoundException('One or more products not found');
@@ -137,7 +170,9 @@ export class OrdersService {
 
     const pendingItems = order.items.filter((i) => i.qty > i.sentQty);
     if (pendingItems.length === 0)
-      throw new UnprocessableEntityException('No pending items to send to kitchen');
+      throw new UnprocessableEntityException(
+        'No pending items to send to kitchen',
+      );
 
     const ticket = await this.prisma.$transaction(async (tx) => {
       const newTicket = await tx.kitchenTicket.create({
@@ -157,7 +192,90 @@ export class OrdersService {
         include: { items: true },
       });
 
+      const stockBalances = new Map<string, number>();
+
       for (const item of pendingItems) {
+        const itemQty = item.qty - item.sentQty;
+        const recipeLines = await tx.recipeLine.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            productId: item.productId,
+          },
+          include: { ingredient: true },
+        });
+
+        for (const line of recipeLines) {
+          const netRequiredInRecipeUnit = this.convertQuantity(
+            line.quantity * itemQty,
+            line.unit,
+            line.ingredient.recipeUnit,
+          );
+          const usableRatio =
+            1 - line.ingredient.technicalWastePercentage / 100;
+          if (usableRatio <= 0) {
+            throw new UnprocessableEntityException(
+              `Invalid waste percentage for ingredient ${line.ingredient.name}`,
+            );
+          }
+
+          const grossRequiredInRecipeUnit =
+            netRequiredInRecipeUnit / usableRatio;
+          const grossRequiredInPurchaseUnit = this.convertQuantity(
+            grossRequiredInRecipeUnit,
+            line.ingredient.recipeUnit,
+            line.ingredient.purchaseUnit,
+          );
+          const previousStock =
+            stockBalances.get(line.ingredientId) ??
+            line.ingredient.currentStock;
+          const newStock = previousStock - grossRequiredInPurchaseUnit;
+
+          if (newStock < 0) {
+            throw new UnprocessableEntityException(
+              `Insufficient stock for ingredient ${line.ingredient.name}`,
+            );
+          }
+
+          stockBalances.set(line.ingredientId, newStock);
+
+          await tx.stockMovement.create({
+            data: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              ingredientId: line.ingredientId,
+              type: 'CONSUMPTION',
+              quantity: -grossRequiredInPurchaseUnit,
+              previousStock,
+              newStock,
+              orderId: id,
+              notes: `Auto consumption for ${item.name}`,
+              createdBy: ctx.userId,
+              createdByName: ctx.name,
+            },
+          });
+
+          const netUsableQuantity =
+            this.convertQuantity(
+              newStock,
+              line.ingredient.purchaseUnit,
+              line.ingredient.recipeUnit,
+            ) * usableRatio;
+
+          await tx.ingredient.update({
+            where: { id: line.ingredientId },
+            data: {
+              currentStock: newStock,
+              grossStockQuantity: newStock,
+              netUsableQuantity,
+              netUnitCost:
+                netUsableQuantity > 0
+                  ? line.ingredient.totalPurchaseCost / netUsableQuantity
+                  : 0,
+            },
+          });
+        }
+
         await tx.orderItem.update({
           where: { id: item.id },
           data: { sentQty: item.qty },
@@ -166,6 +284,27 @@ export class OrdersService {
 
       return newTicket;
     });
+
+    this.events.emit(KITCHEN_TICKET_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      ticket: {
+        id: ticket.id,
+        orderId: ticket.orderId,
+        tableId: order.tableId,
+        status: ticket.status,
+        priority: ticket.priority,
+        sentAt: ticket.sentAt.getTime(),
+        readyAt: ticket.readyAt?.getTime() ?? null,
+        servedAt: ticket.servedAt?.getTime() ?? null,
+        items: ticket.items.map((i) => ({
+          id: i.id,
+          productId: i.productId,
+          name: i.name,
+          qty: i.qty,
+        })),
+      },
+    } satisfies KitchenTicketUpdatedEvent);
 
     return ticket;
   }
@@ -177,6 +316,13 @@ export class OrdersService {
       where: { id: order.tableId },
       data: { status: 'PAYMENT' },
     });
+
+    this.events.emit(TABLE_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      tableId: order.tableId,
+      reason: 'payment-requested',
+    } satisfies TableUpdatedEvent);
 
     return this.findOne(ctx, id);
   }
@@ -205,7 +351,11 @@ export class OrdersService {
 
       await tx.order.update({
         where: { id },
-        data: { status: 'CLOSED', closedAt: new Date(), totalCOP: dto.totalCOP },
+        data: {
+          status: 'CLOSED',
+          closedAt: new Date(),
+          totalCOP: dto.totalCOP,
+        },
       });
 
       await tx.restaurantTable.update({
@@ -215,6 +365,21 @@ export class OrdersService {
 
       return paymentSplit;
     });
+
+    this.events.emit(ORDER_CLOSED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      orderId: id,
+      tableId: order.tableId,
+      totalCOP: dto.totalCOP,
+    } satisfies OrderClosedEvent);
+
+    this.events.emit(TABLE_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      tableId: order.tableId,
+      reason: 'order-closed',
+    } satisfies TableUpdatedEvent);
 
     return { id, status: 'CLOSED', paymentSplits: [closed] };
   }
@@ -250,5 +415,28 @@ export class OrdersService {
         paidAt: ps.paidAt.getTime(),
       })),
     };
+  }
+
+  private convertQuantity(quantity: number, from: string, to: string) {
+    if (from === to) return quantity;
+
+    const gramsPerUnit: Record<string, number> = {
+      g: 1,
+      kg: 1000,
+      lb: 453.59237,
+    };
+    const mlPerUnit: Record<string, number> = { ml: 1, L: 1000 };
+
+    if (from in gramsPerUnit && to in gramsPerUnit) {
+      return (quantity * gramsPerUnit[from]) / gramsPerUnit[to];
+    }
+
+    if (from in mlPerUnit && to in mlPerUnit) {
+      return (quantity * mlPerUnit[from]) / mlPerUnit[to];
+    }
+
+    throw new UnprocessableEntityException(
+      `Incompatible units: ${from} -> ${to}`,
+    );
   }
 }

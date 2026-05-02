@@ -14,7 +14,12 @@ export class CategoriesService {
 
   async findAll(ctx: TenantContext) {
     const categories = await this.prisma.productCategory.findMany({
-      where: { tenantId: ctx.tenantId },
+      where: {
+        tenantId: ctx.tenantId,
+        ...(ctx.branchId
+          ? { OR: [{ branchId: null }, { branchId: ctx.branchId }] }
+          : { branchId: null }),
+      },
       orderBy: { sortOrder: 'asc' },
     });
     return { categories };
@@ -25,6 +30,7 @@ export class CategoriesService {
       data: {
         ...dto,
         tenantId: ctx.tenantId,
+        branchId: ctx.branchId || null,
       },
     });
   }

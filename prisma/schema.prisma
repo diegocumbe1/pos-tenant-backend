@@ -11,25 +11,91 @@ datasource db {
 // ─── Multi-tenancy Core ───────────────────────────────────────────────────────
 
 model Tenant {
-  id        String    @id
-  name      String
-  plan      String    @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
+  id         String            @id
+  name       String
+  plan       String            @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
+  verticalId String?
+  vertical   BusinessVertical? @relation(fields: [verticalId], references: [id])
+  planId     String?
+  planRef    SubscriptionPlan? @relation(fields: [planId], references: [id])
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  deletedAt  DateTime?
 
-  users          User[]
-  branches       Branch[]
-  products       Product[]
-  categories     ProductCategory[]
-  areas          Area[]
-  tables         RestaurantTable[]
-  orders         Order[]
-  kitchenTickets KitchenTicket[]
-  paymentSplits  PaymentSplit[]
+  users            User[]
+  branches         Branch[]
+  products         Product[]
+  categories       ProductCategory[]
+  ingredients      Ingredient[]
+  stockMovements   StockMovement[]
+  menuPublicConfig MenuPublicConfig?
+  areas            Area[]
+  tables           RestaurantTable[]
+  orders           Order[]
+  kitchenTickets   KitchenTicket[]
+  paymentSplits    PaymentSplit[]
+  reservations     Reservation[]
+  expenses         Expense[]
+  payrolls         Payroll[]
+  financeGoals     FinanceGoal[]
+  roles            Role[]
+  barberSettings   BarberSettings[]
+  barberServices   BarberService[]
+  barberStaff      BarberStaff[]
+  barberCustomers  BarberCustomer[]
+  barberAppointments BarberAppointment[]
 
   @@index([plan])
+  @@index([verticalId])
+  @@index([planId])
   @@map("tenants")
+}
+
+model BusinessVertical {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenants Tenant[]
+  plans   VerticalPlan[]
+
+  @@index([isActive])
+  @@map("business_verticals")
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  priceCOP    Int      @default(0)
+  currency    String   @default("COP")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenants   Tenant[]
+  verticals VerticalPlan[]
+
+  @@index([isActive])
+  @@map("subscription_plans")
+}
+
+model VerticalPlan {
+  verticalId String
+  planId     String
+  isActive   Boolean @default(true)
+
+  vertical BusinessVertical @relation(fields: [verticalId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@id([verticalId, planId])
+  @@index([planId])
+  @@index([isActive])
+  @@map("vertical_plans")
 }
 
 model Branch {
@@ -40,33 +106,253 @@ model Branch {
   address   String?
   createdAt DateTime @default(now())
 
-  products   Product[]
-  categories ProductCategory[]
-  areas      Area[]
-  tables     RestaurantTable[]
-  orders     Order[]
+  products       Product[]
+  categories     ProductCategory[]
+  ingredients    Ingredient[]
+  stockMovements StockMovement[]
+  areas          Area[]
+  tables         RestaurantTable[]
+  orders         Order[]
+  reservations   Reservation[]
+  expenses       Expense[]
+  payrolls       Payroll[]
+  financeGoals   FinanceGoal[]
+  userBranches   UserBranch[]
+  barberSettings BarberSettings?
+  barberServices BarberService[]
+  barberStaff    BarberStaff[]
+  barberCustomers BarberCustomer[]
+  barberAppointments BarberAppointment[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
   @@map("branches")
 }
 
+// ─── Barberia ────────────────────────────────────────────────────────────────
+
+model BarberSettings {
+  id                   String   @id @default(cuid())
+  tenantId             String
+  tenant               Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId             String
+  branch               Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  phone                String?
+  city                 String?
+  timezone             String   @default("America/Bogota")
+  currency             String   @default("COP")
+  logoUrl              String?
+  bookingSlug          String   @unique
+  onlineBookingEnabled Boolean  @default(true)
+  whatsappEnabled      Boolean  @default(false)
+  loyaltyEnabled       Boolean  @default(false)
+  themeTemplateId      String   @default("studio")
+  themePrimaryColor    String   @default("#6366f1")
+  themeAccentColor     String   @default("#22c55e")
+  themeLogoMode        String?  @default("initials")
+  themeLogoImageUrl    String?
+  themeBannerImageUrl  String?
+  heroTitle            String?
+  heroDescription      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([branchId])
+  @@index([tenantId])
+  @@map("barber_settings")
+}
+
+model BarberService {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  durationMin Int
+  priceCOP    Int
+  color       String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  staffServices BarberStaffService[]
+  appointments  BarberAppointment[]
+
+  @@unique([branchId, name])
+  @@index([tenantId])
+  @@index([branchId, isActive])
+  @@map("barber_services")
+}
+
+model BarberStaff {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  userId    String?
+  name      String
+  email     String?
+  phone     String?
+  avatarUrl String?
+  color     String?
+  bio       String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  services     BarberStaffService[]
+  appointments BarberAppointment[]
+
+  @@unique([branchId, name])
+  @@index([tenantId])
+  @@index([branchId, isActive])
+  @@map("barber_staff")
+}
+
+model BarberStaffService {
+  staffId   String
+  serviceId String
+  staff     BarberStaff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  service   BarberService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@id([staffId, serviceId])
+  @@index([serviceId])
+  @@map("barber_staff_services")
+}
+
+model BarberCustomer {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name        String
+  phone       String
+  email       String?
+  notes       String?
+  tags        String[] @default([])
+  totalVisits Int      @default(0)
+  lastVisitAt DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  appointments BarberAppointment[]
+
+  @@unique([branchId, phone])
+  @@index([tenantId])
+  @@index([branchId, name])
+  @@map("barber_customers")
+}
+
+model BarberAppointment {
+  id           String    @id @default(cuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId     String
+  branch       Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     BarberCustomer @relation(fields: [customerId], references: [id])
+  serviceId    String
+  service      BarberService  @relation(fields: [serviceId], references: [id])
+  staffId      String
+  staff        BarberStaff    @relation(fields: [staffId], references: [id])
+  scheduledAt  DateTime
+  scheduledEnd DateTime
+  status       String    @default("SCHEDULED")
+  source       String    @default("manual")
+  notes        String?
+  cancelReason String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([branchId, status])
+  @@index([staffId, scheduledAt])
+  @@index([customerId, scheduledAt])
+  @@map("barber_appointments")
+}
+
 // ─── Users & RBAC ────────────────────────────────────────────────────────────
 
 model User {
-  id        String   @id
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  email     String
-  name      String
-  role      String // "OWNER" | "MANAGER" | "WAITER" | "KITCHEN" | "CASHIER"
+  id            String    @id // mapea a auth.users.id de Supabase (UUID)
+  tenantId      String? // NULL solo para ROOT
+  tenant        Tenant?   @relation(fields: [tenantId], references: [id])
+  email         String    @unique
+  name          String
+  roleId        String
+  role          Role      @relation(fields: [roleId], references: [id])
+  isActive      Boolean   @default(true)
+  invitedAt     DateTime?
+  passwordSetAt DateTime?
+  createdAt     DateTime  @default(now())
+
+  orders       Order[]      @relation("waiters")
+  userBranches UserBranch[]
+
+  @@index([tenantId])
+  @@index([roleId])
+  @@map("users")
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  code        String @unique // "restaurant:menu:write"
+  resource    String // "menu", "orders", "kitchen", "finance", ...
+  action      String // "read", "write", "delete", "close"
+  description String
+
+  rolePermissions RolePermission[]
+
+  @@index([resource])
+  @@map("permissions")
+}
+
+model Role {
+  id        String   @id @default(cuid())
+  tenantId  String? // NULL solo para ROOT
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
+  code      String // "ROOT", "OWNER", "MANAGER", "CASHIER", "WAITER", "KITCHEN", "ADMIN", o custom
+  name      String // "Root", "Dueño", "Gerente", ...
+  isSystem  Boolean  @default(false)
   createdAt DateTime @default(now())
 
-  orders Order[] @relation("waiters")
+  rolePermissions RolePermission[]
+  users           User[]
 
-  @@unique([tenantId, email])
+  @@unique([tenantId, code])
   @@index([tenantId])
-  @@map("users")
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserBranch {
+  userId    String
+  branchId  String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, branchId])
+  @@index([branchId])
+  @@map("user_branches")
 }
 
 // ─── Menú ─────────────────────────────────────────────────────────────────────
@@ -90,11 +376,11 @@ model ProductCategory {
 }
 
 model Product {
-  id              String   @id @default(cuid())
+  id              String          @id @default(cuid())
   tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  tenant          Tenant          @relation(fields: [tenantId], references: [id])
   branchId        String?
-  branch          Branch?  @relation(fields: [branchId], references: [id])
+  branch          Branch?         @relation(fields: [branchId], references: [id])
   categoryId      String
   category        ProductCategory @relation(fields: [categoryId], references: [id])
   name            String
@@ -102,29 +388,157 @@ model Product {
   priceCOP        Int
   emoji           String?
   imageUrls       String[]
-  isAvailable     Boolean  @default(true)
-  sortOrder       Int      @default(0)
-  targetMarginPct Int      @default(65)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  isAvailable     Boolean         @default(true)
+  sortOrder       Int             @default(0)
+  targetMarginPct Int             @default(65)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
   deletedAt       DateTime?
 
   orderItems   OrderItem[]
   kitchenItems KitchenTicketItem[]
+  recipeLines  RecipeLine[]
 
   @@index([tenantId])
   @@index([categoryId])
   @@map("products")
 }
 
+// ─── Inventario ──────────────────────────────────────────────────────────────
+
+model Ingredient {
+  id                       String    @id @default(cuid())
+  tenantId                 String
+  tenant                   Tenant    @relation(fields: [tenantId], references: [id])
+  branchId                 String
+  branch                   Branch    @relation(fields: [branchId], references: [id])
+  categoryId               String
+  name                     String
+  purchaseUnit             String
+  recipeUnit               String
+  grossStockQuantity       Float     @default(0)
+  currentStock             Float     @default(0)
+  netUsableQuantity        Float     @default(0)
+  technicalWastePercentage Float     @default(0)
+  totalPurchaseCost        Float     @default(0)
+  grossUnitCost            Float     @default(0)
+  netUnitCost              Float     @default(0)
+  minStock                 Float     @default(0)
+  supplierName             String?
+  expirationDate           DateTime?
+  notes                    String?
+  isActive                 Boolean   @default(true)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  movements   StockMovement[]
+  recipeLines RecipeLine[]
+
+  @@unique([branchId, name])
+  @@index([tenantId])
+  @@index([branchId])
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("ingredients")
+}
+
+model StockMovement {
+  id            String     @id @default(cuid())
+  tenantId      String
+  tenant        Tenant     @relation(fields: [tenantId], references: [id])
+  branchId      String
+  branch        Branch     @relation(fields: [branchId], references: [id])
+  ingredientId  String
+  ingredient    Ingredient @relation(fields: [ingredientId], references: [id])
+  type          String
+  quantity      Float
+  unitCost      Float?
+  previousStock Float
+  newStock      Float
+  orderId       String?
+  notes         String?
+  createdBy     String
+  createdByName String?
+  createdAt     DateTime   @default(now())
+
+  @@index([tenantId])
+  @@index([branchId, createdAt])
+  @@index([ingredientId, createdAt])
+  @@index([type])
+  @@map("stock_movements")
+}
+
+model RecipeLine {
+  id           String     @id @default(cuid())
+  tenantId     String
+  branchId     String
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float
+  unit         String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([productId, ingredientId])
+  @@index([tenantId])
+  @@index([branchId])
+  @@index([ingredientId])
+  @@map("recipe_lines")
+}
+
+// ─── Carta pública ────────────────────────────────────────────────────────────
+
+model MenuPublicConfig {
+  id                 String   @id @default(cuid())
+  tenantId           String   @unique
+  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId           String?
+  slug               String   @unique
+  isPublished        Boolean  @default(false)
+  showPrices         Boolean  @default(true)
+  showDescription    Boolean  @default(true)
+  showImages         Boolean  @default(true)
+  showUnavailable    Boolean  @default(false)
+  showFeaturedBadge  Boolean  @default(true)
+  showRatings        Boolean  @default(false)
+  showSavedCount     Boolean  @default(false)
+  featuredProductIds String[] @default([])
+  categoryOrder      String[] @default([])
+
+  templateId          String  @default("minimal") // 'minimal' | 'cards' | 'magazine'
+  primaryColor        String  @default("#16a34a")
+  accentColor         String  @default("#0ea5e9")
+  bannerText          String?
+  logoMode            String? // 'tenant' | 'emoji' | 'image' | 'none'
+  logoVariant         String? // 'center' | 'banner'
+  logoFit             String? // 'contain' | 'cover'
+  logoEmoji           String?
+  logoImageUrl        String?
+  bannerImageUrl      String?
+  heroKicker          String?
+  heroTitle           String?
+  heroDescription     String?
+  featuredTitle       String?
+  featuredDescription String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([branchId])
+  @@map("menu_public_configs")
+}
+
 // ─── Áreas ────────────────────────────────────────────────────────────────────
 
 model Area {
-  id        String  @id @default(cuid())
+  id        String   @id @default(cuid())
   tenantId  String
-  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   branchId  String
-  branch    Branch  @relation(fields: [branchId], references: [id])
+  branch    Branch   @relation(fields: [branchId], references: [id])
   name      String
   emoji     String?
   createdAt DateTime @default(now())
@@ -153,7 +567,8 @@ model RestaurantTable {
   status    String   @default("AVAILABLE") // "AVAILABLE" | "PREPARING" | "ON_TABLE" | "PAYMENT" | "RESERVED" | "CLOSED"
   createdAt DateTime @default(now())
 
-  orders Order[]
+  orders       Order[]
+  reservations Reservation[]
 
   @@unique([branchId, code])
   @@index([branchId])
@@ -163,19 +578,19 @@ model RestaurantTable {
 // ─── Órdenes ──────────────────────────────────────────────────────────────────
 
 model Order {
-  id         String   @id @default(cuid())
+  id         String          @id @default(cuid())
   tenantId   String
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  tenant     Tenant          @relation(fields: [tenantId], references: [id])
   branchId   String
-  branch     Branch   @relation(fields: [branchId], references: [id])
+  branch     Branch          @relation(fields: [branchId], references: [id])
   tableId    String
   table      RestaurantTable @relation(fields: [tableId], references: [id])
   terminalId String?
   waiterId   String?
-  waiter     User?    @relation("waiters", fields: [waiterId], references: [id])
-  status     String   @default("OPEN") // "OPEN" | "CLOSED"
+  waiter     User?           @relation("waiters", fields: [waiterId], references: [id])
+  status     String          @default("OPEN") // "OPEN" | "CLOSED"
   totalCOP   Int?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime        @default(now())
   closedAt   DateTime?
 
   items          OrderItem[]
@@ -214,7 +629,7 @@ model KitchenTicket {
   orderId  String
   order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
   status   String    @default("PENDING") // "PENDING" | "PREPARING" | "READY" | "SERVED"
-  priority String    @default("normal")  // "normal" | "urgent"
+  priority String    @default("normal") // "normal" | "urgent"
   sentAt   DateTime
   readyAt  DateTime?
   servedAt DateTime?
@@ -283,6 +698,96 @@ model PaymentSplitItem {
 
   @@unique([splitId, productId])
   @@map("payment_split_items")
+}
+
+// ─── Reservas ─────────────────────────────────────────────────────────────────
+
+model Reservation {
+  id           String          @id @default(cuid())
+  tenantId     String
+  tenant       Tenant          @relation(fields: [tenantId], references: [id])
+  branchId     String
+  branch       Branch          @relation(fields: [branchId], references: [id])
+  tableId      String
+  table        RestaurantTable @relation(fields: [tableId], references: [id])
+  guestName    String?
+  guestPhone   String?
+  partySize    Int?
+  scheduledAt  DateTime
+  scheduledEnd DateTime?
+  occasion     String? // "birthday" | "anniversary" | "business" | "graduation" | "other"
+  occasionNote String?
+  notes        String?
+  status       String          @default("ACTIVE") // "ACTIVE" | "SEATED" | "CANCELLED"
+  cancelReason String?
+  seatedAt     DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([tenantId])
+  @@index([branchId, status])
+  @@index([tableId])
+  @@index([scheduledAt])
+  @@map("reservations")
+}
+
+// ─── Finance ──────────────────────────────────────────────────────────────────
+
+model Expense {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  branchId   String
+  branch     Branch   @relation(fields: [branchId], references: [id])
+  category   String // "rent" | "utilities" | "supplies" | "marketing" | "other"
+  concept    String
+  amountCOP  Int
+  incurredAt DateTime
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([branchId, incurredAt])
+  @@index([category])
+  @@map("expenses")
+}
+
+model Payroll {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id])
+  userId      String?
+  staffName   String
+  role        String
+  periodMonth String // "YYYY-MM"
+  grossCOP    Int
+  netCOP      Int
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([branchId, userId, periodMonth])
+  @@index([tenantId])
+  @@index([branchId, periodMonth])
+  @@map("payrolls")
+}
+
+model FinanceGoal {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id])
+  periodMonth String // "YYYY-MM"
+  metric      String // "revenue" | "profit"
+  targetCOP   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([branchId, periodMonth, metric])
+  @@index([tenantId])
+  @@map("finance_goals")
 }
 
 // ─── Auditoría ────────────────────────────────────────────────────────────────

@@ -1,0 +1,121 @@
+import {
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { PrismaService } from '../../../prisma/prisma.service';
+import { TenantContext } from '../../../auth/types/tenant-context.interface';
+import {
+  KITCHEN_TICKET_STATUSES,
+  KitchenTicketStatus,
+} from './dto/update-ticket-status.dto';
+import {
+  KITCHEN_TICKET_UPDATED,
+  TABLE_UPDATED,
+  KitchenTicketUpdatedEvent,
+  TableUpdatedEvent,
+} from '../../../realtime/realtime.events';
+
+const TICKET_INCLUDE = {
+  items: true,
+  order: { select: { id: true, tableId: true, branchId: true } },
+} as const;
+
+@Injectable()
+export class KitchenService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
+
+  async findTickets(ctx: TenantContext, status?: string) {
+    const tickets = await this.prisma.kitchenTicket.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        order: { branchId: ctx.branchId },
+        ...(status ? { status } : {}),
+      },
+      include: TICKET_INCLUDE,
+      orderBy: [{ priority: 'desc' }, { sentAt: 'asc' }],
+    });
+
+    return { tickets: tickets.map((t) => this.mapTicket(t)) };
+  }
+
+  async updateStatus(
+    ctx: TenantContext,
+    id: string,
+    status: KitchenTicketStatus,
+  ) {
+    if (!KITCHEN_TICKET_STATUSES.includes(status)) {
+      throw new UnprocessableEntityException(`Invalid status: ${status}`);
+    }
+
+    const existing = await this.prisma.kitchenTicket.findFirst({
+      where: {
+        id,
+        tenantId: ctx.tenantId,
+        order: { branchId: ctx.branchId },
+      },
+      include: TICKET_INCLUDE,
+    });
+    if (!existing) throw new NotFoundException(`Kitchen ticket ${id} not found`);
+
+    const now = new Date();
+    const data: {
+      status: KitchenTicketStatus;
+      readyAt?: Date;
+      servedAt?: Date;
+    } = { status };
+    if (status === 'READY' && !existing.readyAt) data.readyAt = now;
+    if (status === 'SERVED') {
+      data.servedAt = now;
+      if (!existing.readyAt) data.readyAt = now;
+    }
+
+    const updated = await this.prisma.kitchenTicket.update({
+      where: { id },
+      data,
+      include: TICKET_INCLUDE,
+    });
+
+    const mapped = this.mapTicket(updated);
+
+    this.events.emit(KITCHEN_TICKET_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      ticket: mapped,
+    } satisfies KitchenTicketUpdatedEvent);
+
+    if (status === 'READY') {
+      this.events.emit(TABLE_UPDATED, {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        tableId: updated.order.tableId,
+        reason: 'kitchen-ready',
+      } satisfies TableUpdatedEvent);
+    }
+
+    return mapped;
+  }
+
+  private mapTicket(ticket: any) {
+    return {
+      id: ticket.id,
+      orderId: ticket.orderId,
+      tableId: ticket.order?.tableId ?? null,
+      status: ticket.status,
+      priority: ticket.priority,
+      sentAt: ticket.sentAt.getTime(),
+      readyAt: ticket.readyAt?.getTime() ?? null,
+      servedAt: ticket.servedAt?.getTime() ?? null,
+      items: ticket.items.map((i: any) => ({
+        id: i.id,
+        productId: i.productId,
+        name: i.name,
+        qty: i.qty,
+      })),
+    };
+  }
+}

@@ -1,0 +1,337 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { PrismaService } from '../prisma/prisma.service';
+import { PermissionsCacheService } from '../auth/services/permissions-cache.service';
+import { SupabaseService } from '../supabase/supabase.service';
+import { CreateBranchDto, UpdateBranchDto } from './dto/branch.dto';
+import {
+  CreateRoleDto,
+  TogglePermissionDto,
+  UpdateRoleDto,
+} from './dto/role.dto';
+import { InviteUserDto, UpdateUserDto } from './dto/user.dto';
+
+@Injectable()
+export class TenantAdminService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly supabase: SupabaseService,
+    private readonly permissionsCache: PermissionsCacheService,
+  ) {}
+
+  // ─── Branches ──────────────────────────────────────────────────────────────
+
+  async createBranch(tenantId: string, dto: CreateBranchDto) {
+    const existing = await this.prisma.branch.findUnique({
+      where: { tenantId_name: { tenantId, name: dto.name } },
+    });
+    if (existing) {
+      throw new ConflictException(`Branch name already exists: ${dto.name}`);
+    }
+    return this.prisma.branch.create({
+      data: {
+        id: `branch-${randomUUID().slice(0, 8)}`,
+        tenantId,
+        name: dto.name,
+        address: dto.address,
+      },
+    });
+  }
+
+  async updateBranch(tenantId: string, branchId: string, dto: UpdateBranchDto) {
+    const branch = await this.prisma.branch.findUnique({ where: { id: branchId } });
+    if (!branch || branch.tenantId !== tenantId) {
+      throw new NotFoundException(`Branch ${branchId} not found`);
+    }
+    return this.prisma.branch.update({
+      where: { id: branchId },
+      data: { name: dto.name, address: dto.address },
+    });
+  }
+
+  // ─── Users ─────────────────────────────────────────────────────────────────
+
+  async listUsers(tenantId: string) {
+    const users = await this.prisma.user.findMany({
+      where: { tenantId },
+      include: {
+        role: { select: { id: true, code: true, name: true } },
+        userBranches: {
+          include: { branch: { select: { id: true, name: true } } },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      isActive: u.isActive,
+      passwordSet: !!u.passwordSetAt,
+      invitedAt: u.invitedAt,
+      role: u.role,
+      branches: u.userBranches.map((ub) => ub.branch),
+    }));
+  }
+
+  async inviteUser(tenantId: string, dto: InviteUserDto) {
+    // Validar rol pertenece al tenant
+    const role = await this.prisma.role.findUnique({ where: { id: dto.roleId } });
+    if (!role || role.tenantId !== tenantId) {
+      throw new BadRequestException(`Role ${dto.roleId} not found in tenant`);
+    }
+    if (role.code === 'ROOT') {
+      throw new ForbiddenException('Cannot assign ROOT role from tenant scope');
+    }
+
+    // Validar branches pertenecen al tenant
+    const branches = await this.prisma.branch.findMany({
+      where: { id: { in: dto.branchIds }, tenantId },
+    });
+    if (branches.length !== dto.branchIds.length) {
+      throw new BadRequestException('Some branchIds do not belong to tenant');
+    }
+
+    // Email único global
+    const existingEmail = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
+    if (existingEmail) throw new ConflictException(`Email already in use: ${dto.email}`);
+
+    const supabaseUser = await this.supabase.inviteUser(dto.email, {
+      tenantId,
+      roleId: dto.roleId,
+    });
+
+    const user = await this.prisma.user.create({
+      data: {
+        id: supabaseUser.id,
+        tenantId,
+        email: dto.email,
+        name: dto.name,
+        roleId: dto.roleId,
+        invitedAt: new Date(),
+        userBranches: { create: dto.branchIds.map((branchId) => ({ branchId })) },
+      },
+    });
+
+    return {
+      id: user.id,
+      email: user.email,
+      status: 'INVITED',
+    };
+  }
+
+  async updateUser(tenantId: string, userId: string, dto: UpdateUserDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.tenantId !== tenantId) {
+      throw new NotFoundException(`User ${userId} not found`);
+    }
+
+    if (dto.roleId) {
+      const role = await this.prisma.role.findUnique({ where: { id: dto.roleId } });
+      if (!role || role.tenantId !== tenantId) {
+        throw new BadRequestException('Invalid roleId for tenant');
+      }
+      if (role.code === 'ROOT') {
+        throw new ForbiddenException('Cannot assign ROOT role from tenant scope');
+      }
+    }
+
+    if (dto.branchIds) {
+      const branches = await this.prisma.branch.findMany({
+        where: { id: { in: dto.branchIds }, tenantId },
+      });
+      if (branches.length !== dto.branchIds.length) {
+        throw new BadRequestException('Some branchIds do not belong to tenant');
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { name: dto.name, roleId: dto.roleId },
+      });
+      if (dto.branchIds) {
+        await tx.userBranch.deleteMany({ where: { userId } });
+        await tx.userBranch.createMany({
+          data: dto.branchIds.map((branchId) => ({ userId, branchId })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    // Sincronizar app_metadata en Supabase si cambió el rol
+    if (dto.roleId) {
+      await this.supabase.setAppMetadata(userId, {
+        tenantId,
+        roleId: dto.roleId,
+      });
+    }
+
+    return this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { role: true, userBranches: true },
+    });
+  }
+
+  async deactivateUser(tenantId: string, userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.tenantId !== tenantId) {
+      throw new NotFoundException(`User ${userId} not found`);
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isActive: false },
+    });
+    return { ok: true };
+  }
+
+  // ─── Roles & Permissions ───────────────────────────────────────────────────
+
+  async listPermissionsCatalog() {
+    return this.prisma.permission.findMany({
+      orderBy: [{ resource: 'asc' }, { action: 'asc' }],
+    });
+  }
+
+  /**
+   * Matriz completa: roles del tenant × permissions, con flag `enabled` por cada par.
+   * Usado por la UI "Configuración > Roles y permisos".
+   */
+  async getRolesMatrix(tenantId: string) {
+    const [roles, permissions] = await Promise.all([
+      this.prisma.role.findMany({
+        where: { tenantId },
+        include: { rolePermissions: { select: { permissionId: true } } },
+        orderBy: [{ isSystem: 'desc' }, { createdAt: 'asc' }],
+      }),
+      this.prisma.permission.findMany({
+        orderBy: [{ resource: 'asc' }, { action: 'asc' }],
+      }),
+    ]);
+
+    return {
+      permissions: permissions.map((p) => ({
+        code: p.code,
+        resource: p.resource,
+        action: p.action,
+        description: p.description,
+      })),
+      roles: roles.map((r) => {
+        const enabled = new Set(r.rolePermissions.map((rp) => rp.permissionId));
+        return {
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          isSystem: r.isSystem,
+          permissions: permissions.map((p) => ({
+            code: p.code,
+            enabled: enabled.has(p.id),
+          })),
+        };
+      }),
+    };
+  }
+
+  async createCustomRole(tenantId: string, dto: CreateRoleDto) {
+    const existing = await this.prisma.role.findUnique({
+      where: { tenantId_code: { tenantId, code: dto.code } },
+    });
+    if (existing) throw new ConflictException(`Role code exists: ${dto.code}`);
+    if (dto.code === 'ROOT') {
+      throw new ForbiddenException('Cannot create ROOT role');
+    }
+    return this.prisma.role.create({
+      data: {
+        tenantId,
+        code: dto.code,
+        name: dto.name,
+        isSystem: false,
+      },
+    });
+  }
+
+  async updateRole(tenantId: string, roleId: string, dto: UpdateRoleDto) {
+    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
+    if (!role || role.tenantId !== tenantId) {
+      throw new NotFoundException(`Role ${roleId} not found`);
+    }
+    if (role.isSystem) {
+      throw new ForbiddenException('Cannot rename a system role');
+    }
+    return this.prisma.role.update({
+      where: { id: roleId },
+      data: { name: dto.name },
+    });
+  }
+
+  async togglePermission(
+    tenantId: string,
+    roleId: string,
+    dto: TogglePermissionDto,
+  ) {
+    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
+    if (!role || role.tenantId !== tenantId) {
+      throw new NotFoundException(`Role ${roleId} not found`);
+    }
+    if (role.code === 'ROOT') {
+      throw new ForbiddenException('Cannot modify ROOT permissions');
+    }
+    const permission = await this.prisma.permission.findUnique({
+      where: { code: dto.permissionCode },
+    });
+    if (!permission) {
+      throw new NotFoundException(`Permission ${dto.permissionCode} not found`);
+    }
+    // Permisos admin:tenants:manage están reservados para ROOT
+    if (permission.code === 'admin:tenants:manage') {
+      throw new ForbiddenException('admin:tenants:manage is ROOT-only');
+    }
+
+    if (dto.enabled) {
+      await this.prisma.rolePermission.upsert({
+        where: {
+          roleId_permissionId: { roleId, permissionId: permission.id },
+        },
+        update: {},
+        create: { roleId, permissionId: permission.id },
+      });
+    } else {
+      await this.prisma.rolePermission.deleteMany({
+        where: { roleId, permissionId: permission.id },
+      });
+    }
+
+    this.permissionsCache.invalidate(roleId);
+    return { ok: true };
+  }
+
+  async deleteRole(tenantId: string, roleId: string) {
+    const role = await this.prisma.role.findUnique({
+      where: { id: roleId },
+      include: { _count: { select: { users: true } } },
+    });
+    if (!role || role.tenantId !== tenantId) {
+      throw new NotFoundException(`Role ${roleId} not found`);
+    }
+    if (role.isSystem) {
+      throw new ForbiddenException('Cannot delete a system role');
+    }
+    if (role._count.users > 0) {
+      throw new UnprocessableEntityException(
+        'Cannot delete role with users assigned',
+      );
+    }
+    await this.prisma.role.delete({ where: { id: roleId } });
+    this.permissionsCache.invalidate(roleId);
+    return { ok: true };
+  }
+}
