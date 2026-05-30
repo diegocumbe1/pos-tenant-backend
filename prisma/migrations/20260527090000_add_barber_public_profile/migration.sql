@@ -1,0 +1,20 @@
+-- AlterTable
+ALTER TABLE "barber_settings"
+    ADD COLUMN "neighborhood" TEXT,
+    ADD COLUMN "whatsapp" TEXT,
+    ADD COLUMN "publicProfilePublished" BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN "themeInkColor" TEXT NOT NULL DEFAULT '#0f172a',
+    ADD COLUMN "heroImageUrl" TEXT,
+    ADD COLUMN "shortName" TEXT,
+    ADD COLUMN "tagline" TEXT,
+    ADD COLUMN "eyebrow" TEXT,
+    ADD COLUMN "description" TEXT,
+    ADD COLUMN "highlights" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    ADD COLUMN "stats" JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN "galleryImages" JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN "socialInstagram" TEXT,
+    ADD COLUMN "socialFacebook" TEXT,
+    ADD COLUMN "socialTiktok" TEXT,
+    ADD COLUMN "socialWebsite" TEXT,
+    ADD COLUMN "instagramProfileUrl" TEXT,
+    ADD COLUMN "instagramPosts" TEXT[] DEFAULT ARRAY[]::TEXT[];

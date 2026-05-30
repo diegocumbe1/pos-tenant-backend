@@ -7,6 +7,7 @@ import { PasswordSetGuard } from './guards/password-set.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { TenantGuard } from './guards/tenant.guard';
 import { JwtStrategy } from './jwt.strategy';
+import { AuthService } from './services/auth.service';
 import { PermissionsCacheService } from './services/permissions-cache.service';
 
 @Global()
@@ -14,6 +15,7 @@ import { PermissionsCacheService } from './services/permissions-cache.service';
   imports: [PassportModule.register({ defaultStrategy: 'jwt' }), AdminModule],
   controllers: [AuthController],
   providers: [
+    AuthService,
     JwtStrategy,
     JwtAuthGuard,
     TenantGuard,

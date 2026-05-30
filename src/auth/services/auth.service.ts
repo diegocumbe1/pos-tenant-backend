@@ -1,0 +1,654 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Session, User as SupabaseUser } from '@supabase/supabase-js';
+import { randomUUID } from 'crypto';
+import { performance } from 'perf_hooks';
+import { AdminService } from '../../admin/admin.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseService } from '../../supabase/supabase.service';
+import {
+  AcceptInviteDto,
+  InviteUserDto,
+  SignupInviteDto,
+} from '../dto/invite-user.dto';
+import { LoginDto } from '../dto/login.dto';
+import { RecoverPasswordDto } from '../dto/recover-password.dto';
+import { ResetPasswordDto } from '../dto/reset-password.dto';
+import {
+  defaultMenuTheme,
+  elapsedMs,
+  isMenuSlugReserved,
+  normalizeVertical,
+  slugify,
+} from '../helpers/auth-helpers';
+import { SupabaseJwtPayload } from '../types/jwt-payload.interface';
+import { AuthenticatedUser } from '../types/tenant-context.interface';
+import { PermissionsCacheService } from './permissions-cache.service';
+
+type LoginProfileRow = {
+  id: string;
+  email: string;
+  name: string;
+  isActive: boolean;
+  passwordSetAt: Date | null;
+  tenantId: string | null;
+  tenant: {
+    id: string;
+    name: string;
+    plan: string;
+    vertical?: { code: string } | null;
+  } | null;
+  role: {
+    id: string;
+    code: string;
+    name: string;
+    isSystem: boolean;
+  } | null;
+  userBranches: Array<{
+    branch: { id: string; name: string; tenantId: string };
+  }>;
+};
+
+type BranchProfile = {
+  id: string;
+  name: string;
+  tenantId: string;
+  isActive: boolean;
+};
+
+type TenantProfile = {
+  id: string;
+  name: string;
+  slug: string;
+  vertical: string | null;
+  plan: string;
+};
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly supabase: SupabaseService,
+    private readonly permissionsCache: PermissionsCacheService,
+    private readonly adminService: AdminService,
+  ) {}
+
+  async inviteUser(dto: InviteUserDto) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: dto.tenantId },
+      select: { id: true, name: true },
+    });
+
+    if (!tenant) {
+      throw new BadRequestException('Tenant not found');
+    }
+
+    const role = await this.prisma.role.findFirst({
+      where: {
+        code: dto.roleCode,
+        OR: [{ tenantId: dto.tenantId }, { isSystem: true }],
+      },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        tenantId: true,
+        isSystem: true,
+      },
+    });
+
+    if (!role) {
+      throw new BadRequestException('Role not found for tenant');
+    }
+
+    const existingUser = await this.prisma.user.findFirst({
+      where: { OR: [{ email: dto.email }, { name: dto.name }] },
+      select: { id: true, email: true },
+    });
+
+    if (existingUser) {
+      throw new BadRequestException('User already exists');
+    }
+
+    const redirectTo = this.supabase.inviteRedirectUrl;
+
+    await this.supabase.inviteUserByEmail(dto.email, {
+      redirectTo,
+      data: {
+        name: dto.name,
+        tenantId: dto.tenantId,
+        roleCode: dto.roleCode,
+      },
+    });
+
+    return {
+      ok: true,
+      message: 'Invitation sent successfully',
+      email: dto.email,
+      tenant,
+      role,
+      redirectTo,
+    };
+  }
+
+  async signupInvite(dto: SignupInviteDto) {
+    const email = dto.email.trim().toLowerCase();
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('User already exists');
+    }
+
+    const verticalCode = normalizeVertical(dto.vertical);
+    const planCode = dto.plan ?? 'BASIC';
+
+    const vertical = await this.prisma.businessVertical.findUnique({
+      where: { code: verticalCode },
+      include: {
+        plans: {
+          where: {
+            isActive: true,
+            plan: { code: planCode, isActive: true },
+          },
+          include: { plan: true },
+        },
+      },
+    });
+
+    if (!vertical || !vertical.isActive) {
+      throw new BadRequestException(`Vertical not available: ${dto.vertical}`);
+    }
+
+    const selectedPlan = vertical.plans[0]?.plan;
+    if (!selectedPlan) {
+      throw new BadRequestException(
+        `Plan ${planCode} is not available for vertical ${verticalCode}`,
+      );
+    }
+
+    const tenantId = `tenant-${randomUUID().slice(0, 8)}`;
+    const branchId = `branch-${randomUUID().slice(0, 8)}`;
+    const businessName =
+      dto.businessName?.trim() || `Negocio de ${dto.name.trim()}`;
+    const branchName = dto.branchName?.trim() || 'Sucursal Principal';
+    const menuSlug = await this.nextAvailableMenuSlug(slugify(businessName));
+
+    const tenant = await this.prisma.$transaction(async (tx) => {
+      const createdTenant = await tx.tenant.create({
+        data: {
+          id: tenantId,
+          name: businessName,
+          plan: selectedPlan.code,
+          verticalId: vertical.id,
+          planId: selectedPlan.id,
+        },
+      });
+
+      await tx.branch.create({
+        data: { id: branchId, tenantId, name: branchName },
+      });
+
+      await tx.menuPublicConfig.create({
+        data: {
+          tenantId,
+          branchId,
+          slug: menuSlug,
+          isPublished: false,
+          showPrices: true,
+          showDescription: true,
+          showImages: true,
+          showUnavailable: false,
+          showFeaturedBadge: true,
+          showRatings: false,
+          showSavedCount: false,
+          featuredProductIds: [],
+          categoryOrder: [],
+          ...defaultMenuTheme(businessName),
+        },
+      });
+
+      return createdTenant;
+    });
+
+    await this.adminService.seedSystemRolesForTenant(tenantId);
+
+    const ownerRole = await this.prisma.role.findUniqueOrThrow({
+      where: { tenantId_code: { tenantId, code: 'OWNER' } },
+      select: { id: true, code: true, name: true },
+    });
+
+    const redirectTo = this.supabase.inviteRedirectUrl;
+    const supabaseUser = await this.supabase.inviteUserByEmail(email, {
+      redirectTo,
+      data: {
+        name: dto.name,
+        tenantId,
+        branchId,
+        roleCode: 'OWNER',
+        roleId: ownerRole.id,
+        vertical: vertical.code,
+        plan: selectedPlan.code,
+      },
+    });
+
+    await this.prisma.user.create({
+      data: {
+        id: supabaseUser.id,
+        tenantId,
+        email,
+        name: dto.name,
+        roleId: ownerRole.id,
+        invitedAt: new Date(),
+        userBranches: { create: [{ branchId }] },
+      },
+    });
+
+    return {
+      ok: true,
+      message: 'Signup invitation sent successfully',
+      email,
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        vertical: vertical.code,
+        plan: selectedPlan.code,
+        menuSlug,
+      },
+      branch: { id: branchId, name: branchName },
+      owner: {
+        id: supabaseUser.id,
+        email,
+        role: ownerRole.code,
+        status: 'INVITED',
+      },
+      redirectTo,
+    };
+  }
+
+  async getCurrentProfile(
+    authUser: AuthenticatedUser,
+    timings: Record<string, number> = {},
+  ) {
+    const profileStart = performance.now();
+    const user = await this.loadLoginProfile(authUser.id);
+    timings.profile = elapsedMs(profileStart);
+
+    if (!user) throw new UnauthorizedException('User not found');
+    if (!user.role) throw new UnauthorizedException('User role not found');
+
+    const permissionsStart = performance.now();
+    const permissions = authUser.isRoot
+      ? null
+      : await this.permissionsCache.getForRole(authUser.roleId);
+    timings.permissions = elapsedMs(permissionsStart);
+
+    const branchesStart = performance.now();
+    const branches = await this.resolveAccessibleBranches(user);
+    timings.branches = elapsedMs(branchesStart);
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isActive: user.isActive,
+      passwordSet: !!user.passwordSetAt,
+      tenant: this.toTenantProfile(user.tenant),
+      role: user.role,
+      isRoot: authUser.isRoot,
+      permissions: authUser.isRoot
+        ? ['*']
+        : [...(permissions ?? new Set<string>())],
+      branches,
+    };
+  }
+
+  async login(dto: LoginDto, timings: Record<string, number> = {}) {
+    const authStart = performance.now();
+    const { session, user: authUser } = await this.supabase.signInWithPassword(
+      dto.email,
+      dto.password,
+    );
+    timings.auth = elapsedMs(authStart);
+
+    const response = await this.buildLoginResponse(
+      authUser.id,
+      session,
+      authUser,
+      timings,
+    );
+
+    this.logger.log(
+      `login email=${dto.email} userId=${authUser.id} auth=${timings.auth.toFixed(1)}ms`,
+    );
+
+    return response;
+  }
+
+  async recoverPassword(dto: RecoverPasswordDto) {
+    const redirectTo = this.supabase.recoveryRedirectUrl;
+    await this.supabase.sendPasswordRecoveryEmail(dto.email, redirectTo);
+    return {
+      ok: true,
+      message: 'Password recovery email sent successfully',
+      email: dto.email,
+      redirectTo,
+    };
+  }
+
+  async resetPassword(
+    authUser: AuthenticatedUser | undefined,
+    authPayload: SupabaseJwtPayload | undefined,
+    dto: ResetPasswordDto,
+  ) {
+    const userId = authUser?.id ?? authPayload?.sub;
+    if (!userId) {
+      throw new UnauthorizedException('Missing authenticated user in request');
+    }
+
+    await this.supabase.setPassword(userId, dto.newPassword);
+    await this.prisma.user.updateMany({
+      where: { id: userId, passwordSetAt: null },
+      data: { passwordSetAt: new Date() },
+    });
+
+    return { ok: true, userId };
+  }
+
+  async acceptInvite(
+    authUser: AuthenticatedUser | undefined,
+    authPayload: SupabaseJwtPayload | undefined,
+    dto: AcceptInviteDto,
+  ) {
+    const userId = authUser?.id ?? authPayload?.sub;
+    if (!userId) {
+      throw new UnauthorizedException('Missing authenticated user in request');
+    }
+    if (authUser?.passwordSetAt) {
+      throw new BadRequestException('Password already set');
+    }
+
+    const user = await this.ensureLocalUserForInvitation(
+      userId,
+      authUser,
+      authPayload,
+    );
+    if (user.passwordSetAt) {
+      throw new BadRequestException('Password already set');
+    }
+
+    await this.supabase.setPassword(user.id, dto.password);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordSetAt: new Date() },
+    });
+
+    const { session, user: sessionUser } =
+      await this.supabase.signInWithPassword(user.email, dto.password);
+
+    return this.buildLoginResponse(user.id, session, sessionUser);
+  }
+
+  private async buildLoginResponse(
+    userId: string,
+    session: Session,
+    authUser: SupabaseUser,
+    timings: Record<string, number> = {},
+  ) {
+    const profileStart = performance.now();
+    const user = await this.loadLoginProfile(userId);
+    timings.profile = elapsedMs(profileStart);
+
+    if (!user) {
+      throw new UnauthorizedException(
+        'User not provisioned — complete invitation flow',
+      );
+    }
+    if (!user.role) {
+      throw new UnauthorizedException('User role not found');
+    }
+
+    const branchesStart = performance.now();
+    const branches = await this.resolveAccessibleBranches(user);
+    timings.branches = elapsedMs(branchesStart);
+
+    const permissionsStart = performance.now();
+    const isRoot = user.role.code === 'ROOT';
+    const permissions = isRoot
+      ? null
+      : await this.permissionsCache.getForRole(user.role.id);
+    timings.permissions = elapsedMs(permissionsStart);
+
+    return {
+      ok: true,
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: session.expires_at,
+      expires_in: session.expires_in,
+      token_type: session.token_type,
+      user: { id: authUser.id, email: authUser.email },
+      profile: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        isActive: user.isActive,
+        passwordSet: !!user.passwordSetAt,
+        tenant: this.toTenantProfile(user.tenant),
+        role: user.role,
+        isRoot,
+        permissions: isRoot ? ['*'] : [...(permissions ?? new Set<string>())],
+        branches,
+      },
+    };
+  }
+
+  private async loadLoginProfile(
+    userId: string,
+  ): Promise<LoginProfileRow | null> {
+    const rows = await this.prisma.$queryRaw<LoginProfileRow[]>`
+      SELECT
+        u.id,
+        u.email,
+        u.name,
+        u."isActive",
+        u."passwordSetAt",
+        u."tenantId",
+        CASE
+          WHEN t.id IS NULL THEN NULL
+          ELSE json_build_object(
+            'id', t.id,
+            'name', t.name,
+            'plan', t.plan,
+            'vertical', CASE
+              WHEN v.id IS NULL THEN NULL
+              ELSE json_build_object('code', v.code)
+            END
+          )
+        END AS tenant,
+        CASE
+          WHEN r.id IS NULL THEN NULL
+          ELSE json_build_object(
+            'id', r.id,
+            'code', r.code,
+            'name', r.name,
+            'isSystem', r."isSystem"
+          )
+        END AS role,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'branch',
+              json_build_object('id', b.id, 'name', b.name, 'tenantId', b."tenantId")
+            )
+          ) FILTER (WHERE b.id IS NOT NULL),
+          '[]'::json
+        ) AS "userBranches"
+      FROM users u
+      LEFT JOIN tenants t ON t.id = u."tenantId"
+      LEFT JOIN business_verticals v ON v.id = t."verticalId"
+      LEFT JOIN roles r ON r.id = u."roleId"
+      LEFT JOIN user_branches ub ON ub."userId" = u.id
+      LEFT JOIN branches b ON b.id = ub."branchId"
+      WHERE u.id = ${userId}
+      GROUP BY u.id, t.id, v.id, r.id
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  }
+
+  private async resolveAccessibleBranches(user: {
+    tenantId: string | null;
+    role: { code: string } | null;
+    userBranches: Array<{
+      branch: { id: string; name: string; tenantId: string };
+    }>;
+  }): Promise<BranchProfile[]> {
+    const assignedBranches = user.userBranches.map((ub) =>
+      this.toBranchProfile(ub.branch),
+    );
+
+    if (
+      assignedBranches.length > 0 ||
+      !user.tenantId ||
+      !user.role ||
+      user.role.code !== 'OWNER'
+    ) {
+      return assignedBranches;
+    }
+
+    const tenantBranches = await this.prisma.branch.findMany({
+      where: { tenantId: user.tenantId },
+      select: { id: true, name: true, tenantId: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return tenantBranches.map((branch) => this.toBranchProfile(branch));
+  }
+
+  private toTenantProfile(
+    tenant: {
+      id: string;
+      name: string;
+      plan: string;
+      vertical?: { code: string } | null;
+    } | null,
+  ): TenantProfile | null {
+    if (!tenant) return null;
+    return {
+      id: tenant.id,
+      name: tenant.name,
+      slug: slugify(tenant.name),
+      vertical: tenant.vertical?.code ?? null,
+      plan: tenant.plan,
+    };
+  }
+
+  private toBranchProfile(branch: {
+    id: string;
+    name: string;
+    tenantId: string;
+  }): BranchProfile {
+    return { ...branch, isActive: true };
+  }
+
+  private async ensureLocalUserForInvitation(
+    userId: string,
+    authUser?: AuthenticatedUser,
+    authPayload?: SupabaseJwtPayload,
+  ) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        role: true,
+        userBranches: { select: { branchId: true } },
+      },
+    });
+    if (existingUser) return existingUser;
+
+    if (!authPayload?.email) {
+      throw new UnauthorizedException('Missing email in token payload');
+    }
+
+    const metadata = {
+      ...(authPayload.app_metadata ?? {}),
+      ...(authPayload.user_metadata ?? {}),
+    } as Record<string, unknown>;
+
+    const tenantId = String(metadata.tenantId ?? '');
+    const roleCode = String(metadata.roleCode ?? '');
+    const branchId = String(metadata.branchId ?? '');
+    const name = String(
+      metadata.name ?? authPayload.email.split('@')[0] ?? 'User',
+    );
+
+    if (!tenantId) {
+      throw new UnauthorizedException('Missing tenantId in token metadata');
+    }
+    if (!roleCode) {
+      throw new UnauthorizedException('Missing roleCode in token metadata');
+    }
+
+    const [tenant, role] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true },
+      }),
+      this.prisma.role.findFirst({
+        where: {
+          code: roleCode,
+          OR: [{ tenantId }, { isSystem: true }],
+        },
+        select: { id: true, code: true },
+      }),
+    ]);
+
+    if (!tenant) {
+      throw new UnauthorizedException(
+        'Tenant from token metadata was not found',
+      );
+    }
+    if (!role) {
+      throw new UnauthorizedException('Role from token metadata was not found');
+    }
+
+    return this.prisma.user.create({
+      data: {
+        id: userId,
+        email: authPayload.email,
+        name,
+        tenantId: tenant.id,
+        roleId: role.id,
+        isActive: true,
+        passwordSetAt: authUser?.passwordSetAt ?? null,
+        userBranches: branchId ? { create: [{ branchId }] } : undefined,
+      },
+      include: {
+        role: true,
+        userBranches: { select: { branchId: true } },
+      },
+    });
+  }
+
+  private async nextAvailableMenuSlug(baseSlug: string): Promise<string> {
+    const base = baseSlug || 'menu';
+    for (let index = 0; index < 100; index += 1) {
+      const slug = index === 0 ? base : `${base}-${index + 1}`;
+      if (isMenuSlugReserved(slug)) continue;
+
+      const existing = await this.prisma.menuPublicConfig.findUnique({
+        where: { slug },
+        select: { id: true },
+      });
+      if (!existing) return slug;
+    }
+    throw new ConflictException('Could not generate available menu slug');
+  }
+}

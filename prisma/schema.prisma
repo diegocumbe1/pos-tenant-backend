@@ -45,6 +45,7 @@ model Tenant {
   barberStaff      BarberStaff[]
   barberCustomers  BarberCustomer[]
   barberAppointments BarberAppointment[]
+  publicSites PublicSite[]
 
   @@index([plan])
   @@index([verticalId])
@@ -124,6 +125,7 @@ model Branch {
   barberStaff    BarberStaff[]
   barberCustomers BarberCustomer[]
   barberAppointments BarberAppointment[]
+  publicSites PublicSite[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -140,27 +142,211 @@ model BarberSettings {
   branch               Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
   phone                String?
   city                 String?
+  neighborhood         String?
+  whatsapp             String?
   timezone             String   @default("America/Bogota")
   currency             String   @default("COP")
   logoUrl              String?
   bookingSlug          String   @unique
   onlineBookingEnabled Boolean  @default(true)
+  publicProfilePublished Boolean @default(true)
   whatsappEnabled      Boolean  @default(false)
   loyaltyEnabled       Boolean  @default(false)
   themeTemplateId      String   @default("studio")
   themePrimaryColor    String   @default("#6366f1")
   themeAccentColor     String   @default("#22c55e")
+  themeInkColor        String   @default("#0f172a")
   themeLogoMode        String?  @default("initials")
   themeLogoImageUrl    String?
   themeBannerImageUrl  String?
+  heroImageUrl         String?
   heroTitle            String?
   heroDescription      String?
+  shortName            String?
+  tagline              String?
+  eyebrow              String?
+  description          String?
+  highlights           String[] @default([])
+  stats                Json     @default("[]")
+  galleryImages        Json     @default("[]")
+  socialInstagram      String?
+  socialFacebook       String?
+  socialTiktok         String?
+  socialWebsite        String?
+  instagramProfileUrl  String?
+  instagramPosts       String[] @default([])
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
   @@unique([branchId])
   @@index([tenantId])
   @@map("barber_settings")
+}
+
+model PublicSite {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId    String
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  slug        String    @unique
+  publishedSlug String?
+  status      String    @default("draft")
+  vertical    String    @default("barber")
+  publishedAt DateTime?
+  publishedByUserId String?
+  draftPayload Json @default("{}")
+  publishedPayload Json?
+
+  seoTitle       String?
+  seoDescription String?
+  ogImageUrl     String?
+
+  themePrimary    String @default("#6366f1")
+  themeAccent     String @default("#22c55e")
+  themeInk        String @default("#0f172a")
+  themeBackground String @default("#ffffff")
+  themeSurface    String @default("#f8fafc")
+  themeRadius     String @default("md")
+
+  shortName    String?
+  neighborhood String?
+  city         String?
+  phone        String?
+  whatsapp     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sections       PublicSiteSection[]
+  assets         PublicSiteAsset[]
+  socialLinks    PublicSiteSocialLink[]
+  instagramPosts PublicSiteInstagramPost[]
+  stats          PublicSiteStat[]
+  highlights     PublicSiteHighlight[]
+
+  @@unique([branchId])
+  @@index([tenantId])
+  @@index([branchId, status])
+  @@index([slug, status])
+  @@map("public_sites")
+}
+
+model PublicSiteSection {
+  id        String           @id @default(cuid())
+  siteId    String
+  site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  type      String
+  isVisible Boolean          @default(true)
+  sortOrder Int              @default(0)
+  width     String           @default("contained")
+  density   String           @default("comfortable")
+
+  title     String?
+  eyebrow   String?
+  subtitle  String?
+  body      String?
+  ctaLabel  String?
+  ctaAction String?
+  ctaHref   String?
+  assetIds  String[] @default([])
+  settings  Json     @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, sortOrder])
+  @@index([siteId, type])
+  @@map("public_site_sections")
+}
+
+model PublicSiteAsset {
+  id         String           @id @default(cuid())
+  siteId     String
+  site       PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  kind       String
+  url        String
+  path       String?
+  bucket     String?
+  alt        String
+  width      Int?
+  height     Int?
+  fit        String           @default("cover")
+  focalPoint String           @default("center")
+  isVisible  Boolean          @default(true)
+  sortOrder  Int              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, kind])
+  @@index([siteId, sortOrder])
+  @@map("public_site_assets")
+}
+
+model PublicSiteSocialLink {
+  id        String           @id @default(cuid())
+  siteId    String
+  site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  provider  String
+  label     String
+  url       String
+  isVisible Boolean          @default(true)
+  sortOrder Int              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([siteId, provider])
+  @@index([siteId, sortOrder])
+  @@map("public_site_social_links")
+}
+
+model PublicSiteInstagramPost {
+  id        String           @id @default(cuid())
+  siteId    String
+  site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  url       String
+  kind      String
+  isVisible Boolean          @default(true)
+  sortOrder Int              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, sortOrder])
+  @@map("public_site_instagram_posts")
+}
+
+model PublicSiteStat {
+  id        String           @id @default(cuid())
+  siteId    String
+  site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  label     String
+  value     String
+  isVisible Boolean          @default(true)
+  sortOrder Int              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, sortOrder])
+  @@map("public_site_stats")
+}
+
+model PublicSiteHighlight {
+  id        String           @id @default(cuid())
+  siteId    String
+  site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  label     String
+  isVisible Boolean          @default(true)
+  sortOrder Int              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, sortOrder])
+  @@map("public_site_highlights")
 }
 
 model BarberService {

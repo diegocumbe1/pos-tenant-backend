@@ -16,7 +16,7 @@ import {
   TogglePermissionDto,
   UpdateRoleDto,
 } from './dto/role.dto';
-import { InviteUserDto, UpdateUserDto } from './dto/user.dto';
+import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
 
 @Injectable()
 export class TenantAdminService {
@@ -81,7 +81,7 @@ export class TenantAdminService {
     }));
   }
 
-  async inviteUser(tenantId: string, dto: InviteUserDto) {
+  async inviteUser(tenantId: string, dto: TenantInviteUserDto) {
     // Validar rol pertenece al tenant
     const role = await this.prisma.role.findUnique({ where: { id: dto.roleId } });
     if (!role || role.tenantId !== tenantId) {

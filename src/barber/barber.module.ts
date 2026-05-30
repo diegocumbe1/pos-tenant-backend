@@ -1,9 +1,21 @@
 import { Module } from '@nestjs/common';
-import { BarberController } from './barber.controller';
-import { BarberService } from './barber.service';
+import { BarberAppointmentsModule } from './modules/appointments/barber-appointments.module';
+import { BarberCustomersModule } from './modules/customers/barber-customers.module';
+import { BarberPublicModule } from './modules/public/barber-public.module';
+import { PublicSiteModule } from './modules/public-site/barber-public-site.module';
+import { BarberServicesModule } from './modules/services/barber-services.module';
+import { BarberSettingsModule } from './modules/settings/barber-settings.module';
+import { BarberStaffModule } from './modules/staff/barber-staff.module';
 
 @Module({
-  controllers: [BarberController],
-  providers: [BarberService],
+  imports: [
+    BarberSettingsModule,
+    BarberServicesModule,
+    BarberStaffModule,
+    BarberCustomersModule,
+    BarberAppointmentsModule,
+    PublicSiteModule,
+    BarberPublicModule,
+  ],
 })
 export class BarberModule {}

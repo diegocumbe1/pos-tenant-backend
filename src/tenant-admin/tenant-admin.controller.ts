@@ -22,7 +22,7 @@ import {
   TogglePermissionDto,
   UpdateRoleDto,
 } from './dto/role.dto';
-import { InviteUserDto, UpdateUserDto } from './dto/user.dto';
+import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
 import { TenantAdminService } from './tenant-admin.service';
 
 @ApiTags('TenantAdmin')
@@ -61,7 +61,10 @@ export class TenantAdminController {
 
   @Post('users/invite')
   @RequirePermissions('admin:users:invite')
-  inviteUser(@CurrentTenant() ctx: TenantContext, @Body() dto: InviteUserDto) {
+  inviteUser(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: TenantInviteUserDto,
+  ) {
     return this.service.inviteUser(ctx.tenantId, dto);
   }
 

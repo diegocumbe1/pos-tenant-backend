@@ -7,7 +7,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-export class InviteUserDto {
+export class TenantInviteUserDto {
   @IsEmail()
   email!: string;
 

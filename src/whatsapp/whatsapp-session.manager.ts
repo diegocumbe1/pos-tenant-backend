@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as QRCode from 'qrcode';
@@ -21,6 +21,7 @@ interface SessionState {
   phoneNumber?: string;
   lastError?: string;
   initializeTimeout?: NodeJS.Timeout;
+  readyTimeout?: NodeJS.Timeout;
 }
 
 const sessionKey = (tenantId: string, branchId: string) => `${tenantId}:${branchId}`;
@@ -36,6 +37,8 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     ? path.resolve(process.env.WA_SESSION_DIR)
     : path.resolve(process.cwd(), '.wa-sessions');
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
+  private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
+  private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 1);
 
   constructor(private readonly events: EventEmitter2) {}
 
@@ -86,6 +89,10 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       chromiumExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
       headless: (process.env.WA_PUPPETEER_HEADLESS ?? 'true') !== 'false',
       pairTimeoutMs: this.pairTimeoutMs,
+      readyTimeoutMs: this.readyTimeoutMs,
+      maxActiveSessions: this.maxActiveSessions,
+      activeSessions: this.sessions.size,
+      memory: process.memoryUsage(),
     };
   }
 
@@ -111,6 +118,12 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       await this.destroyClient(key, existing);
     }
 
+    if (this.sessions.size >= this.maxActiveSessions) {
+      throw new ConflictException(
+        `WhatsApp pairing is already active for another tenant/branch. Max active sessions: ${this.maxActiveSessions}`,
+      );
+    }
+
     fs.mkdirSync(this.dataPath, { recursive: true });
 
     const headless = (process.env.WA_PUPPETEER_HEADLESS ?? 'true') !== 'false';
@@ -122,6 +135,7 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       puppeteer: {
         headless,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+        timeout: Number(process.env.WA_PUPPETEER_TIMEOUT_MS ?? 60000),
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -134,6 +148,8 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
           '--disable-sync',
           '--no-first-run',
           '--no-zygote',
+          '--renderer-process-limit=1',
+          '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,site-per-process',
         ],
       },
     });
@@ -176,38 +192,41 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
 
     client.on('authenticated', () => {
       this.clearInitializeTimeout(state);
+      this.startReadyTimeout(key, tenantId, branchId, state);
       state.status = 'authenticated';
       state.qrDataUrl = undefined;
       this.emit(tenantId, branchId, state);
     });
 
     client.on('ready', () => {
-      this.clearInitializeTimeout(state);
+      this.clearTimeouts(state);
       state.status = 'ready';
       state.phoneNumber = client.info?.wid?.user;
       this.emit(tenantId, branchId, state);
     });
 
     client.on('auth_failure', (msg) => {
-      this.clearInitializeTimeout(state);
+      this.clearTimeouts(state);
       state.status = 'error';
       state.lastError = msg;
       this.emit(tenantId, branchId, state);
     });
 
     client.on('disconnected', (reason) => {
-      this.clearInitializeTimeout(state);
+      this.clearTimeouts(state);
       state.status = 'disconnected';
       state.lastError = reason;
       this.emit(tenantId, branchId, state);
     });
 
-    client.initialize().catch((err) => {
-      this.clearInitializeTimeout(state);
-      this.logger.error(`initialize() failed for ${key}: ${(err as Error).message}`);
-      state.status = 'error';
-      state.lastError = (err as Error).message;
-      this.emit(tenantId, branchId, state);
+    setImmediate(() => {
+      client.initialize().catch((err) => {
+        this.clearTimeouts(state);
+        this.logger.error(`initialize() failed for ${key}: ${(err as Error).message}`);
+        state.status = 'error';
+        state.lastError = (err as Error).message;
+        this.emit(tenantId, branchId, state);
+      });
     });
 
     return { status: state.status };
@@ -248,13 +267,42 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     state.initializeTimeout = undefined;
   }
 
+  private clearReadyTimeout(state: SessionState) {
+    if (!state.readyTimeout) return;
+    clearTimeout(state.readyTimeout);
+    state.readyTimeout = undefined;
+  }
+
+  private clearTimeouts(state: SessionState) {
+    this.clearInitializeTimeout(state);
+    this.clearReadyTimeout(state);
+  }
+
+  private startReadyTimeout(
+    key: string,
+    tenantId: string,
+    branchId: string,
+    state: SessionState,
+  ) {
+    this.clearReadyTimeout(state);
+    state.readyTimeout = setTimeout(() => {
+      if (state.status !== 'authenticated') return;
+      this.logger.warn(`Ready timed out for ${key} after ${this.readyTimeoutMs}ms`);
+      state.status = 'error';
+      state.lastError =
+        'WhatsApp was authenticated but did not become ready before timeout. The browser was closed to avoid memory exhaustion.';
+      this.emit(tenantId, branchId, state);
+      void this.destroyClient(key, state, { remove: false });
+    }, this.readyTimeoutMs);
+  }
+
   private async destroyClient(
     key: string,
     state: SessionState,
     options: { logout?: boolean; remove?: boolean } = {},
   ) {
     const { logout = false, remove = true } = options;
-    this.clearInitializeTimeout(state);
+    this.clearTimeouts(state);
     if (logout) {
       try {
         await state.client.logout();
