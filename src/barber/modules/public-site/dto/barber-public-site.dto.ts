@@ -270,7 +270,7 @@ export class UploadPublicSiteAssetDto {
 }
 
 export class CreatePublicSiteAssetFromUrlDto extends UploadPublicSiteAssetDto {
-  @IsUrl({ protocols: ['https'], require_protocol: true })
+  @Matches(/^(https?:\/\/[^\s]+|data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+)$/)
   url!: string;
 }
 
