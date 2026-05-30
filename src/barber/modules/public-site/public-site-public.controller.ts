@@ -23,4 +23,10 @@ export class PublicSitePublicController {
   getCatalog(@Param('slug') slug: string) {
     return this.publicSiteService.getPublicCatalogBySlug(slug);
   }
+
+  @Get(':slug/services')
+  @Header('Cache-Control', 'public, max-age=60')
+  getServices(@Param('slug') slug: string) {
+    return this.publicSiteService.getPublicServicesBySlug(slug);
+  }
 }

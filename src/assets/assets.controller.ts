@@ -2,12 +2,14 @@ import {
   Body,
   Controller,
   Delete,
+  Param,
   Post,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -20,7 +22,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantGuard } from '../auth/guards/tenant.guard';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { AssetsService } from './assets.service';
-import { DeleteAssetDto, UploadAssetDto } from './dto/upload-asset.dto';
+import {
+  DeleteAssetDto,
+  UploadAssetDto,
+  UploadCatalogImagesDto,
+} from './dto/upload-asset.dto';
 
 type UploadedAssetFile = {
   buffer?: Buffer;
@@ -58,6 +64,44 @@ export class AssetsController {
     @UploadedFile() file: unknown,
   ) {
     return this.assetsService.upload(ctx, dto, file as UploadedAssetFile);
+  }
+
+  @Post('catalog/:itemType/:itemId/images')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['images'],
+      properties: {
+        images: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+        },
+        mode: {
+          type: 'string',
+          enum: ['append', 'replace'],
+          default: 'append',
+        },
+      },
+    },
+  })
+  @UseInterceptors(
+    FilesInterceptor('images', 10, { limits: { fileSize: 5_242_880 } }),
+  )
+  uploadCatalogImages(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('itemType') itemType: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UploadCatalogImagesDto,
+    @UploadedFiles() files: unknown,
+  ) {
+    return this.assetsService.uploadCatalogImages(
+      ctx,
+      itemType,
+      itemId,
+      dto,
+      files as UploadedAssetFile[],
+    );
   }
 
   @Delete()

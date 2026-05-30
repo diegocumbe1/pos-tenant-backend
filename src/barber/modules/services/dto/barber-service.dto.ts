@@ -29,6 +29,10 @@ export class CreateBarberServiceDto {
   color?: string;
 
   @IsOptional()
+  @IsString({ each: true })
+  imageUrls?: string[];
+
+  @IsOptional()
   @IsInt()
   sortOrder?: number;
 }
@@ -56,6 +60,10 @@ export class UpdateBarberServiceDto {
   @IsOptional()
   @IsString()
   color?: string;
+
+  @IsOptional()
+  @IsString({ each: true })
+  imageUrls?: string[];
 
   @IsOptional()
   @IsBoolean()

@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseService } from '../supabase/supabase.service';
+import { ChangeUserEmailDto } from './dto/change-user-email.dto';
 import { CleanupTenantByEmailDto } from './dto/cleanup-tenant-by-email.dto';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
@@ -329,6 +330,95 @@ export class AdminService {
       tenant,
       deleted,
       supabase: supabaseResult,
+    };
+  }
+
+  async changeUserEmail(dto: ChangeUserEmailDto) {
+    const oldEmail = dto.oldEmail.trim().toLowerCase();
+    const newEmail = dto.newEmail.trim().toLowerCase();
+
+    if (oldEmail === newEmail) {
+      throw new BadRequestException('oldEmail and newEmail are identical');
+    }
+
+    this.logger.warn(
+      `User email change requested oldEmail=${oldEmail} newEmail=${newEmail}`,
+    );
+
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: oldEmail, mode: 'insensitive' } },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        tenantId: true,
+        role: { select: { code: true } },
+      },
+    });
+    if (!user) {
+      throw new NotFoundException(`User with email ${oldEmail} not found`);
+    }
+
+    const localConflict = await this.prisma.user.findFirst({
+      where: {
+        email: { equals: newEmail, mode: 'insensitive' },
+        NOT: { id: user.id },
+      },
+      select: { id: true },
+    });
+    if (localConflict) {
+      throw new ConflictException(
+        `Email already in use locally: ${newEmail}`,
+      );
+    }
+
+    const supabaseConflictId = await this.findSupabaseUserIdByEmail(newEmail);
+    if (supabaseConflictId && supabaseConflictId !== user.id) {
+      throw new ConflictException(
+        `Email already registered in Supabase Auth: ${newEmail}`,
+      );
+    }
+
+    await this.supabase.updateUserEmail(user.id, newEmail);
+
+    try {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { email: newEmail },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Local email update failed userId=${user.id} email=${newEmail}; rolling back Supabase`,
+      );
+      try {
+        await this.supabase.updateUserEmail(user.id, oldEmail);
+      } catch (rollbackErr) {
+        const msg =
+          rollbackErr instanceof Error
+            ? rollbackErr.message
+            : String(rollbackErr);
+        this.logger.error(
+          `Supabase email rollback FAILED userId=${user.id}: ${msg}. Manual intervention required.`,
+        );
+      }
+      throw err;
+    }
+
+    this.logger.warn(
+      `User email change completed userId=${user.id} oldEmail=${oldEmail} newEmail=${newEmail}`,
+    );
+
+    return {
+      ok: true,
+      userId: user.id,
+      oldEmail,
+      newEmail,
+      user: {
+        id: user.id,
+        name: user.name,
+        tenantId: user.tenantId,
+        roleCode: user.role?.code,
+      },
     };
   }
 

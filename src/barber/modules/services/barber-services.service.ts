@@ -33,6 +33,7 @@ export class BarberServicesService {
         durationMin: dto.durationMin,
         priceCOP: dto.priceCOP,
         color: dto.color,
+        imageUrls: dto.imageUrls ?? [],
         sortOrder: dto.sortOrder,
       },
     });

@@ -131,6 +131,21 @@ export class SupabaseService {
     }
   }
 
+  async updateUserEmail(userId: string, newEmail: string) {
+    const { error } = await this.admin.auth.admin.updateUserById(userId, {
+      email: newEmail,
+      email_confirm: true,
+    });
+    if (error) {
+      this.logger.error(
+        `Failed to update email for ${userId}: ${error.message}`,
+      );
+      throw new InternalServerErrorException(
+        `Supabase updateUserEmail failed: ${error.message}`,
+      );
+    }
+  }
+
   async deleteUser(userId: string) {
     const { error } = await this.admin.auth.admin.deleteUser(userId);
     if (error) {

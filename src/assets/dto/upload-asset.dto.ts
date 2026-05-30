@@ -16,3 +16,9 @@ export class DeleteAssetDto {
   @IsString()
   path!: string;
 }
+
+export class UploadCatalogImagesDto {
+  @IsOptional()
+  @IsIn(['append', 'replace'])
+  mode?: 'append' | 'replace';
+}

@@ -360,6 +360,7 @@ model BarberService {
   durationMin Int
   priceCOP    Int
   color       String?
+  imageUrls   String[] @default([])
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())

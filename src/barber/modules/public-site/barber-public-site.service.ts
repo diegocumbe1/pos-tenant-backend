@@ -55,13 +55,14 @@ const ALLOWED_MIME_TYPES = new Map([
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const EXTERNAL_IMAGE_DOWNLOAD_TIMEOUT_MS = 8_000;
 
-const MIN_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> = {
-  logo: { width: 128, height: 128 },
-  hero: { width: 1200, height: 600 },
-  gallery: { width: 640, height: 480 },
-  background: { width: 1200, height: 600 },
-  thumbnail: { width: 320, height: 240 },
-};
+const MIN_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> =
+  {
+    logo: { width: 128, height: 128 },
+    hero: { width: 1200, height: 600 },
+    gallery: { width: 640, height: 480 },
+    background: { width: 1200, height: 600 },
+    thumbnail: { width: 320, height: 240 },
+  };
 
 const publicSiteInclude = {
   tenant: {
@@ -224,7 +225,12 @@ export class PublicSiteService {
   ) {
     const site = await this.ensureSite(ctx);
     const image = await this.downloadAndValidateImage(dto.url, dto.kind);
-    const uploaded = await this.uploadValidatedImage(ctx, site.id, dto.kind, image);
+    const uploaded = await this.uploadValidatedImage(
+      ctx,
+      site.id,
+      dto.kind,
+      image,
+    );
     const asset = await this.prisma.publicSiteAsset.create({
       data: {
         siteId: site.id,
@@ -310,7 +316,10 @@ export class PublicSiteService {
 
   async replaceSocials(ctx: TenantContext, dto: ReplacePublicSiteSocialsDto) {
     const site = await this.ensureSite(ctx);
-    this.assertUnique(dto.socials.map((social) => social.provider), 'provider');
+    this.assertUnique(
+      dto.socials.map((social) => social.provider),
+      'provider',
+    );
     dto.socials.forEach((social) =>
       this.assertSocialUrl(social.provider, social.url),
     );
@@ -553,6 +562,64 @@ export class PublicSiteService {
     };
   }
 
+  /**
+   * Live service list for a published site (barber vertical). Powers the
+   * "Servicios" + booking sections of the brochure so it always reflects the
+   * tenant's current BarberService catalog. Returns [] for verticals without
+   * barber services.
+   */
+  async getPublicServicesBySlug(slug: string) {
+    const site = await this.prisma.publicSite.findFirst({
+      where: { publishedSlug: slug, status: 'published' },
+      select: {
+        tenantId: true,
+        branchId: true,
+        tenant: {
+          select: {
+            deletedAt: true,
+            vertical: { select: { code: true, isActive: true } },
+          },
+        },
+      },
+    });
+    if (
+      !site ||
+      site.tenant.deletedAt ||
+      !this.strategies.supports(site.tenant.vertical?.code) ||
+      !site.tenant.vertical?.isActive
+    ) {
+      throw new NotFoundException(`Site ${slug} not found`);
+    }
+
+    const services = await this.prisma.barberService.findMany({
+      where: { branchId: site.branchId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        durationMin: true,
+        priceCOP: true,
+        color: true,
+        imageUrls: true,
+      },
+    });
+
+    return {
+      tenantId: site.tenantId,
+      branchId: site.branchId,
+      services: services.map((service) => ({
+        id: service.id,
+        name: service.name,
+        description: service.description ?? '',
+        durationMin: service.durationMin,
+        priceCOP: service.priceCOP,
+        color: service.color,
+        imageUrls: service.imageUrls,
+      })),
+    };
+  }
+
   async ensureSite(ctx: TenantContext): Promise<SiteWithRelations> {
     const strategy = await this.strategies.resolveForTenant(ctx.tenantId);
 
@@ -620,7 +687,8 @@ export class PublicSiteService {
       published,
       publishedAt: site.publishedAt?.toISOString() ?? null,
       updatedAt: site.updatedAt.toISOString(),
-      hasUnpublishedChanges: !published || !this.samePublishedContent(draft, published),
+      hasUnpublishedChanges:
+        !published || !this.samePublishedContent(draft, published),
     };
   }
 
@@ -790,7 +858,10 @@ export class PublicSiteService {
       const record = value as Record<string, unknown>;
       return `{${Object.keys(record)
         .sort()
-        .map((key) => `${JSON.stringify(key)}:${this.stableStringify(record[key])}`)
+        .map(
+          (key) =>
+            `${JSON.stringify(key)}:${this.stableStringify(record[key])}`,
+        )
         .join(',')}}`;
     }
     return JSON.stringify(value);
@@ -934,7 +1005,10 @@ export class PublicSiteService {
     declaredSize?: number,
   ): ValidatedImage {
     const sizeBytes = declaredSize ?? buffer.length;
-    if (sizeBytes > MAX_FILE_SIZE_BYTES || buffer.length > MAX_FILE_SIZE_BYTES) {
+    if (
+      sizeBytes > MAX_FILE_SIZE_BYTES ||
+      buffer.length > MAX_FILE_SIZE_BYTES
+    ) {
       throw new BadRequestException('Image file must be 5 MB or smaller');
     }
 
@@ -947,7 +1021,9 @@ export class PublicSiteService {
 
     const declared = declaredMimeType?.split(';')[0];
     if (declared && declared !== metadata.contentType) {
-      throw new BadRequestException('Image MIME type does not match file bytes');
+      throw new BadRequestException(
+        'Image MIME type does not match file bytes',
+      );
     }
 
     const required = MIN_IMAGE_DIMENSIONS[kind] ?? MIN_IMAGE_DIMENSIONS.gallery;
@@ -1111,7 +1187,9 @@ export class PublicSiteService {
         if (!(error instanceof ConflictException)) throw error;
       }
     }
-    throw new ConflictException('Could not generate available public site slug');
+    throw new ConflictException(
+      'Could not generate available public site slug',
+    );
   }
 
   private assertSectionRules(sections: PublicSiteSectionDto[]) {
@@ -1173,7 +1251,9 @@ export class PublicSiteService {
 
   private assertUnique(values: string[], label: string) {
     if (new Set(values).size !== values.length) {
-      throw new BadRequestException(`Duplicate ${label} values are not allowed`);
+      throw new BadRequestException(
+        `Duplicate ${label} values are not allowed`,
+      );
     }
   }
 
@@ -1189,7 +1269,10 @@ export class PublicSiteService {
       google_maps: ['maps.google.com', 'google.com', 'goo.gl'],
     };
     const domains = allowed[provider] ?? [];
-    if (domains.length > 0 && !domains.some((domain) => host.endsWith(domain))) {
+    if (
+      domains.length > 0 &&
+      !domains.some((domain) => host.endsWith(domain))
+    ) {
       throw new BadRequestException(`Invalid ${provider} URL`);
     }
   }
