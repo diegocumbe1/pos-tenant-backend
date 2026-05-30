@@ -54,6 +54,10 @@ const ALLOWED_MIME_TYPES = new Map([
 ]);
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const EXTERNAL_IMAGE_DOWNLOAD_TIMEOUT_MS = 8_000;
+const PUBLIC_SITE_TRANSACTION_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 20_000,
+};
 
 const MIN_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> =
   {
@@ -85,6 +89,7 @@ const publicSiteInclude = {
 type SiteWithRelations = Prisma.PublicSiteGetPayload<{
   include: typeof publicSiteInclude;
 }>;
+type SiteMutationTarget = Pick<SiteWithRelations, 'id' | 'slug' | 'status'>;
 
 @Injectable()
 export class PublicSiteService {
@@ -106,7 +111,7 @@ export class PublicSiteService {
   }
 
   async updateSite(ctx: TenantContext, dto: UpdatePublicSiteDto) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     const strategy = await this.strategies.resolveForTenant(ctx.tenantId);
     const shouldPublish = dto.status === 'published';
     if (dto.slug && dto.slug !== site.slug) {
@@ -148,21 +153,20 @@ export class PublicSiteService {
           phone: dto.business?.phone,
           whatsapp: dto.business?.whatsapp,
         },
-        include: this.includeRelations(),
+        select: { id: true },
       });
 
       await strategy.syncOnUpdate(tx, ctx, dto);
 
       return updatedSite;
-    });
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
 
-    await this.persistDraftPayload(updated.id);
     if (shouldPublish) return this.publish(ctx);
-    return this.getAdminSite(ctx);
+    return this.toAdminResponse(await this.persistDraftPayload(updated.id));
   }
 
   async replaceSections(ctx: TenantContext, dto: ReplacePublicSiteSectionsDto) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     this.assertSectionRules(dto.sections);
     await this.assertSectionAssetIds(site.id, dto.sections);
 
@@ -187,10 +191,9 @@ export class PublicSiteService {
           settings: (section.settings ?? {}) as Prisma.InputJsonValue,
         })),
       });
-    });
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
 
-    await this.persistDraftPayload(site.id);
-    return this.getAdminSite(ctx);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async uploadAsset(
@@ -198,7 +201,7 @@ export class PublicSiteService {
     dto: UploadPublicSiteAssetDto,
     file?: UploadedFile,
   ) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     const uploaded = await this.uploadFile(ctx, site.id, dto.kind, file);
     const asset = await this.prisma.publicSiteAsset.create({
       data: {
@@ -223,7 +226,7 @@ export class PublicSiteService {
     ctx: TenantContext,
     dto: CreatePublicSiteAssetFromUrlDto,
   ) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     const image = await this.downloadAndValidateImage(dto.url, dto.kind);
     const uploaded = await this.uploadValidatedImage(
       ctx,
@@ -256,7 +259,7 @@ export class PublicSiteService {
     dto: UpdatePublicSiteAssetDto,
     file?: UploadedFile,
   ) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     const current = await this.prisma.publicSiteAsset.findFirst({
       where: { id: assetId, siteId: site.id },
     });
@@ -291,7 +294,7 @@ export class PublicSiteService {
   }
 
   async deleteAsset(ctx: TenantContext, assetId: string) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     const asset = await this.prisma.publicSiteAsset.findFirst({
       where: { id: assetId, siteId: site.id },
     });
@@ -315,7 +318,7 @@ export class PublicSiteService {
   }
 
   async replaceSocials(ctx: TenantContext, dto: ReplacePublicSiteSocialsDto) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     this.assertUnique(
       dto.socials.map((social) => social.provider),
       'provider',
@@ -336,17 +339,16 @@ export class PublicSiteService {
           sortOrder: social.sortOrder,
         })),
       });
-    });
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
 
-    await this.persistDraftPayload(site.id);
-    return this.getAdminSite(ctx);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async replaceInstagram(
     ctx: TenantContext,
     dto: ReplacePublicSiteInstagramDto,
   ) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     dto.posts.forEach((post) => this.assertInstagramUrl(post));
 
     await this.prisma.$transaction(async (tx) => {
@@ -386,29 +388,27 @@ export class PublicSiteService {
           sortOrder: post.sortOrder,
         })),
       });
-    });
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
 
-    await this.persistDraftPayload(site.id);
-    return this.getAdminSite(ctx);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async replaceStats(ctx: TenantContext, dto: ReplacePublicSiteStatsDto) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     await this.prisma.$transaction(async (tx) => {
       await tx.publicSiteStat.deleteMany({ where: { siteId: site.id } });
       await tx.publicSiteStat.createMany({
         data: dto.stats.map((stat) => this.toStatCreate(site.id, stat)),
       });
-    });
-    await this.persistDraftPayload(site.id);
-    return this.getAdminSite(ctx);
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async replaceHighlights(
     ctx: TenantContext,
     dto: ReplacePublicSiteHighlightsDto,
   ) {
-    const site = await this.ensureSite(ctx);
+    const site = await this.ensureSiteForMutation(ctx);
     await this.prisma.$transaction(async (tx) => {
       await tx.publicSiteHighlight.deleteMany({ where: { siteId: site.id } });
       await tx.publicSiteHighlight.createMany({
@@ -416,9 +416,8 @@ export class PublicSiteService {
           this.toHighlightCreate(site.id, highlight),
         ),
       });
-    });
-    await this.persistDraftPayload(site.id);
-    return this.getAdminSite(ctx);
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async publish(ctx: TenantContext) {
@@ -446,7 +445,7 @@ export class PublicSiteService {
         },
       });
       await strategy.syncOnPublish(tx, ctx);
-    });
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
     return {
       status: 'published',
       published,
@@ -464,8 +463,8 @@ export class PublicSiteService {
         data: { status: 'draft', publishedAt: null },
       });
       await strategy.syncOnUnpublish(tx, ctx);
-    });
-    return this.getAdminSite(ctx);
+    }, PUBLIC_SITE_TRANSACTION_OPTIONS);
+    return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
   async getPublicSiteBySlug(slug: string) {
@@ -665,11 +664,21 @@ export class PublicSiteService {
       },
       include: this.includeRelations(),
     });
-    await this.persistDraftPayload(created.id);
-    return this.prisma.publicSite.findUniqueOrThrow({
-      where: { id: created.id },
-      include: this.includeRelations(),
+    await this.persistDraftPayloadFromSite(created);
+    return created;
+  }
+
+  private async ensureSiteForMutation(
+    ctx: TenantContext,
+  ): Promise<SiteMutationTarget> {
+    const existing = await this.prisma.publicSite.findUnique({
+      where: { branchId: ctx.branchId },
+      select: { id: true, slug: true, status: true },
     });
+    if (existing) return existing;
+
+    const created = await this.ensureSite(ctx);
+    return { id: created.id, slug: created.slug, status: created.status };
   }
 
   private includeRelations() {
@@ -872,11 +881,16 @@ export class PublicSiteService {
       where: { id: siteId },
       include: this.includeRelations(),
     });
+    return this.persistDraftPayloadFromSite(site);
+  }
+
+  private async persistDraftPayloadFromSite(site: SiteWithRelations) {
     const draft = this.toDraftProfile(site);
     await this.prisma.publicSite.update({
-      where: { id: siteId },
+      where: { id: site.id },
       data: { draftPayload: draft as Prisma.InputJsonValue },
     });
+    return site;
   }
 
   private async uploadFile(

@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import * as bodyParser from 'body-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -12,6 +13,11 @@ async function bootstrap() {
     origin: true,
     credentials: true,
   });
+
+  // Read body parser limit from env (e.g. BODY_PARSER_LIMIT='10mb'), default to 10mb
+  const bodyParserLimit = process.env.BODY_PARSER_LIMIT ?? '10mb';
+  app.use(bodyParser.json({ limit: bodyParserLimit }));
+  app.use(bodyParser.urlencoded({ limit: bodyParserLimit, extended: true }));
 
   app.useGlobalPipes(
     new ValidationPipe({
