@@ -6,8 +6,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
+import {
+  ImageKind,
+  ImageUploadService,
+  UploadedImageFile,
+} from '../../../assets/image-upload.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { SupabaseService } from '../../../supabase/supabase.service';
@@ -31,42 +35,20 @@ import {
   UploadPublicSiteAssetDto,
 } from './dto/barber-public-site.dto';
 
-type UploadedFile = {
-  buffer?: Buffer;
-  mimetype?: string;
-  size?: number;
-  originalname?: string;
-};
+type UploadedFile = UploadedImageFile;
 
-type ValidatedImage = {
+type DownloadedRemoteImage = {
   buffer: Buffer;
-  contentType: string;
-  extension: string;
-  width: number;
-  height: number;
+  contentType?: string;
   sizeBytes: number;
 };
 
-const ALLOWED_MIME_TYPES = new Map([
-  ['image/jpeg', 'jpg'],
-  ['image/png', 'png'],
-  ['image/webp', 'webp'],
-]);
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const EXTERNAL_IMAGE_DOWNLOAD_TIMEOUT_MS = 8_000;
 const PUBLIC_SITE_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
   timeout: 20_000,
 };
-
-const MIN_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> =
-  {
-    logo: { width: 128, height: 128 },
-    hero: { width: 1200, height: 600 },
-    gallery: { width: 640, height: 480 },
-    background: { width: 1200, height: 600 },
-    thumbnail: { width: 320, height: 240 },
-  };
 
 const publicSiteInclude = {
   tenant: {
@@ -99,6 +81,7 @@ export class PublicSiteService {
     private readonly prisma: PrismaService,
     private readonly supabase: SupabaseService,
     private readonly strategies: VerticalSiteStrategyResolver,
+    private readonly imageUpload: ImageUploadService,
   ) {}
 
   async getAdminSite(ctx: TenantContext) {
@@ -227,13 +210,12 @@ export class PublicSiteService {
     dto: CreatePublicSiteAssetFromUrlDto,
   ) {
     const site = await this.ensureSiteForMutation(ctx);
-    const image = await this.downloadAndValidateImage(dto.url, dto.kind);
-    const uploaded = await this.uploadValidatedImage(
-      ctx,
-      site.id,
-      dto.kind,
-      image,
-    );
+    const downloaded = await this.downloadRemoteImage(dto.url);
+    const uploaded = await this.uploadFile(ctx, site.id, dto.kind, {
+      buffer: downloaded.buffer,
+      mimetype: downloaded.contentType,
+      size: downloaded.sizeBytes,
+    });
     const asset = await this.prisma.publicSiteAsset.create({
       data: {
         siteId: site.id,
@@ -242,8 +224,8 @@ export class PublicSiteService {
         path: uploaded.path,
         bucket: uploaded.bucket,
         alt: dto.alt,
-        width: image.width,
-        height: image.height,
+        width: uploaded.width,
+        height: uploaded.height,
         fit: dto.fit ?? 'cover',
         focalPoint: dto.focalPoint ?? 'center',
       },
@@ -601,21 +583,55 @@ export class PublicSiteService {
         priceCOP: true,
         color: true,
         imageUrls: true,
+        category: true,
+        resultDuration: true,
+        retouchPriceCOP: true,
+        retouchNote: true,
+        primaryImageUrl: true,
+        assets: {
+          where: { showInPublicGallery: true },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+          select: { url: true, alt: true, kind: true },
+        },
       },
     });
 
     return {
       tenantId: site.tenantId,
       branchId: site.branchId,
-      services: services.map((service) => ({
-        id: service.id,
-        name: service.name,
-        description: service.description ?? '',
-        durationMin: service.durationMin,
-        priceCOP: service.priceCOP,
-        color: service.color,
-        imageUrls: service.imageUrls,
-      })),
+      services: services.map((service) => {
+        const galleryUrls = service.assets.map((asset) => asset.url);
+        const primaryFromAssets =
+          service.assets.find((asset) => asset.kind === 'primary')?.url ?? null;
+        const primaryImageUrl =
+          service.primaryImageUrl ??
+          primaryFromAssets ??
+          service.imageUrls[0] ??
+          null;
+
+        const mergedImageUrls = Array.from(
+          new Set([
+            ...(primaryImageUrl ? [primaryImageUrl] : []),
+            ...galleryUrls,
+            ...service.imageUrls,
+          ]),
+        );
+
+        return {
+          id: service.id,
+          name: service.name,
+          description: service.description ?? '',
+          category: service.category ?? null,
+          durationMin: service.durationMin,
+          priceCOP: service.priceCOP,
+          color: service.color,
+          resultDuration: service.resultDuration ?? null,
+          retouchPriceCOP: service.retouchPriceCOP ?? null,
+          retouchNote: service.retouchNote ?? null,
+          primaryImageUrl,
+          imageUrls: mergedImageUrls,
+        };
+      }),
     };
   }
 
@@ -893,6 +909,11 @@ export class PublicSiteService {
     return site;
   }
 
+  /**
+   * Sube un archivo a Supabase Storage delegando validación + conversión
+   * WebP al {@link ImageUploadService} compartido. Devuelve metadata uniforme
+   * para persistir el `PublicSiteAsset`.
+   */
   private async uploadFile(
     ctx: TenantContext,
     siteId: string,
@@ -902,39 +923,27 @@ export class PublicSiteService {
     if (!file?.buffer?.length) {
       throw new BadRequestException('Image file is required');
     }
-
-    const image = this.validateImageBuffer(
-      file.buffer,
-      kind,
-      file.mimetype,
-      file.size,
-    );
-
-    return this.uploadValidatedImage(ctx, siteId, kind, image);
-  }
-
-  private async uploadValidatedImage(
-    ctx: TenantContext,
-    siteId: string,
-    kind: string,
-    image: ValidatedImage,
-  ) {
-    const assetId = `${Date.now()}-${randomUUID()}.${image.extension}`;
-    const uploaded = await this.supabase.uploadPublicAsset({
-      path: `tenants/${ctx.tenantId}/barber/public-site/${siteId}/${kind}/${assetId}`,
-      buffer: image.buffer,
-      contentType: image.contentType,
+    return this.imageUpload.uploadImage({
+      file,
+      kind: this.mapKindToImageKind(kind),
+      pathPrefix: `tenants/${ctx.tenantId}/barber/public-site/${siteId}/${kind}`,
     });
-    return {
-      ...uploaded,
-      width: image.width,
-      height: image.height,
-      contentType: image.contentType,
-      sizeBytes: image.sizeBytes,
-    };
   }
 
-  private async downloadAndValidateImage(url: string, kind: string) {
+  private mapKindToImageKind(kind: string): ImageKind {
+    switch (kind) {
+      case 'logo':
+      case 'hero':
+      case 'gallery':
+      case 'background':
+      case 'thumbnail':
+        return kind;
+      default:
+        return 'default';
+    }
+  }
+
+  private async downloadRemoteImage(url: string): Promise<DownloadedRemoteImage> {
     const parsed = this.parseUrl(url);
     this.assertSafeExternalImageUrl(parsed);
 
@@ -968,7 +977,10 @@ export class PublicSiteService {
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    return this.validateImageBuffer(buffer, kind, contentType, buffer.length);
+    if (buffer.length > MAX_FILE_SIZE_BYTES) {
+      throw new BadRequestException('Image file must be 5 MB or smaller');
+    }
+    return { buffer, contentType, sizeBytes: buffer.length };
   }
 
   private assertSafeExternalImageUrl(url: URL) {
@@ -1010,141 +1022,6 @@ export class PublicSiteService {
       normalized.startsWith('fd') ||
       normalized.startsWith('fe80:')
     );
-  }
-
-  private validateImageBuffer(
-    buffer: Buffer,
-    kind: string,
-    declaredMimeType?: string | null,
-    declaredSize?: number,
-  ): ValidatedImage {
-    const sizeBytes = declaredSize ?? buffer.length;
-    if (
-      sizeBytes > MAX_FILE_SIZE_BYTES ||
-      buffer.length > MAX_FILE_SIZE_BYTES
-    ) {
-      throw new BadRequestException('Image file must be 5 MB or smaller');
-    }
-
-    const metadata = this.readImageMetadata(buffer);
-    if (!metadata) {
-      throw new BadRequestException(
-        'Only valid image/jpeg, image/png and image/webp files are allowed',
-      );
-    }
-
-    const declared = declaredMimeType?.split(';')[0];
-    if (declared && declared !== metadata.contentType) {
-      throw new BadRequestException(
-        'Image MIME type does not match file bytes',
-      );
-    }
-
-    const required = MIN_IMAGE_DIMENSIONS[kind] ?? MIN_IMAGE_DIMENSIONS.gallery;
-    if (metadata.width < required.width || metadata.height < required.height) {
-      throw new BadRequestException({
-        code: 'IMAGE_DIMENSIONS_TOO_SMALL',
-        message: `${kind} image must be at least ${required.width}x${required.height}px`,
-        minWidth: required.width,
-        minHeight: required.height,
-        width: metadata.width,
-        height: metadata.height,
-      });
-    }
-
-    return { buffer, sizeBytes, ...metadata };
-  }
-
-  private readImageMetadata(buffer: Buffer) {
-    return (
-      this.readPngMetadata(buffer) ??
-      this.readJpegMetadata(buffer) ??
-      this.readWebpMetadata(buffer)
-    );
-  }
-
-  private readPngMetadata(buffer: Buffer) {
-    if (
-      buffer.length < 24 ||
-      buffer.readUInt32BE(0) !== 0x89504e47 ||
-      buffer.readUInt32BE(4) !== 0x0d0a1a0a
-    ) {
-      return null;
-    }
-    return {
-      contentType: 'image/png',
-      extension: 'png',
-      width: buffer.readUInt32BE(16),
-      height: buffer.readUInt32BE(20),
-    };
-  }
-
-  private readJpegMetadata(buffer: Buffer) {
-    if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
-      return null;
-    }
-
-    let offset = 2;
-    while (offset + 9 < buffer.length) {
-      if (buffer[offset] !== 0xff) return null;
-      const marker = buffer[offset + 1];
-      const length = buffer.readUInt16BE(offset + 2);
-      if (length < 2) return null;
-
-      const isStartOfFrame =
-        (marker >= 0xc0 && marker <= 0xc3) ||
-        (marker >= 0xc5 && marker <= 0xc7) ||
-        (marker >= 0xc9 && marker <= 0xcb) ||
-        (marker >= 0xcd && marker <= 0xcf);
-      if (isStartOfFrame) {
-        return {
-          contentType: 'image/jpeg',
-          extension: 'jpg',
-          height: buffer.readUInt16BE(offset + 5),
-          width: buffer.readUInt16BE(offset + 7),
-        };
-      }
-      offset += 2 + length;
-    }
-    return null;
-  }
-
-  private readWebpMetadata(buffer: Buffer) {
-    if (
-      buffer.length < 30 ||
-      buffer.toString('ascii', 0, 4) !== 'RIFF' ||
-      buffer.toString('ascii', 8, 12) !== 'WEBP'
-    ) {
-      return null;
-    }
-
-    const chunk = buffer.toString('ascii', 12, 16);
-    if (chunk === 'VP8X' && buffer.length >= 30) {
-      return {
-        contentType: 'image/webp',
-        extension: 'webp',
-        width: 1 + buffer.readUIntLE(24, 3),
-        height: 1 + buffer.readUIntLE(27, 3),
-      };
-    }
-    if (chunk === 'VP8 ' && buffer.length >= 30) {
-      return {
-        contentType: 'image/webp',
-        extension: 'webp',
-        width: buffer.readUInt16LE(26) & 0x3fff,
-        height: buffer.readUInt16LE(28) & 0x3fff,
-      };
-    }
-    if (chunk === 'VP8L' && buffer.length >= 25) {
-      const bits = buffer.readUInt32LE(21);
-      return {
-        contentType: 'image/webp',
-        extension: 'webp',
-        width: (bits & 0x3fff) + 1,
-        height: ((bits >> 14) & 0x3fff) + 1,
-      };
-    }
-    return null;
   }
 
   private async assertSlugAvailable(

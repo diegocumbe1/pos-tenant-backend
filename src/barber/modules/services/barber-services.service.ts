@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
@@ -6,6 +7,12 @@ import {
   CreateBarberServiceDto,
   UpdateBarberServiceDto,
 } from './dto/barber-service.dto';
+
+type ServiceWithAssets = Prisma.BarberServiceGetPayload<{
+  include: {
+    assets: true;
+  };
+}>;
 
 @Injectable()
 export class BarberServicesService {
@@ -16,15 +23,21 @@ export class BarberServicesService {
 
   async listServices(ctx: TenantContext) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
-    return this.prisma.barberService.findMany({
+    const services = await this.prisma.barberService.findMany({
       where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      include: {
+        assets: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
+    return services.map((service) => this.toServiceDto(service));
   }
 
   async createService(ctx: TenantContext, dto: CreateBarberServiceDto) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
-    return this.prisma.barberService.create({
+    const created = await this.prisma.barberService.create({
       data: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
@@ -34,9 +47,20 @@ export class BarberServicesService {
         priceCOP: dto.priceCOP,
         color: dto.color,
         imageUrls: dto.imageUrls ?? [],
+        category: dto.category,
+        resultDuration: dto.resultDuration,
+        retouchPriceCOP: dto.retouchPriceCOP,
+        retouchNote: dto.retouchNote,
+        primaryImageUrl: dto.primaryImageUrl,
         sortOrder: dto.sortOrder,
       },
+      include: {
+        assets: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
+    return this.toServiceDto(created);
   }
 
   async updateService(
@@ -44,19 +68,83 @@ export class BarberServicesService {
     id: string,
     dto: UpdateBarberServiceDto,
   ) {
-    await this.tenantHelper.assertScopedRecord('barberService', ctx, id, 'Service');
-    return this.prisma.barberService.update({
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      id,
+      'Service',
+    );
+    const updated = await this.prisma.barberService.update({
       where: { id },
-      data: dto,
+      data: {
+        name: dto.name,
+        description: dto.description,
+        durationMin: dto.durationMin,
+        priceCOP: dto.priceCOP,
+        color: dto.color,
+        imageUrls: dto.imageUrls,
+        category: dto.category,
+        resultDuration: dto.resultDuration,
+        retouchPriceCOP: dto.retouchPriceCOP,
+        retouchNote: dto.retouchNote,
+        primaryImageUrl: dto.primaryImageUrl,
+        isActive: dto.isActive,
+        sortOrder: dto.sortOrder,
+      },
+      include: {
+        assets: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
+    return this.toServiceDto(updated);
   }
 
   async deleteService(ctx: TenantContext, id: string) {
-    await this.tenantHelper.assertScopedRecord('barberService', ctx, id, 'Service');
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      id,
+      'Service',
+    );
     await this.prisma.barberService.update({
       where: { id },
       data: { isActive: false },
     });
     return { ok: true };
+  }
+
+  private toServiceDto(service: ServiceWithAssets) {
+    return {
+      id: service.id,
+      tenantId: service.tenantId,
+      branchId: service.branchId,
+      name: service.name,
+      description: service.description,
+      durationMin: service.durationMin,
+      priceCOP: service.priceCOP,
+      color: service.color,
+      imageUrls: service.imageUrls,
+      category: service.category,
+      resultDuration: service.resultDuration,
+      retouchPriceCOP: service.retouchPriceCOP,
+      retouchNote: service.retouchNote,
+      primaryImageUrl: service.primaryImageUrl,
+      isActive: service.isActive,
+      sortOrder: service.sortOrder,
+      createdAt: service.createdAt,
+      updatedAt: service.updatedAt,
+      assets: service.assets.map((asset) => ({
+        id: asset.id,
+        url: asset.url,
+        alt: asset.alt,
+        kind: asset.kind,
+        fit: asset.fit,
+        focalPoint: asset.focalPoint,
+        showInPublicGallery: asset.showInPublicGallery,
+        sortOrder: asset.sortOrder,
+        createdAt: asset.createdAt,
+      })),
+    };
   }
 }

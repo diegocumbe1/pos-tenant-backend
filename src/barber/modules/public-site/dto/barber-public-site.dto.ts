@@ -26,6 +26,7 @@ export const PUBLIC_SITE_SECTION_TYPES = [
   'catalog',
   'gallery',
   'instagram',
+  'info_cards',
   'booking_cta',
   'booking_modal',
   'contact',

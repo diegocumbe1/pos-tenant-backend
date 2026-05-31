@@ -350,29 +350,57 @@ model PublicSiteHighlight {
 }
 
 model BarberService {
-  id          String   @id @default(cuid())
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branchId    String
-  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  name        String
-  description String?
-  durationMin Int
-  priceCOP    Int
-  color       String?
-  imageUrls   String[] @default([])
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId        String
+  branch          Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  durationMin     Int
+  priceCOP        Int
+  color           String?
+  imageUrls       String[] @default([])
+  category        String?
+  resultDuration  String?
+  retouchPriceCOP Int?
+  retouchNote     String?
+  primaryImageUrl String?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   staffServices BarberStaffService[]
   appointments  BarberAppointment[]
+  assets        BarberServiceAsset[]
 
   @@unique([branchId, name])
   @@index([tenantId])
   @@index([branchId, isActive])
+  @@index([category])
   @@map("barber_services")
+}
+
+model BarberServiceAsset {
+  id                   String   @id @default(cuid())
+  tenantId             String
+  serviceId            String
+  service              BarberService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  url                  String
+  alt                  String?
+  kind                 String   @default("gallery") // "primary" | "gallery" | "before" | "after"
+  fit                  String   @default("cover")   // "cover" | "contain"
+  focalPoint           String   @default("center")  // "center" | "top" | "bottom" | "left" | "right"
+  showInPublicGallery  Boolean  @default(true)
+  sortOrder            Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([serviceId, sortOrder])
+  @@index([serviceId, kind])
+  @@map("barber_service_assets")
 }
 
 model BarberStaff {

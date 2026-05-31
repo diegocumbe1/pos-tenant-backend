@@ -1,8 +1,11 @@
 import {
+  IsArray,
   IsBoolean,
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
+  MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
@@ -10,10 +13,12 @@ import {
 export class CreateBarberServiceDto {
   @IsString()
   @MinLength(2)
+  @MaxLength(120)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsInt()
@@ -29,8 +34,33 @@ export class CreateBarberServiceDto {
   color?: string;
 
   @IsOptional()
+  @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  resultDuration?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  retouchPriceCOP?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  retouchNote?: string;
+
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  primaryImageUrl?: string;
 
   @IsOptional()
   @IsInt()
@@ -41,10 +71,12 @@ export class UpdateBarberServiceDto {
   @IsOptional()
   @IsString()
   @MinLength(2)
+  @MaxLength(120)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -62,8 +94,33 @@ export class UpdateBarberServiceDto {
   color?: string;
 
   @IsOptional()
+  @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  resultDuration?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  retouchPriceCOP?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  retouchNote?: string;
+
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  primaryImageUrl?: string;
 
   @IsOptional()
   @IsBoolean()
