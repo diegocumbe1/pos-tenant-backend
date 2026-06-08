@@ -8,6 +8,10 @@ import { KitchenModule } from './modules/kitchen/kitchen.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { MenuPublicModule } from './modules/menu-public/menu-public.module';
+import { PrintingModule } from './modules/printing/printing.module';
+import { ReceiptsModule } from './modules/receipts/receipts.module';
+import { SalesModule } from './modules/sales/sales.module';
+import { CashSessionsModule } from './modules/cash-sessions/cash-sessions.module';
 
 @Module({
   imports: [
@@ -20,6 +24,10 @@ import { MenuPublicModule } from './modules/menu-public/menu-public.module';
     ReservationsModule,
     InventoryModule,
     MenuPublicModule,
+    PrintingModule,
+    ReceiptsModule,
+    SalesModule,
+    CashSessionsModule,
   ],
 })
 export class RestaurantModule {}

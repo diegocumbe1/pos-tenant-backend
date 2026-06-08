@@ -1,6 +1,5 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayMinSize,
   IsArray,
   IsInt,
   IsOptional,
@@ -12,6 +11,15 @@ import {
 export class OrderItemDto {
   @IsString()
   productId: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  priceCOP?: number;
 
   @IsInt()
   @Min(1)
@@ -26,9 +34,13 @@ export class CreateOrderDto {
   @IsString()
   waiterId?: string;
 
+  @IsOptional()
+  @IsString()
+  terminalId?: string;
+
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
-  items: OrderItemDto[];
+  items?: OrderItemDto[];
 }

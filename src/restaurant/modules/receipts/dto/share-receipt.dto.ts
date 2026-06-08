@@ -1,11 +1,10 @@
 import { IsOptional, IsString } from 'class-validator';
 
-export class CloseOrderDto {
-  @IsOptional()
+export class ShareReceiptDto {
   @IsString()
-  terminalId?: string;
+  orderId: string;
 
   @IsOptional()
   @IsString()
-  cashSessionId?: string;
+  splitId?: string;
 }

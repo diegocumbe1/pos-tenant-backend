@@ -4,8 +4,10 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { OrderEventType } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
+import { OrderEventsService } from '../order-events/order-events.service';
 import {
   KITCHEN_TICKET_STATUSES,
   KitchenTicketStatus,
@@ -27,6 +29,7 @@ export class KitchenService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
+    private readonly orderEvents: OrderEventsService,
   ) {}
 
   async findTickets(ctx: TenantContext, status?: string) {
@@ -82,6 +85,8 @@ export class KitchenService {
 
     const mapped = this.mapTicket(updated);
 
+    await this.recordKitchenEvents(ctx, updated.orderId, id, existing.status, status);
+
     this.events.emit(KITCHEN_TICKET_UPDATED, {
       tenantId: ctx.tenantId,
       branchId: ctx.branchId,
@@ -98,6 +103,53 @@ export class KitchenService {
     }
 
     return mapped;
+  }
+
+  /** Bitácora de cocina + ALL_SERVED cuando todos los tickets quedan SERVED. */
+  private async recordKitchenEvents(
+    ctx: TenantContext,
+    orderId: string,
+    ticketId: string,
+    fromStatus: string,
+    status: KitchenTicketStatus,
+  ) {
+    const typeByStatus: Partial<Record<KitchenTicketStatus, OrderEventType>> = {
+      PREPARING: OrderEventType.KITCHEN_PREPARING,
+      READY: OrderEventType.KITCHEN_READY,
+      SERVED: OrderEventType.SERVED,
+    };
+    const type = typeByStatus[status];
+    if (!type) return;
+
+    await this.orderEvents.record({
+      tenantId: ctx.tenantId,
+      orderId,
+      type,
+      ticketId,
+      metadata: {
+        ticketId,
+        fromStatus,
+        toStatus: status,
+      },
+    });
+
+    if (status === 'SERVED') {
+      const remaining = await this.prisma.kitchenTicket.count({
+        where: { orderId, status: { not: 'SERVED' } },
+      });
+      if (remaining === 0) {
+        await this.orderEvents.record({
+          tenantId: ctx.tenantId,
+          orderId,
+          type: OrderEventType.ALL_SERVED,
+          metadata: {
+            ticketId,
+            status: 'SERVED',
+            allTicketsServed: true,
+          },
+        });
+      }
+    }
   }
 
   private mapTicket(ticket: any) {

@@ -19,6 +19,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
+import { RegisterPaymentDto } from './dto/payment.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -66,8 +67,12 @@ export class OrdersController {
   }
 
   @Patch(':id/payment')
-  requestPayment(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
-    return this.ordersService.requestPayment(ctx, id);
+  requestPayment(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: RegisterPaymentDto,
+  ) {
+    return this.ordersService.requestPayment(ctx, id, dto);
   }
 
   @Patch(':id/close')

@@ -23,29 +23,38 @@ model Tenant {
   updatedAt  DateTime          @updatedAt
   deletedAt  DateTime?
 
-  users            User[]
-  branches         Branch[]
-  products         Product[]
-  categories       ProductCategory[]
-  ingredients      Ingredient[]
-  stockMovements   StockMovement[]
-  menuPublicConfig MenuPublicConfig?
-  areas            Area[]
-  tables           RestaurantTable[]
-  orders           Order[]
-  kitchenTickets   KitchenTicket[]
-  paymentSplits    PaymentSplit[]
-  reservations     Reservation[]
-  expenses         Expense[]
-  payrolls         Payroll[]
-  financeGoals     FinanceGoal[]
-  roles            Role[]
-  barberSettings   BarberSettings[]
-  barberServices   BarberService[]
-  barberStaff      BarberStaff[]
-  barberCustomers  BarberCustomer[]
-  barberAppointments BarberAppointment[]
-  publicSites PublicSite[]
+  users                User[]
+  branches             Branch[]
+  products             Product[]
+  categories           ProductCategory[]
+  ingredients          Ingredient[]
+  stockMovements       StockMovement[]
+  menuPublicConfig     MenuPublicConfig?
+  areas                Area[]
+  tables               RestaurantTable[]
+  orders               Order[]
+  kitchenTickets       KitchenTicket[]
+  paymentSplits        PaymentSplit[]
+  reservations         Reservation[]
+  expenses             Expense[]
+  payrolls             Payroll[]
+  financeGoals         FinanceGoal[]
+  roles                Role[]
+  barberSettings       BarberSettings[]
+  barberServices       BarberService[]
+  barberStaff          BarberStaff[]
+  barberCustomers      BarberCustomer[]
+  barberAppointments   BarberAppointment[]
+  publicSites          PublicSite[]
+  orderEvents          OrderEvent[]
+  orderClaims          OrderClaim[]
+  printers             Printer[]
+  printJobs            PrintJob[]
+  receiptShares        ReceiptShare[]
+  cashSessions         CashSession[]
+  notificationEvents   NotificationEvent[]
+  notificationPrefs    NotificationPreference[]
+  webPushSubscriptions WebPushSubscription[]
 
   @@index([plan])
   @@index([verticalId])
@@ -108,24 +117,29 @@ model Branch {
   address   String?
   createdAt DateTime @default(now())
 
-  products       Product[]
-  categories     ProductCategory[]
-  ingredients    Ingredient[]
-  stockMovements StockMovement[]
-  areas          Area[]
-  tables         RestaurantTable[]
-  orders         Order[]
-  reservations   Reservation[]
-  expenses       Expense[]
-  payrolls       Payroll[]
-  financeGoals   FinanceGoal[]
-  userBranches   UserBranch[]
-  barberSettings BarberSettings?
-  barberServices BarberService[]
-  barberStaff    BarberStaff[]
-  barberCustomers BarberCustomer[]
-  barberAppointments BarberAppointment[]
-  publicSites PublicSite[]
+  products             Product[]
+  categories           ProductCategory[]
+  ingredients          Ingredient[]
+  stockMovements       StockMovement[]
+  areas                Area[]
+  tables               RestaurantTable[]
+  orders               Order[]
+  reservations         Reservation[]
+  expenses             Expense[]
+  payrolls             Payroll[]
+  financeGoals         FinanceGoal[]
+  userBranches         UserBranch[]
+  barberSettings       BarberSettings?
+  barberServices       BarberService[]
+  barberStaff          BarberStaff[]
+  barberCustomers      BarberCustomer[]
+  barberAppointments   BarberAppointment[]
+  publicSites          PublicSite[]
+  printers             Printer[]
+  printJobs            PrintJob[]
+  cashSessions         CashSession[]
+  notificationEvents   NotificationEvent[]
+  webPushSubscriptions WebPushSubscription[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -135,48 +149,48 @@ model Branch {
 // ─── Barberia ────────────────────────────────────────────────────────────────
 
 model BarberSettings {
-  id                   String   @id @default(cuid())
-  tenantId             String
-  tenant               Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branchId             String
-  branch               Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  phone                String?
-  city                 String?
-  neighborhood         String?
-  whatsapp             String?
-  timezone             String   @default("America/Bogota")
-  currency             String   @default("COP")
-  logoUrl              String?
-  bookingSlug          String   @unique
-  onlineBookingEnabled Boolean  @default(true)
-  publicProfilePublished Boolean @default(true)
-  whatsappEnabled      Boolean  @default(false)
-  loyaltyEnabled       Boolean  @default(false)
-  themeTemplateId      String   @default("studio")
-  themePrimaryColor    String   @default("#6366f1")
-  themeAccentColor     String   @default("#22c55e")
-  themeInkColor        String   @default("#0f172a")
-  themeLogoMode        String?  @default("initials")
-  themeLogoImageUrl    String?
-  themeBannerImageUrl  String?
-  heroImageUrl         String?
-  heroTitle            String?
-  heroDescription      String?
-  shortName            String?
-  tagline              String?
-  eyebrow              String?
-  description          String?
-  highlights           String[] @default([])
-  stats                Json     @default("[]")
-  galleryImages        Json     @default("[]")
-  socialInstagram      String?
-  socialFacebook       String?
-  socialTiktok         String?
-  socialWebsite        String?
-  instagramProfileUrl  String?
-  instagramPosts       String[] @default([])
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  tenantId               String
+  tenant                 Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId               String
+  branch                 Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  phone                  String?
+  city                   String?
+  neighborhood           String?
+  whatsapp               String?
+  timezone               String   @default("America/Bogota")
+  currency               String   @default("COP")
+  logoUrl                String?
+  bookingSlug            String   @unique
+  onlineBookingEnabled   Boolean  @default(true)
+  publicProfilePublished Boolean  @default(true)
+  whatsappEnabled        Boolean  @default(false)
+  loyaltyEnabled         Boolean  @default(false)
+  themeTemplateId        String   @default("studio")
+  themePrimaryColor      String   @default("#6366f1")
+  themeAccentColor       String   @default("#22c55e")
+  themeInkColor          String   @default("#0f172a")
+  themeLogoMode          String?  @default("initials")
+  themeLogoImageUrl      String?
+  themeBannerImageUrl    String?
+  heroImageUrl           String?
+  heroTitle              String?
+  heroDescription        String?
+  shortName              String?
+  tagline                String?
+  eyebrow                String?
+  description            String?
+  highlights             String[] @default([])
+  stats                  Json     @default("[]")
+  galleryImages          Json     @default("[]")
+  socialInstagram        String?
+  socialFacebook         String?
+  socialTiktok           String?
+  socialWebsite          String?
+  instagramProfileUrl    String?
+  instagramPosts         String[] @default([])
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   @@unique([branchId])
   @@index([tenantId])
@@ -184,19 +198,19 @@ model BarberSettings {
 }
 
 model PublicSite {
-  id          String    @id @default(cuid())
-  tenantId    String
-  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branchId    String
-  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  slug        String    @unique
-  publishedSlug String?
-  status      String    @default("draft")
-  vertical    String    @default("barber")
-  publishedAt DateTime?
+  id                String    @id @default(cuid())
+  tenantId          String
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId          String
+  branch            Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  slug              String    @unique
+  publishedSlug     String?
+  status            String    @default("draft")
+  vertical          String    @default("barber")
+  publishedAt       DateTime?
   publishedByUserId String?
-  draftPayload Json @default("{}")
-  publishedPayload Json?
+  draftPayload      Json      @default("{}")
+  publishedPayload  Json?
 
   seoTitle       String?
   seoDescription String?
@@ -233,14 +247,14 @@ model PublicSite {
 }
 
 model PublicSiteSection {
-  id        String           @id @default(cuid())
+  id        String     @id @default(cuid())
   siteId    String
   site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   type      String
-  isVisible Boolean          @default(true)
-  sortOrder Int              @default(0)
-  width     String           @default("contained")
-  density   String           @default("comfortable")
+  isVisible Boolean    @default(true)
+  sortOrder Int        @default(0)
+  width     String     @default("contained")
+  density   String     @default("comfortable")
 
   title     String?
   eyebrow   String?
@@ -261,7 +275,7 @@ model PublicSiteSection {
 }
 
 model PublicSiteAsset {
-  id         String           @id @default(cuid())
+  id         String     @id @default(cuid())
   siteId     String
   site       PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   kind       String
@@ -271,10 +285,10 @@ model PublicSiteAsset {
   alt        String
   width      Int?
   height     Int?
-  fit        String           @default("cover")
-  focalPoint String           @default("center")
-  isVisible  Boolean          @default(true)
-  sortOrder  Int              @default(0)
+  fit        String     @default("cover")
+  focalPoint String     @default("center")
+  isVisible  Boolean    @default(true)
+  sortOrder  Int        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -285,14 +299,14 @@ model PublicSiteAsset {
 }
 
 model PublicSiteSocialLink {
-  id        String           @id @default(cuid())
+  id        String     @id @default(cuid())
   siteId    String
   site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   provider  String
   label     String
   url       String
-  isVisible Boolean          @default(true)
-  sortOrder Int              @default(0)
+  isVisible Boolean    @default(true)
+  sortOrder Int        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -303,13 +317,13 @@ model PublicSiteSocialLink {
 }
 
 model PublicSiteInstagramPost {
-  id        String           @id @default(cuid())
+  id        String     @id @default(cuid())
   siteId    String
   site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   url       String
   kind      String
-  isVisible Boolean          @default(true)
-  sortOrder Int              @default(0)
+  isVisible Boolean    @default(true)
+  sortOrder Int        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -319,13 +333,13 @@ model PublicSiteInstagramPost {
 }
 
 model PublicSiteStat {
-  id        String           @id @default(cuid())
+  id        String     @id @default(cuid())
   siteId    String
   site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   label     String
   value     String
-  isVisible Boolean          @default(true)
-  sortOrder Int              @default(0)
+  isVisible Boolean    @default(true)
+  sortOrder Int        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -335,12 +349,12 @@ model PublicSiteStat {
 }
 
 model PublicSiteHighlight {
-  id        String           @id @default(cuid())
+  id        String     @id @default(cuid())
   siteId    String
   site      PublicSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   label     String
-  isVisible Boolean          @default(true)
-  sortOrder Int              @default(0)
+  isVisible Boolean    @default(true)
+  sortOrder Int        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -383,19 +397,19 @@ model BarberService {
 }
 
 model BarberServiceAsset {
-  id                   String   @id @default(cuid())
-  tenantId             String
-  serviceId            String
-  service              BarberService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  url                  String
-  alt                  String?
-  kind                 String   @default("gallery") // "primary" | "gallery" | "before" | "after"
-  fit                  String   @default("cover")   // "cover" | "contain"
-  focalPoint           String   @default("center")  // "center" | "top" | "bottom" | "left" | "right"
-  showInPublicGallery  Boolean  @default(true)
-  sortOrder            Int      @default(0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String        @id @default(cuid())
+  tenantId            String
+  serviceId           String
+  service             BarberService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  url                 String
+  alt                 String?
+  kind                String        @default("gallery") // "primary" | "gallery" | "before" | "after"
+  fit                 String        @default("cover") // "cover" | "contain"
+  focalPoint          String        @default("center") // "center" | "top" | "bottom" | "left" | "right"
+  showInPublicGallery Boolean       @default(true)
+  sortOrder           Int           @default(0)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 
   @@index([tenantId])
   @@index([serviceId, sortOrder])
@@ -443,21 +457,21 @@ model BarberStaffService {
 }
 
 model BarberCustomer {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId    String
-  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch      Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
   name        String
   phone       String
   email       String?
   notes       String?
-  tags        String[] @default([])
-  totalVisits Int      @default(0)
+  tags        String[]  @default([])
+  totalVisits Int       @default(0)
   lastVisitAt DateTime?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   appointments BarberAppointment[]
 
@@ -468,11 +482,11 @@ model BarberCustomer {
 }
 
 model BarberAppointment {
-  id           String    @id @default(cuid())
+  id           String         @id @default(cuid())
   tenantId     String
-  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId     String
-  branch       Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch       Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   customerId   String
   customer     BarberCustomer @relation(fields: [customerId], references: [id])
   serviceId    String
@@ -481,12 +495,12 @@ model BarberAppointment {
   staff        BarberStaff    @relation(fields: [staffId], references: [id])
   scheduledAt  DateTime
   scheduledEnd DateTime
-  status       String    @default("SCHEDULED")
-  source       String    @default("manual")
+  status       String         @default("SCHEDULED")
+  source       String         @default("manual")
   notes        String?
   cancelReason String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@index([tenantId])
   @@index([branchId, status])
@@ -510,8 +524,11 @@ model User {
   passwordSetAt DateTime?
   createdAt     DateTime  @default(now())
 
-  orders       Order[]      @relation("waiters")
-  userBranches UserBranch[]
+  orders               Order[]                  @relation("waiters")
+  userBranches         UserBranch[]
+  notificationEvents   NotificationEvent[]
+  notificationPrefs    NotificationPreference[]
+  webPushSubscriptions WebPushSubscription[]
 
   @@index([tenantId])
   @@index([roleId])
@@ -812,6 +829,8 @@ model Order {
   items          OrderItem[]
   kitchenTickets KitchenTicket[]
   paymentSplits  PaymentSplit[]
+  events         OrderEvent[]
+  claims         OrderClaim[]
 
   @@index([tenantId])
   @@index([branchId, status])
@@ -1021,4 +1040,321 @@ model AuditLog {
   @@index([tenantId, action])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// ─── Bitácora de la orden (línea de tiempo) ───────────────────────────────────
+
+model OrderEvent {
+  id       String         @id @default(cuid())
+  tenantId String
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+  orderId  String
+  order    Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type     OrderEventType
+  at       DateTime       @default(now())
+  ticketId String? // KitchenTicket relacionado, si aplica
+  note     String?
+  metadata Json?
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@index([tenantId, type, at])
+  @@index([orderId, at])
+  @@map("order_events")
+}
+
+enum OrderEventType {
+  OPENED
+  ITEM_ADDED
+  ITEM_UPDATED
+  ITEM_REMOVED
+  SENT_TO_KITCHEN
+  KITCHEN_PREPARING
+  KITCHEN_READY
+  SERVED
+  ALL_SERVED
+  PAYMENT_REQUESTED
+  PAYMENT_REGISTERED
+  CLOSED
+  CLAIM
+}
+
+// ─── Reclamos del cliente ─────────────────────────────────────────────────────
+
+model OrderClaim {
+  id          String        @id @default(cuid())
+  tenantId    String
+  tenant      Tenant        @relation(fields: [tenantId], references: [id])
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  description String
+  severity    ClaimSeverity @default(MEDIUM)
+  byUserId    String?
+  byUserName  String?
+  resolution  String?
+  resolvedAt  DateTime?
+  at          DateTime      @default(now())
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("order_claims")
+}
+
+enum ClaimSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// ─── Impresoras ───────────────────────────────────────────────────────────────
+
+model Printer {
+  id         String            @id @default(cuid())
+  tenantId   String
+  tenant     Tenant            @relation(fields: [tenantId], references: [id])
+  branchId   String
+  branch     Branch            @relation(fields: [branchId], references: [id])
+  name       String
+  target     PrinterTarget
+  connection PrinterConnection
+  address    String?
+  paperWidth Int               @default(80) // 58 | 80
+  isActive   Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  jobs PrintJob[]
+
+  @@index([tenantId, branchId])
+  @@index([tenantId, branchId, target])
+  @@map("printers")
+}
+
+enum PrinterTarget {
+  KITCHEN
+  BAR
+  CASHIER
+  DEFAULT
+}
+
+enum PrinterConnection {
+  USB
+  NETWORK
+  BLUETOOTH
+  AGENT
+}
+
+// ─── Jobs de impresión ────────────────────────────────────────────────────────
+
+model PrintJob {
+  id              String            @id @default(cuid())
+  tenantId        String
+  tenant          Tenant            @relation(fields: [tenantId], references: [id])
+  branchId        String
+  branch          Branch            @relation(fields: [branchId], references: [id])
+  printerId       String?
+  printer         Printer?          @relation(fields: [printerId], references: [id])
+  documentType    PrintDocumentType
+  documentId      String // PrintDocument.id — idempotency key
+  payload         Json // el PrintDocument serializado
+  status          PrintJobStatus    @default(QUEUED)
+  attempts        Int               @default(0)
+  lastError       String?
+  createdByUserId String?
+  createdAt       DateTime          @default(now())
+  sentAt          DateTime?
+  acknowledgedAt  DateTime?
+
+  @@unique([tenantId, branchId, documentId])
+  @@index([tenantId, branchId, status])
+  @@map("print_jobs")
+}
+
+enum PrintDocumentType {
+  KITCHEN_TICKET
+  RECEIPT
+  Z_REPORT
+  X_REPORT
+  EXPENSE_VOUCHER
+}
+
+enum PrintJobStatus {
+  QUEUED
+  SENT
+  ACK
+  FAILED
+}
+
+// ─── Recibo compartible (historial + página pública /r/[token]) ───────────────
+
+model ReceiptShare {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  branchId  String
+  orderId   String
+  splitId   String?
+  token     String    @unique
+  payload   Json // PrintDocument del recibo (re-renderizable)
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([tenantId, branchId, orderId])
+  @@map("receipt_shares")
+}
+
+// ─── Arqueo de caja ───────────────────────────────────────────────────────────
+
+model CashSession {
+  id             String            @id @default(cuid())
+  tenantId       String
+  tenant         Tenant            @relation(fields: [tenantId], references: [id])
+  branchId       String
+  branch         Branch            @relation(fields: [branchId], references: [id])
+  terminalId     String
+  status         CashSessionStatus @default(OPEN)
+  openedAt       DateTime          @default(now())
+  closedAt       DateTime?
+  openedByUserId String
+  closedByUserId String?
+  openingAmount  Int
+  expectedAmount Int?
+  countedAmount  Int?
+  difference     Int?
+  openingNote    String?
+  closingNote    String?
+
+  movements CashMovement[]
+
+  @@index([tenantId, branchId, terminalId, status])
+  @@map("cash_sessions")
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+model CashMovement {
+  id              String           @id @default(cuid())
+  sessionId       String
+  session         CashSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type            CashMovementType
+  method          String // cash | card | transfer | qr (consistente con PaymentContribution.method)
+  amount          Int // siempre positivo; el tipo define el signo
+  reference       String?
+  note            String?
+  createdByUserId String
+  createdAt       DateTime         @default(now())
+
+  @@index([sessionId])
+  @@map("cash_movements")
+}
+
+enum CashMovementType {
+  OPENING
+  SALE
+  REFUND
+  EXPENSE
+  WITHDRAWAL
+  DEPOSIT
+  TIP
+  ADJUSTMENT
+}
+
+// ─── Notificaciones ──────────────────────────────────────────────────────────
+
+model NotificationEvent {
+  id            String              @id @default(cuid())
+  tenantId      String
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId      String?
+  branch        Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  userId        String?
+  user          User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  vertical      String?
+  type          String
+  channel       NotificationChannel @default(IN_APP)
+  status        NotificationStatus  @default(PENDING)
+  title         String
+  body          String?
+  recipient     Json?
+  payload       Json                @default("{}")
+  readAt        DateTime?
+  deliveredAt   DateTime?
+  failedAt      DateTime?
+  failureReason String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, userId, readAt, createdAt])
+  @@index([tenantId, type, createdAt])
+  @@index([tenantId, status, channel, createdAt])
+  @@map("notification_events")
+}
+
+model NotificationPreference {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vertical   String   @default("shared")
+  type       String
+  inApp      Boolean  @default(true)
+  webPush    Boolean  @default(false)
+  email      Boolean  @default(false)
+  whatsapp   Boolean  @default(false)
+  quietStart String?
+  quietEnd   String?
+  timezone   String   @default("America/Bogota")
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, userId, vertical, type])
+  @@index([tenantId, userId])
+  @@index([tenantId, vertical, type])
+  @@map("notification_preferences")
+}
+
+model WebPushSubscription {
+  id             String    @id @default(cuid())
+  tenantId       String
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId       String?
+  branch         Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint       String    @unique
+  p256dh         String
+  auth           String
+  expirationTime DateTime?
+  userAgent      String?
+  deviceLabel    String?
+  isActive       Boolean   @default(true)
+  lastSeenAt     DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([tenantId, userId, isActive])
+  @@index([tenantId, branchId, isActive])
+  @@map("web_push_subscriptions")
+}
+
+enum NotificationChannel {
+  IN_APP
+  WEB_PUSH
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  CANCELLED
 }

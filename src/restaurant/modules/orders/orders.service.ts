@@ -6,11 +6,13 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { CashMovementType, OrderEventType } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
+import { RegisterPaymentDto } from './dto/payment.dto';
 import {
   KITCHEN_TICKET_UPDATED,
   KitchenTicketUpdatedEvent,
@@ -19,6 +21,10 @@ import {
   TABLE_UPDATED,
   TableUpdatedEvent,
 } from '../../../realtime/realtime.events';
+import { OrderEventsService } from '../order-events/order-events.service';
+import { PrintJobsService } from '../printing/print-jobs.service';
+import { PrintingDocumentService } from '../printing/printing-document.service';
+import { ReceiptsService } from '../receipts/receipts.service';
 
 const ORDER_INCLUDE = {
   items: {
@@ -33,6 +39,10 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
+    private readonly orderEvents: OrderEventsService,
+    private readonly printJobs: PrintJobsService,
+    private readonly printingDocs: PrintingDocumentService,
+    private readonly receipts: ReceiptsService,
   ) {}
 
   async findAll(ctx: TenantContext, status = 'OPEN', tableId?: string) {
@@ -60,6 +70,7 @@ export class OrdersService {
   }
 
   async create(ctx: TenantContext, dto: CreateOrderDto) {
+    const items = dto.items ?? [];
     const table = await this.prisma.restaurantTable.findFirst({
       where: {
         id: dto.tableId,
@@ -73,7 +84,7 @@ export class OrdersService {
         `Table is not available (status: ${table.status})`,
       );
 
-    const productIds = dto.items.map((i) => i.productId);
+    const productIds = items.map((i) => i.productId);
     const products = await this.prisma.product.findMany({
       where: {
         id: { in: productIds },
@@ -92,17 +103,21 @@ export class OrdersService {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           tableId: dto.tableId,
+          terminalId: dto.terminalId,
           waiterId: dto.waiterId,
           status: 'OPEN',
-          items: {
-            create: dto.items.map((i) => ({
-              productId: i.productId,
-              name: productMap.get(i.productId)!.name,
-              priceCOP: productMap.get(i.productId)!.priceCOP,
-              qty: i.qty,
-              sentQty: 0,
-            })),
-          },
+          items:
+            items.length > 0
+              ? {
+                  create: items.map((i) => ({
+                    productId: i.productId,
+                    name: productMap.get(i.productId)!.name,
+                    priceCOP: productMap.get(i.productId)!.priceCOP,
+                    qty: i.qty,
+                    sentQty: 0,
+                  })),
+                }
+              : undefined,
         },
         include: ORDER_INCLUDE,
       });
@@ -111,6 +126,39 @@ export class OrdersService {
         where: { id: dto.tableId },
         data: { status: 'PREPARING' },
       });
+
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: newOrder.id,
+          type: OrderEventType.OPENED,
+          metadata: {
+            tableId: dto.tableId,
+            terminalId: dto.terminalId ?? null,
+            waiterId: dto.waiterId ?? null,
+          },
+        },
+        tx,
+      );
+      for (const item of items) {
+        const product = productMap.get(item.productId)!;
+        await this.orderEvents.record(
+          {
+            tenantId: ctx.tenantId,
+            orderId: newOrder.id,
+            type: OrderEventType.ITEM_ADDED,
+            metadata: {
+              productId: item.productId,
+              name: product.name,
+              priceCOP: product.priceCOP,
+              previousQty: 0,
+              newQty: item.qty,
+              deltaQty: item.qty,
+            },
+          },
+          tx,
+        );
+      }
 
       return newOrder;
     });
@@ -140,27 +188,131 @@ export class OrdersService {
       throw new NotFoundException('One or more products not found');
 
     const productMap = new Map(products.map((p) => [p.id, p]));
+    const desiredIds = new Set(productIds);
+    const removedItems = order.items.filter(
+      (existing) => !desiredIds.has(existing.productId),
+    );
+    const changedItems = dto.items
+      .map((item) => ({
+        desired: item,
+        existing: order.items.find((i) => i.productId === item.productId),
+      }))
+      .filter(
+        (entry) => entry.existing && entry.existing.qty !== entry.desired.qty,
+      );
+    const addedItems = dto.items.filter(
+      (item) =>
+        !order.items.some((existing) => existing.productId === item.productId),
+    );
+
+    for (const existing of order.items) {
+      if (desiredIds.has(existing.productId)) continue;
+      if (existing.sentQty > 0) {
+        throw new UnprocessableEntityException(
+          `Cannot remove item already sent to kitchen: ${existing.name}`,
+        );
+      }
+    }
 
     for (const item of dto.items) {
       const existing = order.items.find((i) => i.productId === item.productId);
-      if (existing) {
-        await this.prisma.orderItem.update({
-          where: { id: existing.id },
-          data: { qty: existing.qty + item.qty },
-        });
-      } else {
-        await this.prisma.orderItem.create({
-          data: {
-            orderId: id,
-            productId: item.productId,
-            name: productMap.get(item.productId)!.name,
-            priceCOP: productMap.get(item.productId)!.priceCOP,
-            qty: item.qty,
-            sentQty: 0,
-          },
-        });
+      if (existing && item.qty < existing.sentQty) {
+        throw new UnprocessableEntityException(
+          `Cannot reduce ${existing.name} below sent quantity (${existing.sentQty})`,
+        );
       }
     }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.orderItem.deleteMany({
+        where: {
+          orderId: id,
+          productId: { notIn: productIds },
+          sentQty: 0,
+        },
+      });
+
+      for (const item of dto.items) {
+        const existing = order.items.find((i) => i.productId === item.productId);
+        if (existing) {
+          await tx.orderItem.update({
+            where: { id: existing.id },
+            data: { qty: item.qty },
+          });
+        } else {
+          await tx.orderItem.create({
+            data: {
+              orderId: id,
+              productId: item.productId,
+              name: productMap.get(item.productId)!.name,
+              priceCOP: productMap.get(item.productId)!.priceCOP,
+              qty: item.qty,
+              sentQty: 0,
+            },
+          });
+        }
+      }
+
+      await this.orderEvents.ensureOpened(ctx.tenantId, id, order.createdAt, tx);
+      for (const item of addedItems) {
+        const product = productMap.get(item.productId)!;
+        await this.orderEvents.record(
+          {
+            tenantId: ctx.tenantId,
+            orderId: id,
+            type: OrderEventType.ITEM_ADDED,
+            metadata: {
+              productId: item.productId,
+              name: product.name,
+              priceCOP: product.priceCOP,
+              previousQty: 0,
+              newQty: item.qty,
+              deltaQty: item.qty,
+            },
+          },
+          tx,
+        );
+      }
+      for (const entry of changedItems) {
+        const existing = entry.existing!;
+        await this.orderEvents.record(
+          {
+            tenantId: ctx.tenantId,
+            orderId: id,
+            type: OrderEventType.ITEM_UPDATED,
+            metadata: {
+              productId: existing.productId,
+              name: existing.name,
+              priceCOP: existing.priceCOP,
+              previousQty: existing.qty,
+              newQty: entry.desired.qty,
+              deltaQty: entry.desired.qty - existing.qty,
+              sentQty: existing.sentQty,
+            },
+          },
+          tx,
+        );
+      }
+      for (const item of removedItems) {
+        await this.orderEvents.record(
+          {
+            tenantId: ctx.tenantId,
+            orderId: id,
+            type: OrderEventType.ITEM_REMOVED,
+            metadata: {
+              productId: item.productId,
+              name: item.name,
+              priceCOP: item.priceCOP,
+              previousQty: item.qty,
+              newQty: 0,
+              deltaQty: -item.qty,
+              sentQty: item.sentQty,
+            },
+          },
+          tx,
+        );
+      }
+    });
 
     return this.findOne(ctx, id);
   }
@@ -282,8 +434,31 @@ export class OrdersService {
         });
       }
 
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          type: OrderEventType.SENT_TO_KITCHEN,
+          ticketId: newTicket.id,
+          metadata: {
+            ticketId: newTicket.id,
+            items: pendingItems.map((item) => ({
+              productId: item.productId,
+              name: item.name,
+              qty: item.qty - item.sentQty,
+              previousSentQty: item.sentQty,
+              newSentQty: item.qty,
+            })),
+          },
+        },
+        tx,
+      );
+
       return newTicket;
     });
+
+    // Comanda a cocina (best-effort: la impresión nunca bloquea el flujo).
+    await this.emitKitchenTicketPrint(ctx, order.tableId, ticket);
 
     this.events.emit(KITCHEN_TICKET_UPDATED, {
       tenantId: ctx.tenantId,
@@ -309,12 +484,75 @@ export class OrdersService {
     return ticket;
   }
 
-  async requestPayment(ctx: TenantContext, id: string) {
+  async requestPayment(ctx: TenantContext, id: string, dto: RegisterPaymentDto) {
     const order = await this.assertOpenOrder(id, ctx.tenantId);
+    const totalContributions = dto.contributions.reduce(
+      (sum, c) => sum + c.amount,
+      0,
+    );
+    if (totalContributions !== dto.totalCOP) {
+      throw new UnprocessableEntityException(
+        'Payment contributions must equal totalCOP',
+      );
+    }
+    const totalItems = dto.items.reduce(
+      (sum, item) => sum + item.priceCOP * item.qty,
+      0,
+    );
+    if (totalItems !== dto.totalCOP) {
+      throw new UnprocessableEntityException(
+        'Payment items total must equal totalCOP',
+      );
+    }
 
-    await this.prisma.restaurantTable.update({
-      where: { id: order.tableId },
-      data: { status: 'PAYMENT' },
+    const contributions = this.normalizePaymentContributions(dto.contributions);
+    const items = this.normalizePaymentItems(dto.items);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentSplit.create({
+        data: {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          totalCOP: dto.totalCOP,
+          contributions: {
+            create: contributions,
+          },
+          items: {
+            create: items,
+          },
+        },
+      });
+
+      await tx.restaurantTable.update({
+        where: { id: order.tableId },
+        data: { status: 'PAYMENT' },
+      });
+
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          type: OrderEventType.PAYMENT_REQUESTED,
+          metadata: {
+            totalCOP: dto.totalCOP,
+            contributions,
+          },
+        },
+        tx,
+      );
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          type: OrderEventType.PAYMENT_REGISTERED,
+          metadata: {
+            totalCOP: dto.totalCOP,
+            contributions,
+            items,
+          },
+        },
+        tx,
+      );
     });
 
     this.events.emit(TABLE_UPDATED, {
@@ -329,32 +567,38 @@ export class OrdersService {
 
   async close(ctx: TenantContext, id: string, dto: CloseOrderDto) {
     const order = await this.assertOpenOrder(id, ctx.tenantId);
+    const paymentSplits = await this.prisma.paymentSplit.findMany({
+      where: { orderId: id, tenantId: ctx.tenantId },
+      include: { contributions: true, items: true },
+      orderBy: { paidAt: 'asc' },
+    });
+    if (paymentSplits.length === 0) {
+      throw new UnprocessableEntityException(
+        'Order must have at least one payment split before close',
+      );
+    }
 
-    const closed = await this.prisma.$transaction(async (tx) => {
-      const paymentSplit = await tx.paymentSplit.create({
-        data: {
-          tenantId: ctx.tenantId,
-          orderId: id,
-          totalCOP: dto.totalCOP,
-          contributions: {
-            create: [
-              {
-                method: dto.paymentMethod,
-                amount: dto.totalCOP,
-                cardType: dto.cardType,
-              },
-            ],
-          },
-        },
-        include: { contributions: true },
-      });
+    const totalCOP = paymentSplits.reduce((sum, ps) => sum + ps.totalCOP, 0);
+    const orderTotalCOP = order.items.reduce(
+      (sum, item) => sum + item.priceCOP * item.qty,
+      0,
+    );
+    if (totalCOP !== orderTotalCOP) {
+      throw new UnprocessableEntityException(
+        'Registered payments must equal order total before close',
+      );
+    }
+    const terminalId = dto.terminalId ?? order.terminalId;
 
+    const closedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id },
         data: {
           status: 'CLOSED',
-          closedAt: new Date(),
-          totalCOP: dto.totalCOP,
+          closedAt,
+          totalCOP,
+          terminalId,
         },
       });
 
@@ -363,15 +607,76 @@ export class OrdersService {
         data: { status: 'AVAILABLE' },
       });
 
-      return paymentSplit;
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          type: OrderEventType.CLOSED,
+          at: closedAt,
+          metadata: {
+            totalCOP,
+            terminalId: terminalId ?? null,
+            cashSessionId: dto.cashSessionId ?? null,
+            paymentSplitIds: paymentSplits.map((split) => split.id),
+          },
+        },
+        tx,
+      );
     });
+
+    // ── Post-cierre (best-effort: no debe romper la venta) ──────────────────
+    // 1) Movimiento de caja SALE (si hay sesión abierta para el terminal).
+    let cashSessionId: string | null = null;
+    try {
+      cashSessionId = await this.recordCashSale(
+        ctx,
+        terminalId,
+        dto.cashSessionId,
+        paymentSplits.flatMap((split) =>
+          split.contributions.map((c) => ({
+            method: c.method,
+            amount: c.amount,
+          })),
+        ),
+        id,
+      );
+    } catch {
+      cashSessionId = null;
+    }
+
+    // 2) Recibo compartible + PrintJob RECEIPT.
+    let receiptUrl: string | null = null;
+    try {
+      const fullOrder = await this.prisma.order.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          table: { select: { code: true } },
+          waiter: { select: { name: true } },
+          tenant: { select: { name: true } },
+          paymentSplits: { include: { contributions: true, items: true } },
+        },
+      });
+      if (fullOrder) {
+        const receipt = await this.receipts.createForOrder(fullOrder);
+        receiptUrl = receipt.url;
+        await this.printJobs.enqueue({
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          createdByUserId: ctx.userId,
+          document: receipt.document,
+        });
+      }
+    } catch {
+      // El front puede recuperar el recibo vía /sales/:id o /receipts/share.
+    }
 
     this.events.emit(ORDER_CLOSED, {
       tenantId: ctx.tenantId,
       branchId: ctx.branchId,
       orderId: id,
       tableId: order.tableId,
-      totalCOP: dto.totalCOP,
+      totalCOP,
     } satisfies OrderClosedEvent);
 
     this.events.emit(TABLE_UPDATED, {
@@ -381,7 +686,123 @@ export class OrdersService {
       reason: 'order-closed',
     } satisfies TableUpdatedEvent);
 
-    return { id, status: 'CLOSED', paymentSplits: [closed] };
+    return {
+      id,
+      status: 'CLOSED',
+      paymentSplits,
+      cashSessionId,
+      receiptUrl,
+    };
+  }
+
+  private normalizePaymentContributions(
+    contributions: RegisterPaymentDto['contributions'],
+  ) {
+    const byMethod = new Map<
+      string,
+      { method: string; amount: number; cardType: string | null }
+    >();
+    for (const contribution of contributions) {
+      const existing = byMethod.get(contribution.method);
+      if (existing) {
+        existing.amount += contribution.amount;
+        existing.cardType ??= contribution.cardType ?? null;
+      } else {
+        byMethod.set(contribution.method, {
+          method: contribution.method,
+          amount: contribution.amount,
+          cardType: contribution.cardType ?? null,
+        });
+      }
+    }
+    return [...byMethod.values()];
+  }
+
+  private normalizePaymentItems(items: RegisterPaymentDto['items']) {
+    const byProduct = new Map<
+      string,
+      { productId: string; name: string; qty: number; priceCOP: number }
+    >();
+    for (const item of items) {
+      const existing = byProduct.get(item.productId);
+      if (existing) {
+        existing.qty += item.qty;
+      } else {
+        byProduct.set(item.productId, { ...item });
+      }
+    }
+    return [...byProduct.values()];
+  }
+
+  private async recordCashSale(
+    ctx: TenantContext,
+    terminalId: string | null | undefined,
+    cashSessionId: string | null | undefined,
+    contributions: Array<{ method: string; amount: number }>,
+    orderId: string,
+  ) {
+    const session = cashSessionId
+      ? await this.prisma.cashSession.findFirst({
+          where: {
+            id: cashSessionId,
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            status: 'OPEN',
+          },
+        })
+      : await this.prisma.cashSession.findFirst({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            status: 'OPEN',
+            ...(terminalId ? { terminalId } : {}),
+          },
+          orderBy: { openedAt: 'desc' },
+        });
+
+    if (!session) return null;
+
+    await this.prisma.cashMovement.createMany({
+      data: contributions.map((c) => ({
+        sessionId: session.id,
+        type: CashMovementType.SALE,
+        method: c.method,
+        amount: c.amount,
+        reference: orderId,
+        createdByUserId: ctx.userId,
+      })),
+    });
+    return session.id;
+  }
+
+  /** Comanda de cocina best-effort: nunca propaga errores al flujo de orden. */
+  private async emitKitchenTicketPrint(
+    ctx: TenantContext,
+    tableId: string,
+    ticket: { id: string; orderId: string; sentAt: Date; priority: string; items: Array<{ name: string; qty: number }> },
+  ) {
+    try {
+      const table = await this.prisma.restaurantTable.findUnique({
+        where: { id: tableId },
+        select: { code: true },
+      });
+      const document = this.printingDocs.buildKitchenTicket({
+        ticketId: ticket.id,
+        orderId: ticket.orderId,
+        tableCode: table?.code ?? null,
+        priority: ticket.priority,
+        sentAt: ticket.sentAt,
+        items: ticket.items.map((i) => ({ name: i.name, qty: i.qty })),
+      });
+      await this.printJobs.enqueue({
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        createdByUserId: ctx.userId,
+        document,
+      });
+    } catch {
+      // sin impresora / error de driver → el front usa preview.
+    }
   }
 
   private async assertOpenOrder(id: string, tenantId: string) {
