@@ -16,10 +16,14 @@ import {
   UpsertNotificationPreferenceDto,
   UpsertWebPushSubscriptionDto,
 } from './dto/notification.dto';
+import { WebPushProvider } from './web-push.provider';
 
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly webPush: WebPushProvider,
+  ) {}
 
   async listEvents(ctx: TenantContext, query: ListNotificationsQueryDto) {
     const limit = query.limit ?? 50;
@@ -188,6 +192,10 @@ export class NotificationsService {
     return { subscriptions: subscriptions.map((s) => this.mapSubscription(s)) };
   }
 
+  getWebPushPublicKey() {
+    return { publicKey: this.webPush.getPublicKey() };
+  }
+
   async upsertWebPushSubscription(
     ctx: TenantContext,
     dto: UpsertWebPushSubscriptionDto,
@@ -251,6 +259,115 @@ export class NotificationsService {
     return this.mapSubscription(updated);
   }
 
+  async sendWebPushTest(ctx: TenantContext) {
+    const event = await this.prisma.notificationEvent.create({
+      data: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        userId: ctx.userId,
+        type: 'web_push.test',
+        channel: NotificationChannel.WEB_PUSH,
+        status: NotificationStatus.PENDING,
+        title: 'Lynko test',
+        body: 'Tus notificaciones Web Push están conectadas.',
+        payload: {
+          url: '/app',
+          kind: 'web_push_test',
+        },
+      },
+    });
+
+    const subscriptions = await this.prisma.webPushSubscription.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        userId: ctx.userId,
+        isActive: true,
+      },
+    });
+
+    if (subscriptions.length === 0) {
+      const failed = await this.prisma.notificationEvent.update({
+        where: { id: event.id },
+        data: {
+          status: NotificationStatus.FAILED,
+          failedAt: new Date(),
+          failureReason: 'NO_ACTIVE_WEB_PUSH_SUBSCRIPTIONS',
+        },
+      });
+      return {
+        event: this.mapEvent(failed),
+        sent: 0,
+        failed: 0,
+        inactive: 0,
+      };
+    }
+
+    let sent = 0;
+    let failed = 0;
+    let inactive = 0;
+    const errors: string[] = [];
+
+    for (const subscription of subscriptions) {
+      try {
+        await this.webPush.send(
+          {
+            endpoint: subscription.endpoint,
+            p256dh: subscription.p256dh,
+            auth: subscription.auth,
+          },
+          {
+            title: event.title,
+            body: event.body ?? undefined,
+            url: '/app',
+            data: {
+              notificationId: event.id,
+              type: event.type,
+            },
+          },
+        );
+        sent += 1;
+      } catch (error) {
+        failed += 1;
+        const statusCode = this.webPushStatusCode(error);
+        const message =
+          error instanceof Error ? error.message : 'Unknown Web Push error';
+        errors.push(statusCode ? `${statusCode}: ${message}` : message);
+
+        if (statusCode === 404 || statusCode === 410) {
+          inactive += 1;
+          await this.prisma.webPushSubscription.update({
+            where: { id: subscription.id },
+            data: { isActive: false, lastSeenAt: new Date() },
+          });
+        }
+      }
+    }
+
+    const now = new Date();
+    const updated = await this.prisma.notificationEvent.update({
+      where: { id: event.id },
+      data:
+        sent > 0
+          ? {
+              status: NotificationStatus.SENT,
+              deliveredAt: now,
+              failureReason: errors.length > 0 ? errors.join(' | ') : null,
+            }
+          : {
+              status: NotificationStatus.FAILED,
+              failedAt: now,
+              failureReason: errors.join(' | ') || 'WEB_PUSH_SEND_FAILED',
+            },
+    });
+
+    return {
+      event: this.mapEvent(updated),
+      sent,
+      failed,
+      inactive,
+    };
+  }
+
   private async assertBranch(ctx: TenantContext, branchId: string) {
     if (
       branchId !== ctx.branchId &&
@@ -277,6 +394,18 @@ export class NotificationsService {
 
   private toJson(value: unknown): Prisma.InputJsonValue {
     return (value ?? {}) as Prisma.InputJsonValue;
+  }
+
+  private webPushStatusCode(error: unknown) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'statusCode' in error &&
+      typeof (error as { statusCode?: unknown }).statusCode === 'number'
+    ) {
+      return (error as { statusCode: number }).statusCode;
+    }
+    return undefined;
   }
 
   private mapEvent(event: any) {

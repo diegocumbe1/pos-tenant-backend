@@ -80,6 +80,17 @@ export class NotificationsController {
     return this.notifications.listWebPushSubscriptions(ctx);
   }
 
+  @Get('web-push/public-key')
+  getWebPushPublicKey() {
+    return this.notifications.getWebPushPublicKey();
+  }
+
+  @Post('web-push/test')
+  @HttpCode(HttpStatus.OK)
+  sendWebPushTest(@CurrentTenant() ctx: TenantContext) {
+    return this.notifications.sendWebPushTest(ctx);
+  }
+
   @Post('web-push/subscriptions')
   @HttpCode(HttpStatus.OK)
   upsertWebPushSubscription(
