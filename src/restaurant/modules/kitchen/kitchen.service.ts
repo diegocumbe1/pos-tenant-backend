@@ -8,6 +8,7 @@ import { OrderEventType } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { OrderEventsService } from '../order-events/order-events.service';
+import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import {
   KITCHEN_TICKET_STATUSES,
   KitchenTicketStatus,
@@ -30,6 +31,7 @@ export class KitchenService {
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
     private readonly orderEvents: OrderEventsService,
+    private readonly notifications: NotificationDispatcherService,
   ) {}
 
   async findTickets(ctx: TenantContext, status?: string) {
@@ -100,6 +102,19 @@ export class KitchenService {
         tableId: updated.order.tableId,
         reason: 'kitchen-ready',
       } satisfies TableUpdatedEvent);
+
+      // Push por rol a mesera/cajero (best-effort).
+      await this.notifications.dispatch({
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        vertical: 'restaurant',
+        type: 'kitchen.ticket.ready',
+        title: 'Pedido listo',
+        body: 'Un pedido está listo para servir.',
+        url: '/app',
+        payload: { orderId: updated.orderId, ticketId: id },
+        excludeUserId: ctx.userId,
+      });
     }
 
     return mapped;

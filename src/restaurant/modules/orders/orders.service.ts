@@ -25,6 +25,7 @@ import { OrderEventsService } from '../order-events/order-events.service';
 import { PrintJobsService } from '../printing/print-jobs.service';
 import { PrintingDocumentService } from '../printing/printing-document.service';
 import { ReceiptsService } from '../receipts/receipts.service';
+import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 
 const ORDER_INCLUDE = {
   items: {
@@ -43,6 +44,7 @@ export class OrdersService {
     private readonly printJobs: PrintJobsService,
     private readonly printingDocs: PrintingDocumentService,
     private readonly receipts: ReceiptsService,
+    private readonly notifications: NotificationDispatcherService,
   ) {}
 
   async findAll(ctx: TenantContext, status = 'OPEN', tableId?: string) {
@@ -480,6 +482,20 @@ export class OrdersService {
         })),
       },
     } satisfies KitchenTicketUpdatedEvent);
+
+    // Push por rol a cocina (best-effort: nunca bloquea el flujo del POS).
+    const itemCount = ticket.items.reduce((sum, i) => sum + i.qty, 0);
+    await this.notifications.dispatch({
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      vertical: 'restaurant',
+      type: 'order.kitchen.new',
+      title: 'Nueva comanda',
+      body: `${itemCount} ${itemCount === 1 ? 'ítem enviado' : 'ítems enviados'} a cocina.`,
+      url: '/kitchen',
+      payload: { orderId: id, ticketId: ticket.id },
+      excludeUserId: ctx.userId,
+    });
 
     return ticket;
   }
