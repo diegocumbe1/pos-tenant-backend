@@ -737,6 +737,58 @@ async function main() {
   }
   console.log('✅ Users + UserBranch');
 
+  // ─── Platform admins (superadmins @uselynko) ──────────────────────────────────
+  // Identidad de plataforma (NO rol de tenant). Se crean con `npm run bootstrap:root`
+  // (requieren usuario en Supabase Auth); aquí solo aseguramos el flag de forma
+  // idempotente si ya existen localmente. Ver docs/BACKOFFICE_ARCHITECTURE.md §1/§10.3.
+  const PLATFORM_ADMIN_EMAILS = ['admin@uselynko.com', 'noreply@uselynko.com'];
+  const flagged = await prisma.user.updateMany({
+    where: { email: { in: PLATFORM_ADMIN_EMAILS } },
+    data: { isPlatformAdmin: true },
+  });
+  console.log(
+    `✅ Platform admins flagged (${flagged.count}/${PLATFORM_ADMIN_EMAILS.length} presentes; faltantes → \`npm run bootstrap:root\`)`,
+  );
+
+  // ─── Suscripciones por tenant existente ───────────────────────────────────────
+  // El acceso a la app del tenant se condiciona por tenant.status + subscription.status
+  // (enforcement en login). Creamos una suscripción ACTIVE/manual por cada tenant.
+  const PLAN_PRICE_COP: Record<string, number> = {
+    BASIC: 79000,
+    PRO: 129000,
+    PREMIUM: 219000,
+  };
+  const PLAN_PRICE_USD: Record<string, number> = {
+    BASIC: 20,
+    PRO: 32,
+    PREMIUM: 55,
+  };
+  const allTenants = await prisma.tenant.findMany({
+    where: { deletedAt: null },
+    select: { id: true, plan: true },
+  });
+  const subNow = new Date();
+  const subPeriodEnd = new Date(subNow);
+  subPeriodEnd.setMonth(subPeriodEnd.getMonth() + 1);
+  for (const t of allTenants) {
+    await prisma.subscription.upsert({
+      where: { tenantId: t.id },
+      update: {}, // no pisar cambios manuales hechos desde el backoffice
+      create: {
+        tenantId: t.id,
+        plan: t.plan,
+        status: 'ACTIVE',
+        billingCycle: 'monthly',
+        currentPeriodStart: subNow,
+        currentPeriodEnd: subPeriodEnd,
+        priceCOP: PLAN_PRICE_COP[t.plan] ?? null,
+        priceUSD: PLAN_PRICE_USD[t.plan] ?? null,
+        provider: 'manual',
+      },
+    });
+  }
+  console.log(`✅ Subscriptions (${allTenants.length} tenants)`);
+
   // ─── Barbería demo ────────────────────────────────────────────────────────
   await prisma.barberSettings.upsert({
     where: { branchId: 'branch-barber-001' },

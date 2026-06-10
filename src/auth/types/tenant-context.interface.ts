@@ -24,6 +24,8 @@ export interface AuthenticatedUser {
   roleId: string;
   roleCode: string;
   isRoot: boolean;
+  /** Identidad de plataforma (super-admin). El ROOT siempre cuenta como tal. */
+  isPlatformAdmin: boolean;
   passwordSetAt: Date | null;
   accessibleBranches: string[];
 }

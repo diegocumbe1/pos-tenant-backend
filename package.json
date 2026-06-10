@@ -19,6 +19,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "bootstrap:root": "ts-node scripts/bootstrap-root.ts",
+    "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "seed:jimcell": "ts-node scripts/seed-jimcell.ts",
     "seed:malexca-services": "ts-node scripts/seed-malexca-services.ts"

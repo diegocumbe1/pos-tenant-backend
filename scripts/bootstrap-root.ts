@@ -89,13 +89,16 @@ async function main() {
   // 3) Crear fila local
   await prisma.user.upsert({
     where: { id: supabaseUserId },
-    update: { roleId: rootRole.id, name, isActive: true },
+    // ROOT es la identidad de plataforma absoluta → también es platform admin
+    // (entra al backoffice /platform/*). Ver docs/BACKOFFICE_ARCHITECTURE.md §1.
+    update: { roleId: rootRole.id, name, isActive: true, isPlatformAdmin: true },
     create: {
       id: supabaseUserId,
       tenantId: null,
       email,
       name,
       roleId: rootRole.id,
+      isPlatformAdmin: true,
       invitedAt: new Date(),
       passwordSetAt: new Date(), // ROOT se considera ya establecido
     },

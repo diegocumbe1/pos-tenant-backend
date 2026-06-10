@@ -12,16 +12,24 @@ datasource db {
 // ─── Multi-tenancy Core ───────────────────────────────────────────────────────
 
 model Tenant {
-  id         String            @id
-  name       String
-  plan       String            @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
-  verticalId String?
-  vertical   BusinessVertical? @relation(fields: [verticalId], references: [id])
-  planId     String?
-  planRef    SubscriptionPlan? @relation(fields: [planId], references: [id])
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @updatedAt
-  deletedAt  DateTime?
+  id               String            @id
+  name             String
+  plan             String            @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
+  verticalId       String?
+  vertical         BusinessVertical? @relation(fields: [verticalId], references: [id])
+  planId           String?
+  planRef          SubscriptionPlan? @relation(fields: [planId], references: [id])
+  // Estado operativo de la cuenta (controla el acceso a la app del tenant).
+  status           TenantStatus      @default(ACTIVE)
+  // Overrides de features por tenant (espeja Tenant.featureOverrides del FE).
+  // Pisan el default del plan. null = sin overrides (hereda del plan).
+  featureOverrides Json?
+  // Suscripción comercial vigente (entidad propia).
+  subscription     Subscription?
+  subscriptionPayments SubscriptionPayment[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  deletedAt        DateTime?
 
   users                User[]
   branches             Branch[]
@@ -519,6 +527,8 @@ model User {
   name          String
   roleId        String
   role          Role      @relation(fields: [roleId], references: [id])
+  // Identidad de plataforma (super-admin de Lynko). NO es un rol de tenant.
+  isPlatformAdmin Boolean @default(false)
   isActive      Boolean   @default(true)
   invitedAt     DateTime?
   passwordSetAt DateTime?
@@ -1357,4 +1367,125 @@ enum NotificationStatus {
   READ
   FAILED
   CANCELLED
+}
+
+// ─── Plataforma / Backoffice super-admin ──────────────────────────────────────
+// Ver docs/BACKOFFICE_ARCHITECTURE.md §3.5 y §10.
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  SUSPENDED
+}
+
+enum BillingCycle {
+  monthly
+  yearly
+}
+
+// Suscripción comercial del tenant (plan + estado + ciclo + periodo).
+// Es la fuente de verdad de billing; tenant.status es el estado operativo.
+model Subscription {
+  id                 String             @id @default(cuid())
+  tenantId           String             @unique
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan               String // "BASIC" | "PRO" | "PREMIUM" (consistente con Tenant.plan)
+  status             SubscriptionStatus @default(TRIALING)
+  billingCycle       BillingCycle       @default(monthly)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  trialEndsAt        DateTime?
+  canceledAt         DateTime?
+  priceCOP           Int?
+  priceUSD           Int?
+  provider           String             @default("manual") // 'manual' | 'stripe' | 'mercadopago'
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([status])
+  @@map("subscriptions")
+}
+
+// Histórico de pagos de suscripción (facturación manual MVP).
+// Un pago cubre un periodo [periodStart, periodEnd]; si periodEnd es futuro y
+// abarca varios ciclos, es un PAGO ANTICIPADO. Ver §3.6.
+model SubscriptionPayment {
+  id              String       @id @default(cuid())
+  tenantId        String
+  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan            String // plan vigente al momento del pago
+  amount          Int // monto entero
+  currency        String       @default("COP") // 'COP' | 'USD'
+  billingCycle    BillingCycle @default(monthly)
+  periodStart     DateTime
+  periodEnd       DateTime
+  paidAt          DateTime     @default(now())
+  method          String       @default("manual") // 'cash' | 'transfer' | 'card' | 'manual' | …
+  reference       String?
+  note            String?
+  createdByUserId String // platform admin que registró el pago
+  createdAt       DateTime     @default(now())
+
+  @@index([tenantId, paidAt])
+  @@index([paidAt])
+  @@map("subscription_payments")
+}
+
+// Finanzas internas de la plataforma Lynko (NO tenant-scoped).
+// Se usan en el backoffice super-admin para organizar gastos propios,
+// metas comerciales y seguimiento financiero cross-tenant.
+model PlatformExpense {
+  id              String   @id @default(cuid())
+  category        String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
+  concept         String
+  amount          Int
+  currency        String   @default("COP") // 'COP' | 'USD'
+  incurredAt      DateTime
+  note            String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([incurredAt])
+  @@index([category])
+  @@map("platform_expenses")
+}
+
+model PlatformFinanceGoal {
+  id              String   @id @default(cuid())
+  periodMonth     String // "YYYY-MM"
+  metric          String // 'revenue_cop' | 'profit_cop' | 'mrr_cop' | 'payments_count' | 'active_tenants'
+  target          Int
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([periodMonth, metric])
+  @@index([periodMonth])
+  @@map("platform_finance_goals")
+}
+
+// Bitácora de toda mutación cross-tenant hecha desde el backoffice (§2).
+model PlatformAuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String
+  action      String // 'tenant.status', 'subscription.suspend', 'user.disable', …
+  targetType  String // 'tenant' | 'subscription' | 'user'
+  targetId    String
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("platform_audit_logs")
 }

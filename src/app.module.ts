@@ -15,6 +15,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { AssetsModule } from './assets/assets.module';
 import { BarberModule } from './barber/barber.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PlatformModule } from './platform/platform.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     AssetsModule,
     BarberModule,
     NotificationsModule,
+    PlatformModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -28,19 +29,27 @@ import {
 } from '../helpers/auth-helpers';
 import { SupabaseJwtPayload } from '../types/jwt-payload.interface';
 import { AuthenticatedUser } from '../types/tenant-context.interface';
+import { resolveEffectiveFeatures } from '../../platform/plans/plan-features';
 import { PermissionsCacheService } from './permissions-cache.service';
+
+// Estados de suscripción que permiten operar la app del tenant (§10.5).
+const ACTIVE_SUBSCRIPTION_STATUSES = ['TRIALING', 'ACTIVE', 'PAST_DUE'];
 
 type LoginProfileRow = {
   id: string;
   email: string;
   name: string;
   isActive: boolean;
+  isPlatformAdmin: boolean;
   passwordSetAt: Date | null;
   tenantId: string | null;
   tenant: {
     id: string;
     name: string;
     plan: string;
+    status: string;
+    featureOverrides: Record<string, boolean | number> | null;
+    subscriptionStatus: string | null;
     vertical?: { code: string } | null;
   } | null;
   role: {
@@ -67,6 +76,21 @@ type TenantProfile = {
   slug: string;
   vertical: string | null;
   plan: string;
+};
+
+type AuthProfile = {
+  id: string;
+  email: string;
+  name: string;
+  isActive: boolean;
+  isPlatformAdmin: boolean;
+  passwordSet: boolean;
+  tenant: TenantProfile | null;
+  features: Record<string, boolean | number> | null;
+  role: LoginProfileRow['role'];
+  isRoot: boolean;
+  permissions: string[];
+  branches: BranchProfile[];
 };
 
 @Injectable()
@@ -286,6 +310,8 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('User not found');
     if (!user.role) throw new UnauthorizedException('User role not found');
 
+    this.assertTenantAccess(user, authUser.isRoot);
+
     const permissionsStart = performance.now();
     const permissions = authUser.isRoot
       ? null
@@ -296,20 +322,7 @@ export class AuthService {
     const branches = await this.resolveAccessibleBranches(user);
     timings.branches = elapsedMs(branchesStart);
 
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      isActive: user.isActive,
-      passwordSet: !!user.passwordSetAt,
-      tenant: this.toTenantProfile(user.tenant),
-      role: user.role,
-      isRoot: authUser.isRoot,
-      permissions: authUser.isRoot
-        ? ['*']
-        : [...(permissions ?? new Set<string>())],
-      branches,
-    };
+    return this.toAuthProfile(user, authUser.isRoot, permissions, branches);
   }
 
   async login(dto: LoginDto, timings: Record<string, number> = {}) {
@@ -417,12 +430,14 @@ export class AuthService {
       throw new UnauthorizedException('User role not found');
     }
 
+    const isRoot = user.role.code === 'ROOT';
+    this.assertTenantAccess(user, isRoot);
+
     const branchesStart = performance.now();
     const branches = await this.resolveAccessibleBranches(user);
     timings.branches = elapsedMs(branchesStart);
 
     const permissionsStart = performance.now();
-    const isRoot = user.role.code === 'ROOT';
     const permissions = isRoot
       ? null
       : await this.permissionsCache.getForRole(user.role.id);
@@ -436,18 +451,89 @@ export class AuthService {
       expires_in: session.expires_in,
       token_type: session.token_type,
       user: { id: authUser.id, email: authUser.email },
-      profile: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        isActive: user.isActive,
-        passwordSet: !!user.passwordSetAt,
-        tenant: this.toTenantProfile(user.tenant),
-        role: user.role,
-        isRoot,
-        permissions: isRoot ? ['*'] : [...(permissions ?? new Set<string>())],
-        branches,
-      },
+      profile: this.toAuthProfile(user, isRoot, permissions, branches),
+    };
+  }
+
+  /**
+   * Enforcement de acceso por suscripción (§10.5). Corta el login/sesión de un
+   * usuario de tenant cuando su cuenta o suscripción no está activa, o el usuario
+   * fue deshabilitado. Platform admins y ROOT nunca quedan bloqueados.
+   */
+  private assertTenantAccess(
+    user: Pick<LoginProfileRow, 'isActive' | 'isPlatformAdmin' | 'tenant'>,
+    isRoot = false,
+  ): void {
+    if (user.isPlatformAdmin || isRoot) return;
+
+    if (!user.isActive) {
+      throw new ForbiddenException({
+        code: 'USER_DISABLED',
+        message: 'Tu usuario fue deshabilitado. Contacta al administrador.',
+      });
+    }
+
+    const tenant = user.tenant;
+    if (!tenant) return; // sin tenant (no debería para non-root) → no bloquear aquí
+
+    const tenantActive = tenant.status === 'ACTIVE';
+    const subOk = ACTIVE_SUBSCRIPTION_STATUSES.includes(
+      tenant.subscriptionStatus ?? 'ACTIVE',
+    );
+    if (!tenantActive || !subOk) {
+      throw new ForbiddenException({
+        code: 'ACCOUNT_INACTIVE',
+        message: 'La cuenta no está activa. Contacta a soporte.',
+        tenantStatus: tenant.status,
+        subscriptionStatus: tenant.subscriptionStatus,
+      });
+    }
+  }
+
+  /** Features efectivos del tenant (PLAN_FEATURES[plan] + featureOverrides). */
+  private resolveTenantFeatures(
+    tenant: LoginProfileRow['tenant'],
+  ): Record<string, boolean | number> | null {
+    if (!tenant) return null;
+    return resolveEffectiveFeatures(tenant.plan, tenant.featureOverrides);
+  }
+
+  private toAuthProfile(
+    user: LoginProfileRow,
+    isRoot: boolean,
+    permissions: Set<string> | null,
+    branches: BranchProfile[],
+  ): AuthProfile {
+    const isPlatformAdmin = user.isPlatformAdmin || isRoot;
+    const platformOnly = isPlatformAdmin && !user.tenant;
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isActive: user.isActive,
+      isPlatformAdmin,
+      passwordSet: !!user.passwordSetAt,
+      tenant: platformOnly
+        ? this.platformTenantProfile()
+        : this.toTenantProfile(user.tenant),
+      features: platformOnly
+        ? resolveEffectiveFeatures('PREMIUM')
+        : this.resolveTenantFeatures(user.tenant),
+      role: user.role,
+      isRoot,
+      permissions: isRoot ? ['*'] : [...(permissions ?? new Set<string>())],
+      branches,
+    };
+  }
+
+  private platformTenantProfile(): TenantProfile {
+    return {
+      id: 'platform',
+      name: 'Lynko Platform',
+      slug: 'platform',
+      vertical: 'platform',
+      plan: 'PREMIUM',
     };
   }
 
@@ -460,6 +546,7 @@ export class AuthService {
         u.email,
         u.name,
         u."isActive",
+        u."isPlatformAdmin",
         u."passwordSetAt",
         u."tenantId",
         CASE
@@ -468,6 +555,9 @@ export class AuthService {
             'id', t.id,
             'name', t.name,
             'plan', t.plan,
+            'status', t.status,
+            'featureOverrides', t."featureOverrides",
+            'subscriptionStatus', s.status,
             'vertical', CASE
               WHEN v.id IS NULL THEN NULL
               ELSE json_build_object('code', v.code)
@@ -495,11 +585,12 @@ export class AuthService {
       FROM users u
       LEFT JOIN tenants t ON t.id = u."tenantId"
       LEFT JOIN business_verticals v ON v.id = t."verticalId"
+      LEFT JOIN subscriptions s ON s."tenantId" = t.id
       LEFT JOIN roles r ON r.id = u."roleId"
       LEFT JOIN user_branches ub ON ub."userId" = u.id
       LEFT JOIN branches b ON b.id = ub."branchId"
       WHERE u.id = ${userId}
-      GROUP BY u.id, t.id, v.id, r.id
+      GROUP BY u.id, t.id, v.id, s.id, r.id
       LIMIT 1
     `;
     return rows[0] ?? null;

@@ -58,6 +58,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       roleId: user.roleId,
       roleCode: user.role.code,
       isRoot: user.role.code === 'ROOT',
+      isPlatformAdmin: user.isPlatformAdmin || user.role.code === 'ROOT',
       passwordSetAt: user.passwordSetAt,
       accessibleBranches: user.userBranches.map((ub) => ub.branchId),
     };
