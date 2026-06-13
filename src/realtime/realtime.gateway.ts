@@ -68,9 +68,10 @@ export class RealtimeGateway
       });
       if (!user) throw new Error('User not provisioned');
       if (!user.isActive) throw new Error('User inactive');
-      if (!user.passwordSetAt && user.role.code !== 'ROOT') {
-        throw new Error('Invitation not completed');
-      }
+      // Nota: NO exigimos passwordSetAt aquí. El realtime es solo lectura (recibe
+      // eventos) y los endpoints REST del POS (orders/tables) tampoco lo exigen
+      // (solo JwtAuthGuard + TenantGuard). Pedirlo aquí dejaba a dueños creados por
+      // signup directo con "REALTIME: Pendiente" → no recibían cambios en vivo.
 
       const isRoot = user.role.code === 'ROOT';
       const branchId =

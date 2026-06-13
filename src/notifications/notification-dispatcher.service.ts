@@ -66,12 +66,40 @@ export class NotificationDispatcherService {
 
     if (users.length === 0) return;
 
+    const userIds = users.map((user) => user.id);
+    const [preferences, subscriptions] = await Promise.all([
+      this.prisma.notificationPreference.findMany({
+        where: {
+          tenantId: params.tenantId,
+          userId: { in: userIds },
+          type: params.type,
+        },
+      }),
+      this.prisma.webPushSubscription.findMany({
+        where: {
+          tenantId: params.tenantId,
+          userId: { in: userIds },
+          isActive: true,
+        },
+      }),
+    ]);
+    const preferenceByUser = new Map(
+      preferences.map((preference) => [preference.userId, preference]),
+    );
+    const subscriptionsByUser = new Map<
+      string,
+      typeof subscriptions
+    >();
+    for (const subscription of subscriptions) {
+      const list = subscriptionsByUser.get(subscription.userId) ?? [];
+      list.push(subscription);
+      subscriptionsByUser.set(subscription.userId, list);
+    }
+
     for (const user of users) {
       // 2. Preferencia efectiva por usuario. Sin fila => default = recibir
       //    (web push ON para roles objetivo). El usuario puede optar por no.
-      const pref = await this.prisma.notificationPreference.findFirst({
-        where: { tenantId: params.tenantId, userId: user.id, type: params.type },
-      });
+      const pref = preferenceByUser.get(user.id);
       const wantsWebPush = pref ? pref.enabled && pref.webPush : true;
       if (!wantsWebPush) continue;
       if (pref && this.isQuietNow(pref.quietStart, pref.quietEnd, pref.timezone)) {
@@ -79,14 +107,8 @@ export class NotificationDispatcherService {
       }
 
       // 3. Suscripciones web push activas del usuario.
-      const subscriptions = await this.prisma.webPushSubscription.findMany({
-        where: {
-          tenantId: params.tenantId,
-          userId: user.id,
-          isActive: true,
-        },
-      });
-      if (subscriptions.length === 0) continue;
+      const userSubscriptions = subscriptionsByUser.get(user.id) ?? [];
+      if (userSubscriptions.length === 0) continue;
 
       // 4. Un NotificationEvent por destinatario (registro + tracking).
       const event = await this.prisma.notificationEvent.create({
@@ -109,7 +131,7 @@ export class NotificationDispatcherService {
 
       let sent = 0;
       const errors: string[] = [];
-      for (const subscription of subscriptions) {
+      for (const subscription of userSubscriptions) {
         try {
           await this.webPush.send(
             {

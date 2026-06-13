@@ -23,6 +23,7 @@ import {
   UpdateRoleDto,
 } from './dto/role.dto';
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
+import { UpdateTenantDto } from './dto/tenant.dto';
 import { TenantAdminService } from './tenant-admin.service';
 
 @ApiTags('TenantAdmin')
@@ -32,6 +33,17 @@ import { TenantAdminService } from './tenant-admin.service';
 @Controller('tenant')
 export class TenantAdminController {
   constructor(private readonly service: TenantAdminService) {}
+
+  // ─── Tenant (datos del negocio) ──────────────────────────────────────────────
+
+  @Patch()
+  @RequirePermissions('restaurant:settings:write')
+  updateTenant(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: UpdateTenantDto,
+  ) {
+    return this.service.updateTenant(ctx.tenantId, dto);
+  }
 
   // ─── Branches ──────────────────────────────────────────────────────────────
 

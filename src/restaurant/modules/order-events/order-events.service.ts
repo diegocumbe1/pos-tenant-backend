@@ -41,11 +41,27 @@ export class OrderEventsService {
     });
   }
 
-  /** Registra varios eventos en orden. */
+  /**
+   * Registra varios eventos en una sola query (`createMany`).
+   *
+   * Antes iteraba con un `await` por evento: con la DB lejos (p.ej. pooler en
+   * otra región, ~200ms por round-trip) eso multiplicaba la latencia y podía
+   * reventar el timeout de la transacción que lo envuelve (Prisma P2028).
+   */
   async recordMany(inputs: RecordEventInput[], tx?: TxClient) {
-    for (const input of inputs) {
-      await this.record(input, tx);
-    }
+    if (inputs.length === 0) return;
+    const client = tx ?? this.prisma;
+    return client.orderEvent.createMany({
+      data: inputs.map((input) => ({
+        tenantId: input.tenantId,
+        orderId: input.orderId,
+        type: input.type,
+        ticketId: input.ticketId ?? null,
+        note: input.note ?? null,
+        metadata: input.metadata ?? undefined,
+        ...(input.at ? { at: input.at } : {}),
+      })),
+    });
   }
 
   /**

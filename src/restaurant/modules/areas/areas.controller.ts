@@ -33,6 +33,11 @@ export class AreasController {
     return this.areasService.findAll(ctx);
   }
 
+  @Get('trash')
+  findTrash(@CurrentTenant() ctx: TenantContext) {
+    return this.areasService.findTrash(ctx);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(@CurrentTenant() ctx: TenantContext, @Body() dto: CreateAreaDto) {
@@ -52,5 +57,16 @@ export class AreasController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.areasService.remove(ctx, id);
+  }
+
+  @Patch(':id/restore')
+  restore(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.areasService.restore(ctx, id);
+  }
+
+  @Delete(':id/permanent')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  purge(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.areasService.purge(ctx, id);
   }
 }

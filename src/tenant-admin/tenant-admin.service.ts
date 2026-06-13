@@ -17,6 +17,7 @@ import {
   UpdateRoleDto,
 } from './dto/role.dto';
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
+import { UpdateTenantDto } from './dto/tenant.dto';
 
 @Injectable()
 export class TenantAdminService {
@@ -56,6 +57,21 @@ export class TenantAdminService {
     });
   }
 
+  // ─── Tenant (datos del negocio) ──────────────────────────────────────────────
+
+  async updateTenant(tenantId: string, dto: UpdateTenantDto) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!tenant) {
+      throw new NotFoundException(`Tenant ${tenantId} not found`);
+    }
+    const updated = await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { name: dto.name },
+      select: { id: true, name: true, plan: true, verticalId: true },
+    });
+    return { tenant: updated };
+  }
+
   // ─── Users ─────────────────────────────────────────────────────────────────
 
   async listUsers(tenantId: string) {
@@ -82,9 +98,11 @@ export class TenantAdminService {
   }
 
   async inviteUser(tenantId: string, dto: TenantInviteUserDto) {
-    // Validar rol pertenece al tenant
-    const role = await this.prisma.role.findUnique({ where: { id: dto.roleId } });
-    if (!role || role.tenantId !== tenantId) {
+    // Validar rol pertenece al tenant (acepta id o code, ej. "WAITER")
+    const role = await this.prisma.role.findFirst({
+      where: { tenantId, OR: [{ id: dto.roleId }, { code: dto.roleId }] },
+    });
+    if (!role) {
       throw new BadRequestException(`Role ${dto.roleId} not found in tenant`);
     }
     if (role.code === 'ROOT') {
@@ -105,10 +123,17 @@ export class TenantAdminService {
     });
     if (existingEmail) throw new ConflictException(`Email already in use: ${dto.email}`);
 
-    const supabaseUser = await this.supabase.inviteUser(dto.email, {
-      tenantId,
-      roleId: dto.roleId,
-    });
+    const appMetadata = { tenantId, roleId: role.id };
+
+    // Modo contraseña temporal: crea el usuario ya confirmado y con clave usable.
+    // Modo invitación: envía correo y el usuario define su clave al confirmar.
+    let supabaseUser;
+    if (dto.password) {
+      supabaseUser = await this.supabase.createUser(dto.email, appMetadata);
+      await this.supabase.setPassword(supabaseUser.id, dto.password);
+    } else {
+      supabaseUser = await this.supabase.inviteUser(dto.email, appMetadata);
+    }
 
     const user = await this.prisma.user.create({
       data: {
@@ -116,8 +141,9 @@ export class TenantAdminService {
         tenantId,
         email: dto.email,
         name: dto.name,
-        roleId: dto.roleId,
+        roleId: role.id,
         invitedAt: new Date(),
+        passwordSetAt: dto.password ? new Date() : null,
         userBranches: { create: dto.branchIds.map((branchId) => ({ branchId })) },
       },
     });
@@ -125,7 +151,7 @@ export class TenantAdminService {
     return {
       id: user.id,
       email: user.email,
-      status: 'INVITED',
+      status: dto.password ? 'ACTIVE' : 'INVITED',
     };
   }
 
@@ -154,10 +180,31 @@ export class TenantAdminService {
       }
     }
 
+    // Email: solo procesamos si realmente cambió (case-insensitive).
+    const normalizedEmail = dto.email?.trim().toLowerCase();
+    const emailChanged =
+      !!normalizedEmail && normalizedEmail !== user.email.toLowerCase();
+    if (emailChanged) {
+      const existing = await this.prisma.user.findFirst({
+        where: {
+          email: { equals: normalizedEmail, mode: 'insensitive' },
+          NOT: { id: userId },
+        },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new ConflictException(`Email already in use: ${normalizedEmail}`);
+      }
+    }
+
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: userId },
-        data: { name: dto.name, roleId: dto.roleId },
+        data: {
+          name: dto.name,
+          roleId: dto.roleId,
+          email: emailChanged ? normalizedEmail : undefined,
+        },
       });
       if (dto.branchIds) {
         await tx.userBranch.deleteMany({ where: { userId } });
@@ -168,7 +215,10 @@ export class TenantAdminService {
       }
     });
 
-    // Sincronizar app_metadata en Supabase si cambió el rol
+    // Sincronizar Supabase Auth: email y/o app_metadata del rol.
+    if (emailChanged) {
+      await this.supabase.updateUserEmail(userId, normalizedEmail!);
+    }
     if (dto.roleId) {
       await this.supabase.setAppMetadata(userId, {
         tenantId,

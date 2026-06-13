@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -16,6 +17,8 @@ import { AssetsModule } from './assets/assets.module';
 import { BarberModule } from './barber/barber.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PlatformModule } from './platform/platform.module';
+import { LoggingInterceptor } from './monitoring/logging.interceptor';
+import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
 
 @Module({
   imports: [
@@ -36,6 +39,14 @@ import { PlatformModule } from './platform/platform.module';
     PlatformModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    RequestMetricsMiddleware,
+    { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
+  ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
+  }
+}

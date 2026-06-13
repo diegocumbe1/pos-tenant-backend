@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -32,6 +33,11 @@ export class TablesController {
     return this.tablesService.findAll(ctx);
   }
 
+  @Get('trash')
+  findTrash(@CurrentTenant() ctx: TenantContext) {
+    return this.tablesService.findTrash(ctx);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(@CurrentTenant() ctx: TenantContext, @Body() dto: CreateTableDto) {
@@ -45,5 +51,22 @@ export class TablesController {
     @Body() dto: UpdateTableDto,
   ) {
     return this.tablesService.update(ctx, id, dto);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.tablesService.remove(ctx, id);
+  }
+
+  @Patch(':id/restore')
+  restore(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.tablesService.restore(ctx, id);
+  }
+
+  @Delete(':id/permanent')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  purge(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.tablesService.purge(ctx, id);
   }
 }

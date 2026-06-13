@@ -106,6 +106,12 @@ const PERMISSIONS: Array<{
     description: 'Ver finanzas (dashboard, gastos, nómina, metas)',
   },
   {
+    code: 'restaurant:finance:write',
+    resource: 'finance',
+    action: 'write',
+    description: 'Crear/editar/borrar gastos, nómina y metas',
+  },
+  {
     code: 'restaurant:staff:read',
     resource: 'staff',
     action: 'read',
@@ -296,6 +302,19 @@ const PLANS = [
   { id: 'plan-premium', code: 'PREMIUM', name: 'Premium', priceCOP: 199000 },
 ];
 
+const PLAN_PRICE_COP: Record<string, number> = {
+  BASIC: 79000,
+  PRO: 129000,
+  PREMIUM: 219000,
+};
+const PLAN_PRICE_USD: Record<string, number> = {
+  BASIC: 20,
+  PRO: 32,
+  PREMIUM: 55,
+};
+
+const PLATFORM_ADMIN_EMAILS = ['admin@uselynko.com', 'noreply@uselynko.com'];
+
 // ─── System role matrix ──────────────────────────────────────────────────────
 // ROOT se maneja aparte (tenantId=null, todos los permisos).
 const SYSTEM_ROLES: Array<{
@@ -331,6 +350,7 @@ const SYSTEM_ROLES: Array<{
       'restaurant:reservations:read',
       'restaurant:reservations:write',
       'restaurant:finance:read',
+      'restaurant:finance:write',
       'restaurant:staff:read',
       'restaurant:staff:write',
       'restaurant:settings:read',
@@ -406,6 +426,7 @@ const SYSTEM_ROLES: Array<{
       'restaurant:staff:read',
       'restaurant:staff:write',
       'restaurant:finance:read',
+      'restaurant:finance:write',
       'restaurant:reservations:read',
       'restaurant:settings:read',
       'restaurant:settings:write',
@@ -464,6 +485,50 @@ async function seedSystemRolesForTenant(tenantId: string | null) {
       skipDuplicates: true,
     });
   }
+}
+
+async function flagPlatformAdmins() {
+  // Identidad de plataforma (NO rol de tenant). Se crean con `npm run bootstrap:root`
+  // (requieren usuario en Supabase Auth); aquí solo aseguramos el flag de forma
+  // idempotente si ya existen localmente. Ver docs/BACKOFFICE_ARCHITECTURE.md §1/§10.3.
+  const flagged = await prisma.user.updateMany({
+    where: { email: { in: PLATFORM_ADMIN_EMAILS } },
+    data: { isPlatformAdmin: true },
+  });
+  console.log(
+    `✅ Platform admins flagged (${flagged.count}/${PLATFORM_ADMIN_EMAILS.length} presentes; faltantes → \`npm run bootstrap:root\`)`,
+  );
+}
+
+async function ensureSubscriptionsForExistingTenants() {
+  // El acceso a la app del tenant se condiciona por tenant.status + subscription.status
+  // (enforcement en login). Creamos una suscripción ACTIVE/manual por cada tenant
+  // que todavía no tenga una, sin pisar cambios manuales hechos desde el backoffice.
+  const allTenants = await prisma.tenant.findMany({
+    where: { deletedAt: null },
+    select: { id: true, plan: true },
+  });
+  const subNow = new Date();
+  const subPeriodEnd = new Date(subNow);
+  subPeriodEnd.setMonth(subPeriodEnd.getMonth() + 1);
+  for (const t of allTenants) {
+    await prisma.subscription.upsert({
+      where: { tenantId: t.id },
+      update: {},
+      create: {
+        tenantId: t.id,
+        plan: t.plan,
+        status: 'ACTIVE',
+        billingCycle: 'monthly',
+        currentPeriodStart: subNow,
+        currentPeriodEnd: subPeriodEnd,
+        priceCOP: PLAN_PRICE_COP[t.plan] ?? null,
+        priceUSD: PLAN_PRICE_USD[t.plan] ?? null,
+        provider: 'manual',
+      },
+    });
+  }
+  console.log(`✅ Subscriptions (${allTenants.length} tenants)`);
 }
 
 async function main() {
@@ -528,6 +593,16 @@ async function main() {
     }
   }
   console.log('✅ Verticals + plans');
+
+  const seedDemoData = process.env.SEED_DEMO_DATA === 'true';
+  if (!seedDemoData) {
+    await seedSystemRolesForTenant(null); // ROOT global para bootstrap/backoffice
+    console.log('✅ Root role');
+    await flagPlatformAdmins();
+    await ensureSubscriptionsForExistingTenants();
+    console.log('ℹ️ Demo data skipped (set SEED_DEMO_DATA=true to create it).');
+    return;
+  }
 
   // ─── Tenants ────────────────────────────────────────────────────────────────
   await prisma.tenant.upsert({
@@ -738,56 +813,10 @@ async function main() {
   console.log('✅ Users + UserBranch');
 
   // ─── Platform admins (superadmins @uselynko) ──────────────────────────────────
-  // Identidad de plataforma (NO rol de tenant). Se crean con `npm run bootstrap:root`
-  // (requieren usuario en Supabase Auth); aquí solo aseguramos el flag de forma
-  // idempotente si ya existen localmente. Ver docs/BACKOFFICE_ARCHITECTURE.md §1/§10.3.
-  const PLATFORM_ADMIN_EMAILS = ['admin@uselynko.com', 'noreply@uselynko.com'];
-  const flagged = await prisma.user.updateMany({
-    where: { email: { in: PLATFORM_ADMIN_EMAILS } },
-    data: { isPlatformAdmin: true },
-  });
-  console.log(
-    `✅ Platform admins flagged (${flagged.count}/${PLATFORM_ADMIN_EMAILS.length} presentes; faltantes → \`npm run bootstrap:root\`)`,
-  );
+  await flagPlatformAdmins();
 
   // ─── Suscripciones por tenant existente ───────────────────────────────────────
-  // El acceso a la app del tenant se condiciona por tenant.status + subscription.status
-  // (enforcement en login). Creamos una suscripción ACTIVE/manual por cada tenant.
-  const PLAN_PRICE_COP: Record<string, number> = {
-    BASIC: 79000,
-    PRO: 129000,
-    PREMIUM: 219000,
-  };
-  const PLAN_PRICE_USD: Record<string, number> = {
-    BASIC: 20,
-    PRO: 32,
-    PREMIUM: 55,
-  };
-  const allTenants = await prisma.tenant.findMany({
-    where: { deletedAt: null },
-    select: { id: true, plan: true },
-  });
-  const subNow = new Date();
-  const subPeriodEnd = new Date(subNow);
-  subPeriodEnd.setMonth(subPeriodEnd.getMonth() + 1);
-  for (const t of allTenants) {
-    await prisma.subscription.upsert({
-      where: { tenantId: t.id },
-      update: {}, // no pisar cambios manuales hechos desde el backoffice
-      create: {
-        tenantId: t.id,
-        plan: t.plan,
-        status: 'ACTIVE',
-        billingCycle: 'monthly',
-        currentPeriodStart: subNow,
-        currentPeriodEnd: subPeriodEnd,
-        priceCOP: PLAN_PRICE_COP[t.plan] ?? null,
-        priceUSD: PLAN_PRICE_USD[t.plan] ?? null,
-        provider: 'manual',
-      },
-    });
-  }
-  console.log(`✅ Subscriptions (${allTenants.length} tenants)`);
+  await ensureSubscriptionsForExistingTenants();
 
   // ─── Barbería demo ────────────────────────────────────────────────────────
   await prisma.barberSettings.upsert({

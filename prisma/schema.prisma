@@ -643,6 +643,7 @@ model Product {
   recipeLines  RecipeLine[]
 
   @@index([tenantId])
+  @@index([tenantId, branchId, deletedAt])
   @@index([categoryId])
   @@map("products")
 }
@@ -784,13 +785,15 @@ model Area {
   branch    Branch   @relation(fields: [branchId], references: [id])
   name      String
   emoji     String?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
+  deletedAt DateTime? // soft-delete: null = activa, fecha = en papelera
 
   tables RestaurantTable[]
 
   @@unique([branchId, name])
   @@index([tenantId])
   @@index([branchId])
+  @@index([deletedAt])
   @@map("areas")
 }
 
@@ -806,15 +809,17 @@ model RestaurantTable {
   area      Area?    @relation(fields: [areaId], references: [id])
   code      String
   seats     Int
-  shape     String   @default("SQUARE") // "SQUARE" | "RECTANGLE" | "ROUND"
-  status    String   @default("AVAILABLE") // "AVAILABLE" | "PREPARING" | "ON_TABLE" | "PAYMENT" | "RESERVED" | "CLOSED"
-  createdAt DateTime @default(now())
+  shape     String    @default("SQUARE") // "SQUARE" | "RECTANGLE" | "ROUND"
+  status    String    @default("AVAILABLE") // "AVAILABLE" | "PREPARING" | "ON_TABLE" | "PAYMENT" | "RESERVED" | "CLOSED"
+  createdAt DateTime  @default(now())
+  deletedAt DateTime? // soft-delete: null = activa, fecha = en papelera
 
   orders       Order[]
   reservations Reservation[]
 
   @@unique([branchId, code])
   @@index([branchId])
+  @@index([deletedAt])
   @@map("restaurant_tables")
 }
 
@@ -844,6 +849,9 @@ model Order {
 
   @@index([tenantId])
   @@index([branchId, status])
+  @@index([tenantId, branchId, status, createdAt])
+  @@index([tenantId, branchId, status, closedAt])
+  @@index([tenantId, branchId, tableId, status])
   @@index([tableId])
   @@map("orders")
 }
@@ -882,6 +890,7 @@ model KitchenTicket {
   items KitchenTicketItem[]
 
   @@index([tenantId])
+  @@index([tenantId, status, priority, sentAt])
   @@index([status, priority])
   @@index([orderId])
   @@map("kitchen_tickets")
@@ -916,6 +925,8 @@ model PaymentSplit {
 
   @@index([tenantId])
   @@index([orderId])
+  @@index([tenantId, paidAt])
+  @@index([tenantId, orderId, paidAt])
   @@index([paidAt])
   @@map("payment_splits")
 }
@@ -971,6 +982,7 @@ model Reservation {
 
   @@index([tenantId])
   @@index([branchId, status])
+  @@index([tenantId, branchId, status, scheduledAt])
   @@index([tableId])
   @@index([scheduledAt])
   @@map("reservations")
@@ -992,6 +1004,7 @@ model Expense {
   createdAt  DateTime @default(now())
 
   @@index([tenantId])
+  @@index([tenantId, branchId, incurredAt])
   @@index([branchId, incurredAt])
   @@index([category])
   @@map("expenses")
@@ -1137,6 +1150,7 @@ model Printer {
 
   @@index([tenantId, branchId])
   @@index([tenantId, branchId, target])
+  @@index([tenantId, branchId, target, isActive])
   @@map("printers")
 }
 
@@ -1177,6 +1191,7 @@ model PrintJob {
 
   @@unique([tenantId, branchId, documentId])
   @@index([tenantId, branchId, status])
+  @@index([tenantId, branchId, status, createdAt])
   @@map("print_jobs")
 }
 
@@ -1258,6 +1273,7 @@ model CashMovement {
   createdAt       DateTime         @default(now())
 
   @@index([sessionId])
+  @@index([type, reference])
   @@map("cash_movements")
 }
 
@@ -1455,6 +1471,8 @@ model PlatformExpense {
   updatedAt       DateTime @updatedAt
 
   @@index([incurredAt])
+  @@index([incurredAt, currency])
+  @@index([category, currency, incurredAt])
   @@index([category])
   @@map("platform_expenses")
 }

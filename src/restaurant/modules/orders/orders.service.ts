@@ -2,11 +2,13 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { CashMovementType, OrderEventType } from '@prisma/client';
+import { CashMovementType, OrderEventType, Prisma } from '@prisma/client';
+import { performance } from 'perf_hooks';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -26,6 +28,13 @@ import { PrintJobsService } from '../printing/print-jobs.service';
 import { PrintingDocumentService } from '../printing/printing-document.service';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
+import { RequestMetricsStore } from '../../../monitoring/request-metrics.store';
+
+// Opciones para las transacciones interactivas de órdenes. El default de
+// Prisma es timeout 5s / maxWait 2s, que se queda corto cuando la DB está
+// lejos (cada query es un round-trip de ~200ms) y la tx hace varias queries
+// → P2028 "Transaction not found". Damos holgura sin colgar indefinidamente.
+const ORDER_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 } as const;
 
 const ORDER_INCLUDE = {
   items: {
@@ -37,6 +46,8 @@ const ORDER_INCLUDE = {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
@@ -129,41 +140,42 @@ export class OrdersService {
         data: { status: 'PREPARING' },
       });
 
-      await this.orderEvents.record(
-        {
-          tenantId: ctx.tenantId,
-          orderId: newOrder.id,
-          type: OrderEventType.OPENED,
-          metadata: {
-            tableId: dto.tableId,
-            terminalId: dto.terminalId ?? null,
-            waiterId: dto.waiterId ?? null,
-          },
-        },
-        tx,
-      );
-      for (const item of items) {
-        const product = productMap.get(item.productId)!;
-        await this.orderEvents.record(
+      // Un solo `createMany` (OPENED + un ITEM_ADDED por ítem) en lugar de
+      // N inserts en serie: evita multiplicar la latencia dentro de la tx.
+      await this.orderEvents.recordMany(
+        [
           {
             tenantId: ctx.tenantId,
             orderId: newOrder.id,
-            type: OrderEventType.ITEM_ADDED,
+            type: OrderEventType.OPENED,
             metadata: {
-              productId: item.productId,
-              name: product.name,
-              priceCOP: product.priceCOP,
-              previousQty: 0,
-              newQty: item.qty,
-              deltaQty: item.qty,
+              tableId: dto.tableId,
+              terminalId: dto.terminalId ?? null,
+              waiterId: dto.waiterId ?? null,
             },
           },
-          tx,
-        );
-      }
+          ...items.map((item) => {
+            const product = productMap.get(item.productId)!;
+            return {
+              tenantId: ctx.tenantId,
+              orderId: newOrder.id,
+              type: OrderEventType.ITEM_ADDED,
+              metadata: {
+                productId: item.productId,
+                name: product.name,
+                priceCOP: product.priceCOP,
+                previousQty: 0,
+                newQty: item.qty,
+                deltaQty: item.qty,
+              },
+            };
+          }),
+        ],
+        tx,
+      );
 
       return newOrder;
-    });
+    }, ORDER_TX_OPTIONS);
 
     this.events.emit(TABLE_UPDATED, {
       tenantId: ctx.tenantId,
@@ -190,10 +202,10 @@ export class OrdersService {
       throw new NotFoundException('One or more products not found');
 
     const productMap = new Map(products.map((p) => [p.id, p]));
-    const desiredIds = new Set(productIds);
-    const removedItems = order.items.filter(
-      (existing) => !desiredIds.has(existing.productId),
-    );
+    // Semántica aditiva/merge: el payload agrega ítems nuevos y actualiza la
+    // cantidad de los que ya existen. Los ítems de la orden que NO vengan en
+    // el payload se dejan intactos (no se eliminan). Las eliminaciones, si se
+    // necesitan, van por un endpoint aparte.
     const changedItems = dto.items
       .map((item) => ({
         desired: item,
@@ -207,15 +219,6 @@ export class OrdersService {
         !order.items.some((existing) => existing.productId === item.productId),
     );
 
-    for (const existing of order.items) {
-      if (desiredIds.has(existing.productId)) continue;
-      if (existing.sentQty > 0) {
-        throw new UnprocessableEntityException(
-          `Cannot remove item already sent to kitchen: ${existing.name}`,
-        );
-      }
-    }
-
     for (const item of dto.items) {
       const existing = order.items.find((i) => i.productId === item.productId);
       if (existing && item.qty < existing.sentQty) {
@@ -226,101 +229,81 @@ export class OrdersService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.orderItem.deleteMany({
-        where: {
-          orderId: id,
-          productId: { notIn: productIds },
-          sentQty: 0,
-        },
-      });
+      // Ítems nuevos en un solo insert.
+      if (addedItems.length > 0) {
+        await tx.orderItem.createMany({
+          data: addedItems.map((item) => ({
+            orderId: id,
+            productId: item.productId,
+            name: productMap.get(item.productId)!.name,
+            priceCOP: productMap.get(item.productId)!.priceCOP,
+            qty: item.qty,
+            sentQty: 0,
+          })),
+        });
+      }
 
-      for (const item of dto.items) {
-        const existing = order.items.find((i) => i.productId === item.productId);
-        if (existing) {
-          await tx.orderItem.update({
-            where: { id: existing.id },
-            data: { qty: item.qty },
-          });
-        } else {
-          await tx.orderItem.create({
-            data: {
-              orderId: id,
-              productId: item.productId,
-              name: productMap.get(item.productId)!.name,
-              priceCOP: productMap.get(item.productId)!.priceCOP,
-              qty: item.qty,
-              sentQty: 0,
-            },
-          });
-        }
+      // Solo actualizamos los ítems cuya cantidad realmente cambió.
+      for (const entry of changedItems) {
+        await tx.orderItem.update({
+          where: { id: entry.existing!.id },
+          data: { qty: entry.desired.qty },
+        });
       }
 
       await this.orderEvents.ensureOpened(ctx.tenantId, id, order.createdAt, tx);
-      for (const item of addedItems) {
-        const product = productMap.get(item.productId)!;
-        await this.orderEvents.record(
-          {
-            tenantId: ctx.tenantId,
-            orderId: id,
-            type: OrderEventType.ITEM_ADDED,
-            metadata: {
-              productId: item.productId,
-              name: product.name,
-              priceCOP: product.priceCOP,
-              previousQty: 0,
-              newQty: item.qty,
-              deltaQty: item.qty,
-            },
-          },
-          tx,
-        );
-      }
-      for (const entry of changedItems) {
-        const existing = entry.existing!;
-        await this.orderEvents.record(
-          {
-            tenantId: ctx.tenantId,
-            orderId: id,
-            type: OrderEventType.ITEM_UPDATED,
-            metadata: {
-              productId: existing.productId,
-              name: existing.name,
-              priceCOP: existing.priceCOP,
-              previousQty: existing.qty,
-              newQty: entry.desired.qty,
-              deltaQty: entry.desired.qty - existing.qty,
-              sentQty: existing.sentQty,
-            },
-          },
-          tx,
-        );
-      }
-      for (const item of removedItems) {
-        await this.orderEvents.record(
-          {
-            tenantId: ctx.tenantId,
-            orderId: id,
-            type: OrderEventType.ITEM_REMOVED,
-            metadata: {
-              productId: item.productId,
-              name: item.name,
-              priceCOP: item.priceCOP,
-              previousQty: item.qty,
-              newQty: 0,
-              deltaQty: -item.qty,
-              sentQty: item.sentQty,
-            },
-          },
-          tx,
-        );
-      }
-    });
+
+      // Eventos (added/updated) en un solo createMany.
+      await this.orderEvents.recordMany(
+        [
+          ...addedItems.map((item) => {
+            const product = productMap.get(item.productId)!;
+            return {
+              tenantId: ctx.tenantId,
+              orderId: id,
+              type: OrderEventType.ITEM_ADDED,
+              metadata: {
+                productId: item.productId,
+                name: product.name,
+                priceCOP: product.priceCOP,
+                previousQty: 0,
+                newQty: item.qty,
+                deltaQty: item.qty,
+              },
+            };
+          }),
+          ...changedItems.map((entry) => {
+            const existing = entry.existing!;
+            return {
+              tenantId: ctx.tenantId,
+              orderId: id,
+              type: OrderEventType.ITEM_UPDATED,
+              metadata: {
+                productId: existing.productId,
+                name: existing.name,
+                priceCOP: existing.priceCOP,
+                previousQty: existing.qty,
+                newQty: entry.desired.qty,
+                deltaQty: entry.desired.qty - existing.qty,
+                sentQty: existing.sentQty,
+              },
+            };
+          }),
+        ],
+        tx,
+      );
+    }, ORDER_TX_OPTIONS);
 
     return this.findOne(ctx, id);
   }
 
   async sendToKitchen(ctx: TenantContext, id: string) {
+    const assertStart = performance.now();
     const order = await this.assertOpenOrder(id, ctx.tenantId);
+    RequestMetricsStore.recordTiming(
+      'orders.sendToKitchen.assertOpenOrder',
+      performance.now() - assertStart,
+    );
 
     const pendingItems = order.items.filter((i) => i.qty > i.sentQty);
     if (pendingItems.length === 0)
@@ -328,6 +311,7 @@ export class OrdersService {
         'No pending items to send to kitchen',
       );
 
+    const txStart = performance.now();
     const ticket = await this.prisma.$transaction(async (tx) => {
       const newTicket = await tx.kitchenTicket.create({
         data: {
@@ -346,20 +330,41 @@ export class OrdersService {
         include: { items: true },
       });
 
+      // Una sola query para TODAS las recetas de los productos pendientes
+      // (antes era un findMany por ítem → N round-trips a la DB).
+      const pendingProductIds = [
+        ...new Set(pendingItems.map((i) => i.productId)),
+      ];
+      const recipeLines = await tx.recipeLine.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          productId: { in: pendingProductIds },
+        },
+        include: { ingredient: true },
+      });
+      const linesByProduct = new Map<string, typeof recipeLines>();
+      for (const line of recipeLines) {
+        const arr = linesByProduct.get(line.productId);
+        if (arr) arr.push(line);
+        else linesByProduct.set(line.productId, [line]);
+      }
+
+      // Cálculo del consumo de stock en memoria (sin tocar la DB). Los saldos
+      // se encadenan por ingrediente igual que antes; las escrituras se hacen
+      // en lote al final.
       const stockBalances = new Map<string, number>();
+      const ingredientById = new Map<
+        string,
+        (typeof recipeLines)[number]['ingredient']
+      >();
+      const movements: Prisma.StockMovementCreateManyInput[] = [];
 
       for (const item of pendingItems) {
         const itemQty = item.qty - item.sentQty;
-        const recipeLines = await tx.recipeLine.findMany({
-          where: {
-            tenantId: ctx.tenantId,
-            branchId: ctx.branchId,
-            productId: item.productId,
-          },
-          include: { ingredient: true },
-        });
+        for (const line of linesByProduct.get(item.productId) ?? []) {
+          ingredientById.set(line.ingredientId, line.ingredient);
 
-        for (const line of recipeLines) {
           const netRequiredInRecipeUnit = this.convertQuantity(
             line.quantity * itemQty,
             line.unit,
@@ -392,44 +397,54 @@ export class OrdersService {
           }
 
           stockBalances.set(line.ingredientId, newStock);
-
-          await tx.stockMovement.create({
-            data: {
-              tenantId: ctx.tenantId,
-              branchId: ctx.branchId,
-              ingredientId: line.ingredientId,
-              type: 'CONSUMPTION',
-              quantity: -grossRequiredInPurchaseUnit,
-              previousStock,
-              newStock,
-              orderId: id,
-              notes: `Auto consumption for ${item.name}`,
-              createdBy: ctx.userId,
-              createdByName: ctx.name,
-            },
-          });
-
-          const netUsableQuantity =
-            this.convertQuantity(
-              newStock,
-              line.ingredient.purchaseUnit,
-              line.ingredient.recipeUnit,
-            ) * usableRatio;
-
-          await tx.ingredient.update({
-            where: { id: line.ingredientId },
-            data: {
-              currentStock: newStock,
-              grossStockQuantity: newStock,
-              netUsableQuantity,
-              netUnitCost:
-                netUsableQuantity > 0
-                  ? line.ingredient.totalPurchaseCost / netUsableQuantity
-                  : 0,
-            },
+          movements.push({
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            ingredientId: line.ingredientId,
+            type: 'CONSUMPTION',
+            quantity: -grossRequiredInPurchaseUnit,
+            previousStock,
+            newStock,
+            orderId: id,
+            notes: `Auto consumption for ${item.name}`,
+            createdBy: ctx.userId,
+            createdByName: ctx.name,
           });
         }
+      }
 
+      // Movimientos de stock en un solo insert.
+      if (movements.length > 0) {
+        await tx.stockMovement.createMany({ data: movements });
+      }
+
+      // Un update por ingrediente distinto con su saldo final.
+      for (const [ingredientId, newStock] of stockBalances) {
+        const ingredient = ingredientById.get(ingredientId)!;
+        const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
+        const netUsableQuantity =
+          this.convertQuantity(
+            newStock,
+            ingredient.purchaseUnit,
+            ingredient.recipeUnit,
+          ) * usableRatio;
+
+        await tx.ingredient.update({
+          where: { id: ingredientId },
+          data: {
+            currentStock: newStock,
+            grossStockQuantity: newStock,
+            netUsableQuantity,
+            netUnitCost:
+              netUsableQuantity > 0
+                ? ingredient.totalPurchaseCost / netUsableQuantity
+                : 0,
+          },
+        });
+      }
+
+      // Marcar como enviados los ítems pendientes.
+      for (const item of pendingItems) {
         await tx.orderItem.update({
           where: { id: item.id },
           data: { sentQty: item.qty },
@@ -457,10 +472,19 @@ export class OrdersService {
       );
 
       return newTicket;
-    });
+    }, ORDER_TX_OPTIONS);
+    RequestMetricsStore.recordTiming(
+      'orders.sendToKitchen.transaction',
+      performance.now() - txStart,
+    );
 
     // Comanda a cocina (best-effort: la impresión nunca bloquea el flujo).
+    const printStart = performance.now();
     await this.emitKitchenTicketPrint(ctx, order.tableId, ticket);
+    RequestMetricsStore.recordTiming(
+      'orders.sendToKitchen.print',
+      performance.now() - printStart,
+    );
 
     this.events.emit(KITCHEN_TICKET_UPDATED, {
       tenantId: ctx.tenantId,
@@ -485,17 +509,22 @@ export class OrdersService {
 
     // Push por rol a cocina (best-effort: nunca bloquea el flujo del POS).
     const itemCount = ticket.items.reduce((sum, i) => sum + i.qty, 0);
-    await this.notifications.dispatch({
-      tenantId: ctx.tenantId,
-      branchId: ctx.branchId,
-      vertical: 'restaurant',
-      type: 'order.kitchen.new',
-      title: 'Nueva comanda',
-      body: `${itemCount} ${itemCount === 1 ? 'ítem enviado' : 'ítems enviados'} a cocina.`,
-      url: '/kitchen',
-      payload: { orderId: id, ticketId: ticket.id },
-      excludeUserId: ctx.userId,
-    });
+    void this.notifications
+      .dispatch({
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        vertical: 'restaurant',
+        type: 'order.kitchen.new',
+        title: 'Nueva comanda',
+        body: `${itemCount} ${itemCount === 1 ? 'ítem enviado' : 'ítems enviados'} a cocina.`,
+        url: '/kitchen',
+        payload: { orderId: id, ticketId: ticket.id },
+        excludeUserId: ctx.userId,
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Kitchen notification dispatch failed: ${message}`);
+      });
 
     return ticket;
   }
@@ -569,7 +598,7 @@ export class OrdersService {
         },
         tx,
       );
-    });
+    }, ORDER_TX_OPTIONS);
 
     this.events.emit(TABLE_UPDATED, {
       tenantId: ctx.tenantId,
@@ -638,7 +667,7 @@ export class OrdersService {
         },
         tx,
       );
-    });
+    }, ORDER_TX_OPTIONS);
 
     // ── Post-cierre (best-effort: no debe romper la venta) ──────────────────
     // 1) Movimiento de caja SALE (si hay sesión abierta para el terminal).

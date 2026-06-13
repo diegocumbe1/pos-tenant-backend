@@ -18,6 +18,16 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins && corsOrigins.length > 0 ? corsOrigins : true,
     credentials: true,
+    maxAge: Number(process.env.CORS_MAX_AGE_SECONDS ?? 86400),
+    exposedHeaders: [
+      'Server-Timing',
+      'X-Request-Id',
+      'X-Request-Duration-Ms',
+      'X-Handler-Duration-Ms',
+      'X-Prisma-Query-Count',
+      'X-Prisma-Db-Ms',
+      'X-Prisma-Slowest-Ms',
+    ],
   });
 
   // Read body parser limit from env (e.g. BODY_PARSER_LIMIT='10mb'), default to 10mb

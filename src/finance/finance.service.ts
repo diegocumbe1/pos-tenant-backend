@@ -1,10 +1,19 @@
 import {
+  ConflictException,
   Injectable,
+  NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
+import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
+import { CreatePayrollDto, UpdatePayrollDto } from './dto/payroll.dto';
+import {
+  CreateFinanceGoalDto,
+  UpdateFinanceGoalDto,
+} from './dto/finance-goal.dto';
 
 interface Range {
   from: Date;
@@ -236,6 +245,244 @@ export class FinanceService {
           progressPct,
         };
       }),
+    };
+  }
+
+  // ─── Gastos (write) ──────────────────────────────────────────────────────
+
+  async createExpense(ctx: TenantContext, dto: CreateExpenseDto) {
+    const expense = await this.prisma.expense.create({
+      data: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        category: dto.category,
+        concept: dto.concept,
+        amountCOP: dto.amountCOP,
+        incurredAt: new Date(dto.incurredAt),
+        note: dto.note ?? null,
+      },
+    });
+    return this.toExpenseDto(expense);
+  }
+
+  async updateExpense(ctx: TenantContext, id: string, dto: UpdateExpenseDto) {
+    await this.assertExpense(ctx, id);
+    const expense = await this.prisma.expense.update({
+      where: { id },
+      data: {
+        category: dto.category,
+        concept: dto.concept,
+        amountCOP: dto.amountCOP,
+        incurredAt:
+          dto.incurredAt !== undefined ? new Date(dto.incurredAt) : undefined,
+        note: dto.note,
+      },
+    });
+    return this.toExpenseDto(expense);
+  }
+
+  async removeExpense(ctx: TenantContext, id: string) {
+    await this.assertExpense(ctx, id);
+    await this.prisma.expense.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  // ─── Nómina (write) ──────────────────────────────────────────────────────
+
+  async createPayroll(ctx: TenantContext, dto: CreatePayrollDto) {
+    try {
+      const row = await this.prisma.payroll.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          userId: dto.userId ?? null,
+          staffName: dto.staffName,
+          role: dto.role,
+          periodMonth: dto.periodMonth,
+          grossCOP: dto.grossCOP,
+          netCOP: dto.netCOP,
+          paidAt: dto.paidAt ? new Date(dto.paidAt) : null,
+        },
+      });
+      return this.toPayrollDto(row);
+    } catch (err) {
+      throw this.mapUniqueViolation(
+        err,
+        'A payroll entry already exists for this staff and period',
+      );
+    }
+  }
+
+  async updatePayroll(ctx: TenantContext, id: string, dto: UpdatePayrollDto) {
+    await this.assertPayroll(ctx, id);
+    try {
+      const row = await this.prisma.payroll.update({
+        where: { id },
+        data: {
+          userId: dto.userId,
+          staffName: dto.staffName,
+          role: dto.role,
+          periodMonth: dto.periodMonth,
+          grossCOP: dto.grossCOP,
+          netCOP: dto.netCOP,
+          paidAt:
+            dto.paidAt === undefined
+              ? undefined
+              : dto.paidAt === null
+                ? null
+                : new Date(dto.paidAt),
+        },
+      });
+      return this.toPayrollDto(row);
+    } catch (err) {
+      throw this.mapUniqueViolation(
+        err,
+        'A payroll entry already exists for this staff and period',
+      );
+    }
+  }
+
+  async removePayroll(ctx: TenantContext, id: string) {
+    await this.assertPayroll(ctx, id);
+    await this.prisma.payroll.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  // ─── Metas (write) ───────────────────────────────────────────────────────
+
+  async createGoal(ctx: TenantContext, dto: CreateFinanceGoalDto) {
+    try {
+      const goal = await this.prisma.financeGoal.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          periodMonth: dto.periodMonth,
+          metric: dto.metric,
+          targetCOP: dto.targetCOP,
+        },
+      });
+      return this.toGoalDto(goal);
+    } catch (err) {
+      throw this.mapUniqueViolation(
+        err,
+        'A goal already exists for this metric and period',
+      );
+    }
+  }
+
+  async updateGoal(ctx: TenantContext, id: string, dto: UpdateFinanceGoalDto) {
+    await this.assertGoal(ctx, id);
+    try {
+      const goal = await this.prisma.financeGoal.update({
+        where: { id },
+        data: {
+          periodMonth: dto.periodMonth,
+          metric: dto.metric,
+          targetCOP: dto.targetCOP,
+        },
+      });
+      return this.toGoalDto(goal);
+    } catch (err) {
+      throw this.mapUniqueViolation(
+        err,
+        'A goal already exists for this metric and period',
+      );
+    }
+  }
+
+  async removeGoal(ctx: TenantContext, id: string) {
+    await this.assertGoal(ctx, id);
+    await this.prisma.financeGoal.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  // ─── Helpers de escritura ────────────────────────────────────────────────
+
+  private async assertExpense(ctx: TenantContext, id: string) {
+    const row = await this.prisma.expense.findFirst({
+      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { id: true },
+    });
+    if (!row) throw new NotFoundException(`Expense ${id} not found`);
+  }
+
+  private async assertPayroll(ctx: TenantContext, id: string) {
+    const row = await this.prisma.payroll.findFirst({
+      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { id: true },
+    });
+    if (!row) throw new NotFoundException(`Payroll ${id} not found`);
+  }
+
+  private async assertGoal(ctx: TenantContext, id: string) {
+    const row = await this.prisma.financeGoal.findFirst({
+      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { id: true },
+    });
+    if (!row) throw new NotFoundException(`Goal ${id} not found`);
+  }
+
+  private mapUniqueViolation(err: unknown, message: string) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      return new ConflictException(message);
+    }
+    return err;
+  }
+
+  private toExpenseDto(e: {
+    id: string;
+    category: string;
+    concept: string;
+    amountCOP: number;
+    incurredAt: Date;
+    note: string | null;
+  }) {
+    return {
+      id: e.id,
+      category: e.category,
+      concept: e.concept,
+      amountCOP: e.amountCOP,
+      incurredAt: e.incurredAt.getTime(),
+      note: e.note,
+    };
+  }
+
+  private toPayrollDto(r: {
+    id: string;
+    userId: string | null;
+    staffName: string;
+    role: string;
+    periodMonth: string;
+    grossCOP: number;
+    netCOP: number;
+    paidAt: Date | null;
+  }) {
+    return {
+      id: r.id,
+      userId: r.userId,
+      staffName: r.staffName,
+      role: r.role,
+      periodMonth: r.periodMonth,
+      grossCOP: r.grossCOP,
+      netCOP: r.netCOP,
+      paidAt: r.paidAt?.getTime() ?? null,
+    };
+  }
+
+  private toGoalDto(g: {
+    id: string;
+    periodMonth: string;
+    metric: string;
+    targetCOP: number;
+  }) {
+    return {
+      id: g.id,
+      periodMonth: g.periodMonth,
+      metric: g.metric,
+      targetCOP: g.targetCOP,
     };
   }
 

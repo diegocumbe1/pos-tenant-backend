@@ -22,9 +22,20 @@ export class TenantInviteUserDto {
   @ArrayNotEmpty()
   @IsString({ each: true })
   branchIds!: string[];
+
+  // Si viene, se crea el usuario con esta contraseña temporal (login inmediato).
+  // Si no, se envía invitación por correo.
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  password?: string;
 }
 
 export class UpdateUserDto {
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
   @IsOptional()
   @IsString()
   roleId?: string;

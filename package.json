@@ -22,7 +22,7 @@
     "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "seed:jimcell": "ts-node scripts/seed-jimcell.ts",
-    "seed:malexca-services": "ts-node scripts/seed-malexca-services.ts"
+    "seed:qa-showcase": "ts-node scripts/seed-qa-showcase.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

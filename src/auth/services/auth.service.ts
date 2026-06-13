@@ -327,10 +327,19 @@ export class AuthService {
 
   async login(dto: LoginDto, timings: Record<string, number> = {}) {
     const authStart = performance.now();
-    const { session, user: authUser } = await this.supabase.signInWithPassword(
-      dto.email,
-      dto.password,
-    );
+    let session;
+    let authUser;
+    try {
+      ({ session, user: authUser } = await this.supabase.signInWithPassword(
+        dto.email,
+        dto.password,
+      ));
+    } catch (err) {
+      // Si el login falla, distinguimos un usuario invitado que aún no activó
+      // su cuenta (no fijó contraseña) para dar un mensaje claro.
+      await this.assertNotPendingInvitation(dto.email);
+      throw err;
+    }
     timings.auth = elapsedMs(authStart);
 
     const response = await this.buildLoginResponse(
@@ -345,6 +354,28 @@ export class AuthService {
     );
 
     return response;
+  }
+
+  /**
+   * Lanza un 401 con mensaje claro si el email pertenece a un usuario invitado
+   * que todavía no activó su cuenta (sin contraseña fijada). Solo aplica a
+   * usuarios nuevos: si ya activó su clave, dejamos pasar el error original.
+   */
+  private async assertNotPendingInvitation(email: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email.trim(), mode: 'insensitive' } },
+      select: { invitedAt: true, passwordSetAt: true },
+    });
+
+    if (user && user.invitedAt && !user.passwordSetAt) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'INVITATION_PENDING',
+        message:
+          'Tu cuenta aún no está activada. Revisa tu correo para aceptar la invitación y crear tu contraseña.',
+      });
+    }
   }
 
   async recoverPassword(dto: RecoverPasswordDto) {

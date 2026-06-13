@@ -159,7 +159,13 @@ export class AdminService {
 
     const user = await this.prisma.user.findFirst({
       where: { email: { equals: email, mode: 'insensitive' } },
-      select: { id: true, email: true, tenantId: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        tenantId: true,
+        role: { select: { code: true } },
+      },
     });
 
     if (!user) {
@@ -216,6 +222,52 @@ export class AdminService {
         `Tenant cleanup aborted: tenant not found tenantId=${tenantId} email=${email}`,
       );
       throw new NotFoundException(`Tenant ${tenantId} not found`);
+    }
+
+    // Solo el dueño/admin del tenant dispara el borrado completo del tenant.
+    // Para un miembro común (ej. mesero) borramos únicamente a ese usuario.
+    const OWNER_ROLE_CODES = ['OWNER', 'ADMIN', 'ROOT'];
+    const isTenantOwner = OWNER_ROLE_CODES.includes(user.role?.code ?? '');
+
+    if (!isTenantOwner) {
+      if (!shouldDelete) {
+        this.logger.log(
+          `Single-user cleanup preview email=${email} userId=${user.id} role=${user.role?.code}`,
+        );
+        return {
+          mode: 'preview',
+          email,
+          tenant,
+          scope: 'user',
+          user: { id: user.id, email: user.email, name: user.name, role: user.role?.code },
+        };
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        // userBranch / notificationPrefs / webPushSubscriptions caen por cascade;
+        // notificationEvent queda con userId=NULL (SetNull). Liberamos órdenes
+        // donde figura como mesero para no chocar con la FK.
+        await tx.order.updateMany({
+          where: { waiterId: user.id },
+          data: { waiterId: null },
+        });
+        await tx.user.delete({ where: { id: user.id } });
+      });
+
+      const supabaseResult = await this.deleteSupabaseUsers([user.id], email);
+
+      this.logger.warn(
+        `Single-user cleanup completed email=${email} userId=${user.id}`,
+      );
+
+      return {
+        mode: 'deleted',
+        email,
+        tenant,
+        scope: 'user',
+        user: { id: user.id, email: user.email, name: user.name, role: user.role?.code },
+        supabase: supabaseResult,
+      };
     }
 
     if (!shouldDelete) {

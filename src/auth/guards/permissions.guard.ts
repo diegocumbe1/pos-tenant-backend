@@ -7,7 +7,10 @@ import {
 import { Reflector } from '@nestjs/core';
 import { REQUIRE_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
 import { PermissionsCacheService } from '../services/permissions-cache.service';
-import { AuthenticatedUser } from '../types/tenant-context.interface';
+import {
+  AuthenticatedUser,
+  TenantContext,
+} from '../types/tenant-context.interface';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -28,7 +31,11 @@ export class PermissionsGuard implements CanActivate {
     if (!user) throw new ForbiddenException('No authenticated user');
     if (user.isRoot) return true;
 
-    const perms = await this.permissionsCache.getForRole(user.roleId);
+    const tenantContext = req.tenantContext as TenantContext | undefined;
+    const perms =
+      tenantContext?.roleId === user.roleId
+        ? tenantContext.permissions
+        : await this.permissionsCache.getForRole(user.roleId);
     const missing = required.filter((code) => !perms.has(code));
     if (missing.length > 0) {
       throw new ForbiddenException(
