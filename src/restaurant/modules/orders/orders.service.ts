@@ -92,7 +92,28 @@ export class OrdersService {
       },
     });
     if (!table) throw new NotFoundException(`Table ${dto.tableId} not found`);
-    if (table.status !== 'AVAILABLE')
+
+    // Idempotencia por mesa: si ya hay una orden OPEN, REUSARLA en vez de crear
+    // una segunda. Evita órdenes duplicadas por carreras del cliente o estados
+    // inconsistentes (la mesa veía una orden y el otro cliente otra → "duplicado").
+    const existingOpen = await this.prisma.order.findFirst({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        tableId: dto.tableId,
+        status: 'OPEN',
+      },
+      select: { id: true },
+    });
+    if (existingOpen) {
+      if (items.length > 0) {
+        return this.addItems(ctx, existingOpen.id, { items });
+      }
+      return this.findOne(ctx, existingOpen.id);
+    }
+
+    // No hay orden abierta: solo bloquea si la mesa está fuera de juego.
+    if (table.status === 'RESERVED' || table.status === 'CLOSED')
       throw new ConflictException(
         `Table is not available (status: ${table.status})`,
       );
