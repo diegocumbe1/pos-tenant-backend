@@ -479,7 +479,32 @@ export class PublicSiteService {
       );
       throw new NotFoundException(`Site ${slug} not found`);
     }
-    return site.publishedPayload;
+
+    // Inyecta la configuración de reservas (horarios/modo) en vivo desde
+    // BarberSettings, para que la agenda pública use la base actual del negocio.
+    const booking = await this.resolvePublicBooking(site.branchId);
+    return {
+      ...(site.publishedPayload as Record<string, unknown>),
+      booking,
+    };
+  }
+
+  // Datos de reserva expuestos al sitio público: horarios, modo y si está activo.
+  private async resolvePublicBooking(branchId: string) {
+    const settings = await this.prisma.barberSettings.findUnique({
+      where: { branchId },
+      select: {
+        businessHours: true,
+        bookingMode: true,
+        onlineBookingEnabled: true,
+      },
+    });
+    return {
+      businessHours: settings?.businessHours ?? {},
+      bookingMode:
+        settings?.bookingMode === 'resources' ? 'resources' : 'services',
+      onlineBookingEnabled: settings?.onlineBookingEnabled ?? true,
+    };
   }
 
   /**
