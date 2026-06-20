@@ -130,6 +130,16 @@ export class PublicSiteService {
           themeBackground: dto.theme?.background,
           themeSurface: dto.theme?.surface,
           themeRadius: dto.theme?.radius,
+          themeSecondary: dto.theme?.secondary,
+          themeMode: dto.theme?.mode,
+          themeBackgroundType: dto.theme?.backgroundType,
+          themeFontStyle: dto.theme?.fontStyle,
+          themeLogoUrl: dto.theme?.logoUrl,
+          themeFaviconUrl: dto.theme?.faviconUrl,
+          themeWhatsapp:
+            dto.theme?.whatsapp === undefined
+              ? undefined
+              : (dto.theme.whatsapp as unknown as Prisma.InputJsonValue),
           shortName: dto.business?.shortName,
           neighborhood: dto.business?.neighborhood,
           city: dto.business?.city,
@@ -755,10 +765,17 @@ export class PublicSiteService {
       },
       theme: {
         primary: site.themePrimary,
+        secondary: site.themeSecondary ?? undefined,
         accent: site.themeAccent,
         ink: site.themeInk,
         background: site.themeBackground,
         surface: site.themeSurface,
+        mode: site.themeMode ?? undefined,
+        backgroundType: site.themeBackgroundType ?? undefined,
+        fontStyle: site.themeFontStyle ?? undefined,
+        logoUrl: site.themeLogoUrl ?? undefined,
+        faviconUrl: site.themeFaviconUrl ?? undefined,
+        whatsapp: site.themeWhatsapp ?? undefined,
         radius: site.themeRadius,
       },
       assets: site.assets

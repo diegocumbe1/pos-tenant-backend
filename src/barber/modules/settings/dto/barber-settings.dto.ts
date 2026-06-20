@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsHexColor,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -13,6 +14,33 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export class TimeRangeDto {
+  @Matches(HHMM, { message: 'start must be HH:MM (24h)' })
+  start!: string;
+
+  @Matches(HHMM, { message: 'end must be HH:MM (24h)' })
+  end!: string;
+}
+
+export class BookingSettingsDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['services', 'resources'])
+  bookingMode?: 'services' | 'resources';
+
+  @IsOptional()
+  @IsBoolean()
+  onlineBookingEnabled?: boolean;
+
+  // Horarios por día: { monday: [{start,end}], ... }. Lista vacía = cerrado.
+  // Se valida/normaliza en el servicio porque las claves son dinámicas.
+  @IsOptional()
+  @IsObject()
+  businessHours?: Record<string, TimeRangeDto[]>;
+}
 
 export class UpdateBarberBusinessDto {
   @IsOptional()
@@ -189,6 +217,12 @@ export class UpdateBarberSettingsDto {
   @IsOptional()
   @IsString()
   currency?: string;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => BookingSettingsDto)
+  booking?: BookingSettingsDto;
 
   @IsOptional()
   @IsBoolean()

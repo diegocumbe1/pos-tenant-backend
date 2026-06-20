@@ -83,10 +83,39 @@ export class UpdatePublicSiteSeoDto {
   ogImageUrl?: string;
 }
 
+export class PublicSiteWhatsappDto {
+  @IsOptional()
+  @IsBoolean()
+  floating?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  stickyMobile?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  message?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  primaryLabel?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  serviceMessage?: string;
+}
+
 export class UpdatePublicSiteThemeDto {
   @IsOptional()
   @IsHexColor()
   primary?: string;
+
+  @IsOptional()
+  @IsHexColor()
+  secondary?: string;
 
   @IsOptional()
   @IsHexColor()
@@ -103,6 +132,35 @@ export class UpdatePublicSiteThemeDto {
   @IsOptional()
   @IsHexColor()
   surface?: string;
+
+  @IsOptional()
+  @IsIn(['light', 'dark', 'auto'])
+  mode?: 'light' | 'dark' | 'auto';
+
+  @IsOptional()
+  @IsIn(['solid', 'gradient', 'image', 'glassmorphism', 'luxury', 'minimal'])
+  backgroundType?: string;
+
+  @IsOptional()
+  @IsIn(['modern', 'editorial', 'classic', 'rounded'])
+  fontStyle?: string;
+
+  // Acepta URL absoluta, ruta relativa (/favicon.png) o data URI.
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  faviconUrl?: string;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => PublicSiteWhatsappDto)
+  whatsapp?: PublicSiteWhatsappDto;
 
   @IsOptional()
   @IsIn(['sm', 'md', 'lg'])

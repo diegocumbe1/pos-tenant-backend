@@ -170,6 +170,8 @@ model BarberSettings {
   currency               String   @default("COP")
   logoUrl                String?
   bookingSlug            String   @unique
+  bookingMode            String   @default("services")
+  businessHours          Json     @default("{}")
   onlineBookingEnabled   Boolean  @default(true)
   publicProfilePublished Boolean  @default(true)
   whatsappEnabled        Boolean  @default(false)
@@ -224,12 +226,19 @@ model PublicSite {
   seoDescription String?
   ogImageUrl     String?
 
-  themePrimary    String @default("#6366f1")
-  themeAccent     String @default("#22c55e")
-  themeInk        String @default("#0f172a")
-  themeBackground String @default("#ffffff")
-  themeSurface    String @default("#f8fafc")
-  themeRadius     String @default("md")
+  themePrimary        String  @default("#6366f1")
+  themeAccent         String  @default("#22c55e")
+  themeInk            String  @default("#0f172a")
+  themeBackground     String  @default("#ffffff")
+  themeSurface        String  @default("#f8fafc")
+  themeRadius         String  @default("md")
+  themeSecondary      String?
+  themeMode           String?
+  themeBackgroundType String?
+  themeFontStyle      String?
+  themeLogoUrl        String?
+  themeFaviconUrl     String?
+  themeWhatsapp       Json?
 
   shortName    String?
   neighborhood String?
@@ -381,6 +390,9 @@ model BarberService {
   description     String?
   durationMin     Int
   priceCOP        Int
+  // Modo recursos: bloques de reserva adicionales al base (1h = priceCOP).
+  // [{ minutes: number, priceCOP?: number | null }]. priceCOP null = derivado.
+  durationOptions Json     @default("[]")
   color           String?
   imageUrls       String[] @default([])
   category        String?
@@ -499,8 +511,8 @@ model BarberAppointment {
   customer     BarberCustomer @relation(fields: [customerId], references: [id])
   serviceId    String
   service      BarberService  @relation(fields: [serviceId], references: [id])
-  staffId      String
-  staff        BarberStaff    @relation(fields: [staffId], references: [id])
+  staffId      String?
+  staff        BarberStaff?   @relation(fields: [staffId], references: [id])
   scheduledAt  DateTime
   scheduledEnd DateTime
   status       String         @default("SCHEDULED")

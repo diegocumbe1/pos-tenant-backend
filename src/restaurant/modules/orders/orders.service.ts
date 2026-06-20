@@ -412,9 +412,23 @@ export class OrdersService {
           const newStock = previousStock - grossRequiredInPurchaseUnit;
 
           if (newStock < 0) {
-            throw new UnprocessableEntityException(
-              `Insufficient stock for ingredient ${line.ingredient.name}`,
-            );
+            const round = (n: number) => Math.round(n * 10000) / 10000;
+            const grossPerUnit = grossRequiredInPurchaseUnit / itemQty;
+            const maxPreparables =
+              grossPerUnit > 0 ? Math.floor(previousStock / grossPerUnit) : 0;
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
+              message: `Insufficient stock for ingredient ${line.ingredient.name}`,
+              stock: {
+                ingredientId: line.ingredientId,
+                ingredientName: line.ingredient.name,
+                available: round(previousStock),
+                requested: round(grossRequiredInPurchaseUnit),
+                unit: line.ingredient.purchaseUnit,
+                maxPreparables,
+              },
+            });
           }
 
           stockBalances.set(line.ingredientId, newStock);

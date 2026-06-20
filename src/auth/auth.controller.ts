@@ -20,6 +20,7 @@ import {
 } from './dto/invite-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { RecoverPasswordDto } from './dto/recover-password.dto';
+import { ResendInvitationDto } from './dto/resend-invitation.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { AllowWithoutPassword } from './guards/password-set.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -100,6 +101,16 @@ export class AuthController {
   @ApiOperation({ summary: 'Send a password recovery email via Supabase.' })
   recoverPassword(@Body() dto: RecoverPasswordDto) {
     return this.authService.recoverPassword(dto);
+  }
+
+  @Post('resend-invitation')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Resend the access email to an invited user who has not activated yet.',
+  })
+  resendInvitation(@Body() dto: ResendInvitationDto) {
+    return this.authService.resendInvitation(dto);
   }
 
   @Post('reset-password')

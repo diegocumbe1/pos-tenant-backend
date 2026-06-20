@@ -19,6 +19,7 @@ import {
 } from '../dto/invite-user.dto';
 import { LoginDto } from '../dto/login.dto';
 import { RecoverPasswordDto } from '../dto/recover-password.dto';
+import { ResendInvitationDto } from '../dto/resend-invitation.dto';
 import { ResetPasswordDto } from '../dto/reset-password.dto';
 import {
   defaultMenuTheme,
@@ -389,6 +390,42 @@ export class AuthService {
     };
   }
 
+  /**
+   * Reenvía el correo de acceso a un usuario invitado que aún no activó su
+   * cuenta. No se puede reusar `inviteUserByEmail` porque Supabase rechaza
+   * usuarios existentes; en su lugar reenviamos el email de "set password"
+   * (Supabase lo envía vía SMTP). El link lleva a `recoveryRedirectUrl`, y
+   * `resetPassword` provisiona/activa al usuario local.
+   */
+  async resendInvitation(dto: ResendInvitationDto) {
+    const email = dto.email.trim().toLowerCase();
+
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { passwordSetAt: true },
+    });
+
+    if (user?.passwordSetAt) {
+      throw new BadRequestException({
+        code: 'ALREADY_ACTIVATED',
+        message:
+          'Esta cuenta ya está activada. Usa "Iniciar sesión" o "¿Olvidaste tu contraseña?".',
+      });
+    }
+
+    const redirectTo = this.supabase.recoveryRedirectUrl;
+    // Supabase responde OK aunque el correo no exista (evita enumeración),
+    // por eso devolvemos un mensaje neutro al frontend.
+    await this.supabase.sendPasswordRecoveryEmail(email, redirectTo);
+
+    return {
+      ok: true,
+      message: 'Invitation email resent successfully',
+      email,
+      redirectTo,
+    };
+  }
+
   async resetPassword(
     authUser: AuthenticatedUser | undefined,
     authPayload: SupabaseJwtPayload | undefined,
@@ -397,6 +434,20 @@ export class AuthService {
     const userId = authUser?.id ?? authPayload?.sub;
     if (!userId) {
       throw new UnauthorizedException('Missing authenticated user in request');
+    }
+
+    // Si el correo se reenvió como "set password" a un invitado que aún no
+    // tenía usuario local (flujo staff de `inviteUser`), lo provisionamos aquí
+    // a partir del metadata del token. Best-effort: un reset normal (usuario ya
+    // existente) no debe verse afectado si esto falla.
+    try {
+      await this.ensureLocalUserForInvitation(userId, authUser, authPayload);
+    } catch (err) {
+      this.logger.warn(
+        `resetPassword: no se pudo provisionar usuario local ${userId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
 
     await this.supabase.setPassword(userId, dto.newPassword);

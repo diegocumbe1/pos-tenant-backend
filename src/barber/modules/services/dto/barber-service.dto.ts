@@ -1,4 +1,6 @@
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsInt,
@@ -8,7 +10,21 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+
+// Bloque de reserva adicional (modo recursos). minutes = duración del bloque;
+// priceCOP opcional (null/omitido = se deriva de la tarifa por hora base).
+export class DurationOptionDto {
+  @IsInt()
+  @Min(5)
+  minutes!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  priceCOP?: number | null;
+}
 
 export class CreateBarberServiceDto {
   @IsString()
@@ -28,6 +44,13 @@ export class CreateBarberServiceDto {
   @IsInt()
   @Min(0)
   priceCOP!: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DurationOptionDto)
+  @ArrayMaxSize(12)
+  durationOptions?: DurationOptionDto[];
 
   @IsOptional()
   @IsString()
@@ -88,6 +111,13 @@ export class UpdateBarberServiceDto {
   @IsInt()
   @Min(0)
   priceCOP?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DurationOptionDto)
+  @ArrayMaxSize(12)
+  durationOptions?: DurationOptionDto[];
 
   @IsOptional()
   @IsString()

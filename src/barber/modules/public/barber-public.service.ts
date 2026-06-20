@@ -72,12 +72,20 @@ export class BarberPublicService {
   async getAvailability(branchId: string, query: PublicAvailabilityQueryDto) {
     await this.assertBranchPublished(branchId);
 
-    const staff = await this.prisma.barberStaff.findUnique({
-      where: { id: query.specialistId },
-      select: { id: true, branchId: true, isActive: true },
-    });
-    if (!staff || staff.branchId !== branchId || !staff.isActive) {
-      throw new NotFoundException('Specialist not found');
+    // El especialista es opcional: sin él se calcula la disponibilidad del
+    // recurso/espacio (servicio), que debe venir en la query.
+    if (query.specialistId) {
+      const staff = await this.prisma.barberStaff.findUnique({
+        where: { id: query.specialistId },
+        select: { id: true, branchId: true, isActive: true },
+      });
+      if (!staff || staff.branchId !== branchId || !staff.isActive) {
+        throw new NotFoundException('Specialist not found');
+      }
+    } else if (!query.serviceId) {
+      throw new BadRequestException(
+        'serviceId is required when no specialist is selected',
+      );
     }
 
     const durationMinutes = await this.resolveDuration(
@@ -92,8 +100,10 @@ export class BarberPublicService {
     const appointments = await this.prisma.barberAppointment.findMany({
       where: {
         branchId,
-        staffId: query.specialistId,
-        status: { not: 'CANCELLED' },
+        ...(query.specialistId
+          ? { staffId: query.specialistId }
+          : { serviceId: query.serviceId }),
+        status: { notIn: ['CANCELLED', 'REJECTED'] },
         scheduledAt: { lt: dayEnd },
         scheduledEnd: { gt: dayStart },
       },
@@ -144,17 +154,19 @@ export class BarberPublicService {
       });
     }
 
-    const [service, staff] = await Promise.all([
-      this.prisma.barberService.findUnique({
-        where: { id: dto.serviceId },
-        select: {
-          id: true,
-          branchId: true,
-          isActive: true,
-          durationMin: true,
-        },
-      }),
-      this.prisma.barberStaff.findUnique({
+    const service = await this.prisma.barberService.findUnique({
+      where: { id: dto.serviceId },
+      select: { id: true, branchId: true, isActive: true, durationMin: true },
+    });
+    if (!service || service.branchId !== branchId || !service.isActive) {
+      throw new BadRequestException('Service is not available');
+    }
+
+    // El especialista es opcional: en modo recursos se reserva el espacio
+    // (servicio) sin asignar persona.
+    let staff: { id: string } | null = null;
+    if (dto.specialistId) {
+      const found = await this.prisma.barberStaff.findUnique({
         where: { id: dto.specialistId },
         select: {
           id: true,
@@ -162,22 +174,19 @@ export class BarberPublicService {
           isActive: true,
           services: { select: { serviceId: true } },
         },
-      }),
-    ]);
-
-    if (!service || service.branchId !== branchId || !service.isActive) {
-      throw new BadRequestException('Service is not available');
-    }
-    if (!staff || staff.branchId !== branchId || !staff.isActive) {
-      throw new BadRequestException('Specialist is not available');
-    }
-    if (
-      staff.services.length > 0 &&
-      !staff.services.some((s) => s.serviceId === service.id)
-    ) {
-      throw new BadRequestException(
-        'Specialist does not offer the requested service',
-      );
+      });
+      if (!found || found.branchId !== branchId || !found.isActive) {
+        throw new BadRequestException('Specialist is not available');
+      }
+      if (
+        found.services.length > 0 &&
+        !found.services.some((s) => s.serviceId === service.id)
+      ) {
+        throw new BadRequestException(
+          'Specialist does not offer the requested service',
+        );
+      }
+      staff = { id: found.id };
     }
 
     const scheduledAt = new Date(dto.scheduledAt);
@@ -187,15 +196,16 @@ export class BarberPublicService {
     if (scheduledAt.getTime() <= Date.now()) {
       throw new BadRequestException('scheduledAt must be in the future');
     }
-    const scheduledEnd = new Date(
-      scheduledAt.getTime() + service.durationMin * 60_000,
-    );
+    const durationMin = dto.durationMinutes ?? service.durationMin;
+    const scheduledEnd = new Date(scheduledAt.getTime() + durationMin * 60_000);
 
+    // Con especialista: conflicto por persona. Sin especialista (recurso):
+    // conflicto por el propio servicio/espacio para no doble-reservarlo.
     const conflict = await this.prisma.barberAppointment.findFirst({
       where: {
         branchId,
-        staffId: staff.id,
-        status: { not: 'CANCELLED' },
+        ...(staff ? { staffId: staff.id } : { serviceId: service.id }),
+        status: { notIn: ['CANCELLED', 'REJECTED'] },
         scheduledAt: { lt: scheduledEnd },
         scheduledEnd: { gt: scheduledAt },
       },
@@ -216,10 +226,12 @@ export class BarberPublicService {
         branchId,
         customerId: customer.id,
         serviceId: service.id,
-        staffId: staff.id,
+        staffId: staff?.id ?? null,
         scheduledAt,
         scheduledEnd,
         source: 'public',
+        // Las reservas públicas entran pendientes de aprobación del negocio.
+        status: 'PENDING',
         notes: dto.notes,
       },
       include: { service: true, staff: true },
@@ -236,10 +248,9 @@ export class BarberPublicService {
         durationMin: appointment.service.durationMin,
         priceCOP: appointment.service.priceCOP,
       },
-      specialist: {
-        id: appointment.staff.id,
-        name: appointment.staff.name,
-      },
+      specialist: appointment.staff
+        ? { id: appointment.staff.id, name: appointment.staff.name }
+        : null,
       customer: {
         id: customer.id,
         name: customer.name,

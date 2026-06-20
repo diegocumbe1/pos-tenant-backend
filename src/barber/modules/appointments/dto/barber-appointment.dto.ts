@@ -1,4 +1,11 @@
-import { IsDateString, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsDateString,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 
 export class CreateBarberAppointmentDto {
   @IsString()
@@ -7,11 +14,20 @@ export class CreateBarberAppointmentDto {
   @IsString()
   serviceId!: string;
 
+  // Opcional: en modo recursos no se asigna especialista.
+  @IsOptional()
   @IsString()
-  staffId!: string;
+  staffId?: string;
 
   @IsDateString()
   scheduledAt!: string;
+
+  // Modo recursos: duración del bloque reservado. Si se omite, se usa la
+  // duración base del servicio.
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  durationMinutes?: number;
 
   @IsOptional()
   @IsString()
@@ -36,6 +52,11 @@ export class UpdateBarberAppointmentDto {
   scheduledAt?: string;
 
   @IsOptional()
+  @IsInt()
+  @Min(5)
+  durationMinutes?: number;
+
+  @IsOptional()
   @IsString()
   status?: string;
 
@@ -49,4 +70,11 @@ export class CancelBarberAppointmentDto {
   @IsString()
   @MinLength(2)
   reason?: string;
+}
+
+export class RejectBarberAppointmentDto {
+  // Motivo del rechazo: queda en el histórico para saber por qué se rechazó.
+  @IsString()
+  @MinLength(2)
+  reason!: string;
 }

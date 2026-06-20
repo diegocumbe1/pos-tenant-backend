@@ -45,6 +45,8 @@ export class BarberServicesService {
         description: dto.description,
         durationMin: dto.durationMin,
         priceCOP: dto.priceCOP,
+        durationOptions: (dto.durationOptions ??
+          []) as unknown as Prisma.InputJsonValue,
         color: dto.color,
         imageUrls: dto.imageUrls ?? [],
         category: dto.category,
@@ -81,6 +83,10 @@ export class BarberServicesService {
         description: dto.description,
         durationMin: dto.durationMin,
         priceCOP: dto.priceCOP,
+        durationOptions:
+          dto.durationOptions === undefined
+            ? undefined
+            : (dto.durationOptions as unknown as Prisma.InputJsonValue),
         color: dto.color,
         imageUrls: dto.imageUrls,
         category: dto.category,
@@ -123,6 +129,7 @@ export class BarberServicesService {
       description: service.description,
       durationMin: service.durationMin,
       priceCOP: service.priceCOP,
+      durationOptions: this.coerceDurationOptions(service.durationOptions),
       color: service.color,
       imageUrls: service.imageUrls,
       category: service.category,
@@ -146,5 +153,27 @@ export class BarberServicesService {
         createdAt: asset.createdAt,
       })),
     };
+  }
+
+  // Normaliza el JSON de bloques de duración: solo {minutes>0, priceCOP?}.
+  private coerceDurationOptions(
+    raw: Prisma.JsonValue,
+  ): Array<{ minutes: number; priceCOP: number | null }> {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(
+        (entry): entry is { minutes: number; priceCOP?: number } =>
+          !!entry &&
+          typeof entry === 'object' &&
+          typeof (entry as Record<string, unknown>).minutes === 'number' &&
+          (entry as { minutes: number }).minutes > 0,
+      )
+      .map((entry) => ({
+        minutes: entry.minutes,
+        priceCOP:
+          typeof entry.priceCOP === 'number' && entry.priceCOP >= 0
+            ? entry.priceCOP
+            : null,
+      }));
   }
 }

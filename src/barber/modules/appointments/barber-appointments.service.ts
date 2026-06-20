@@ -35,10 +35,9 @@ export class BarberAppointmentsService {
       where: { id: dto.serviceId },
       select: { durationMin: true },
     });
+    const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledAt = new Date(dto.scheduledAt);
-    const scheduledEnd = new Date(
-      scheduledAt.getTime() + service.durationMin * 60_000,
-    );
+    const scheduledEnd = new Date(scheduledAt.getTime() + durationMin * 60_000);
 
     return this.prisma.barberAppointment.create({
       data: {
@@ -84,6 +83,7 @@ export class BarberAppointmentsService {
       where: { id: serviceId },
       select: { durationMin: true },
     });
+    const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : undefined;
 
     return this.prisma.barberAppointment.update({
@@ -94,7 +94,7 @@ export class BarberAppointmentsService {
         staffId: dto.staffId,
         scheduledAt,
         scheduledEnd: scheduledAt
-          ? new Date(scheduledAt.getTime() + service.durationMin * 60_000)
+          ? new Date(scheduledAt.getTime() + durationMin * 60_000)
           : undefined,
         status: dto.status,
         notes: dto.notes,
@@ -117,6 +117,37 @@ export class BarberAppointmentsService {
     return this.prisma.barberAppointment.update({
       where: { id },
       data: { status: 'CANCELLED', cancelReason: dto.reason },
+      include: { customer: true, service: true, staff: true },
+    });
+  }
+
+  // Aprueba un agendamiento pendiente: queda confirmado y ocupa el slot.
+  async approveAppointment(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberAppointment',
+      ctx,
+      id,
+      'Appointment',
+    );
+    return this.prisma.barberAppointment.update({
+      where: { id },
+      data: { status: 'CONFIRMED' },
+      include: { customer: true, service: true, staff: true },
+    });
+  }
+
+  // Rechaza un agendamiento: libera el slot (REJECTED no cuenta en conflictos)
+  // y persiste el motivo en cancelReason para tener el histórico del porqué.
+  async rejectAppointment(ctx: TenantContext, id: string, reason: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberAppointment',
+      ctx,
+      id,
+      'Appointment',
+    );
+    return this.prisma.barberAppointment.update({
+      where: { id },
+      data: { status: 'REJECTED', cancelReason: reason },
       include: { customer: true, service: true, staff: true },
     });
   }

@@ -19,6 +19,7 @@ import { BarberAppointmentsService } from './barber-appointments.service';
 import {
   CancelBarberAppointmentDto,
   CreateBarberAppointmentDto,
+  RejectBarberAppointmentDto,
   UpdateBarberAppointmentDto,
 } from './dto/barber-appointment.dto';
 
@@ -66,5 +67,21 @@ export class BarberAppointmentsController {
     @Body() dto: CancelBarberAppointmentDto,
   ) {
     return this.appointmentsService.cancelAppointment(ctx, id, dto);
+  }
+
+  @Patch(':id/approve')
+  @RequirePermissions('barber:appointments:write')
+  approve(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.appointmentsService.approveAppointment(ctx, id);
+  }
+
+  @Patch(':id/reject')
+  @RequirePermissions('barber:appointments:write')
+  reject(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: RejectBarberAppointmentDto,
+  ) {
+    return this.appointmentsService.rejectAppointment(ctx, id, dto.reason);
   }
 }
