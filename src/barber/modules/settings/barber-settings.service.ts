@@ -8,6 +8,7 @@ import {
   slugify,
 } from '../../shared/barber-slug';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import { resolvePublicBookingCopy } from '../../shared/public-booking-copy';
 import {
   BarberGalleryItemDto,
   BarberStatDto,
@@ -106,6 +107,13 @@ export class BarberSettingsService {
           logoUrl: dto.logoUrl,
           bookingSlug: dto.bookingSlug,
           bookingMode: dto.booking?.bookingMode,
+          publicBookingCopy:
+            dto.booking?.publicCopy === undefined
+              ? undefined
+              : ({
+                  ...this.toPublicCopyRecord(current.publicBookingCopy),
+                  ...dto.booking.publicCopy,
+                } as Prisma.InputJsonValue),
           businessHours: dto.booking?.businessHours
             ? (this.sanitizeBusinessHours(
                 dto.booking.businessHours,
@@ -215,7 +223,12 @@ export class BarberSettingsService {
       },
       booking: {
         slug: settings.bookingSlug,
-        bookingMode: settings.bookingMode === 'resources' ? 'resources' : 'services',
+        bookingMode:
+          settings.bookingMode === 'resources' ? 'resources' : 'services',
+        publicCopy: resolvePublicBookingCopy(
+          settings.bookingMode,
+          settings.publicBookingCopy,
+        ),
         businessHours: this.resolveBusinessHours(settings.businessHours),
         onlineBookingEnabled: settings.onlineBookingEnabled,
         publicProfilePublished: settings.publicProfilePublished,
@@ -299,6 +312,11 @@ export class BarberSettingsService {
     );
     if (!hasAnyDay) return DEFAULT_BUSINESS_HOURS;
     return this.sanitizeBusinessHours(raw as Record<string, unknown>);
+  }
+
+  private toPublicCopyRecord(raw: Prisma.JsonValue): Record<string, unknown> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    return raw as Record<string, unknown>;
   }
 
   private coerceStats(raw: Prisma.JsonValue): BarberStatDto[] {

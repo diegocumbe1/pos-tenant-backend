@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RESERVED_BOOKING_SLUGS, slugify } from '../../barber/shared/barber-slug';
+import { resolvePublicBookingCopy } from '../../barber/shared/public-booking-copy';
 import {
   PublishableSite,
   SiteSeed,
@@ -28,6 +29,10 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
     const settings = await this.prisma.barberSettings.findUnique({
       where: { branchId: ctx.branchId },
     });
+    const publicCopy = resolvePublicBookingCopy(
+      settings?.bookingMode,
+      settings?.publicBookingCopy,
+    );
 
     return {
       slug: settings?.bookingSlug ?? slugify(seed.tenant.name),
@@ -36,7 +41,7 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
       seoDescription:
         settings?.description ??
         settings?.heroDescription ??
-        'Reserva tu cita online',
+        `${publicCopy.primaryCta} online`,
       ogImageUrl: settings?.heroImageUrl ?? settings?.themeBannerImageUrl,
       themePrimary: settings?.themePrimaryColor ?? undefined,
       themeAccent: settings?.themeAccentColor ?? undefined,
@@ -54,17 +59,20 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
           density: 'immersive',
           title: settings?.heroTitle ?? seed.tenant.name,
           eyebrow: settings?.eyebrow,
-          subtitle: settings?.heroDescription ?? 'Reserva tu cita online',
+          subtitle:
+            settings?.heroDescription ?? `${publicCopy.primaryCta} online`,
           body: settings?.description,
-          ctaLabel: 'Reservar cita',
+          ctaLabel: publicCopy.primaryCta,
           ctaAction: 'open_booking',
         },
         {
           type: 'services',
           sortOrder: 20,
-          title: 'Servicios',
-          subtitle: 'Elige el servicio que necesitas.',
-          ctaLabel: 'Reservar',
+          title:
+            publicCopy.itemPlural.charAt(0).toUpperCase() +
+            publicCopy.itemPlural.slice(1),
+          subtitle: publicCopy.selectionPrompt,
+          ctaLabel: publicCopy.primaryCta,
           ctaAction: 'open_booking',
           settings: { initialVisible: 6 },
         },
@@ -78,12 +86,19 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
         {
           type: 'booking_cta',
           sortOrder: 50,
-          title: 'Agenda tu cita',
-          subtitle: 'Reserva online sin filas.',
-          ctaLabel: 'Reservar ahora',
+          title:
+            publicCopy.bookingNoun.charAt(0).toUpperCase() +
+            publicCopy.bookingNoun.slice(1),
+          subtitle: publicCopy.schedulePrompt,
+          ctaLabel: publicCopy.primaryCta,
           ctaAction: 'open_booking',
         },
-        { type: 'contact', sortOrder: 60, density: 'compact', title: 'Contacto' },
+        {
+          type: 'contact',
+          sortOrder: 60,
+          density: 'compact',
+          title: 'Contacto',
+        },
       ],
     };
   }

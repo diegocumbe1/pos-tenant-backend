@@ -69,6 +69,41 @@ export class BarberPublicService {
     }));
   }
 
+  // Horas ocupadas (sin datos personales) para que el sitio público calcule la
+  // disponibilidad en el cliente respetando el horario del negocio. Sin auth.
+  async getBusyRanges(branchId: string, query: PublicAvailabilityQueryDto) {
+    await this.assertBranchPublished(branchId);
+
+    // Ventana amplia alrededor de la fecha para cubrir cualquier offset de zona
+    // horaria; el cliente solo usa los rangos que solapan su día local.
+    const base = this.parseDateBoundary(query.date, 0).getTime();
+    const from = new Date(base - 12 * 60 * 60_000);
+    const to = new Date(base + 36 * 60 * 60_000);
+
+    const appointments = await this.prisma.barberAppointment.findMany({
+      where: {
+        branchId,
+        ...(query.specialistId
+          ? { staffId: query.specialistId }
+          : query.serviceId
+            ? { serviceId: query.serviceId }
+            : {}),
+        status: { notIn: ['CANCELLED', 'REJECTED'] },
+        scheduledAt: { lt: to },
+        scheduledEnd: { gt: from },
+      },
+      select: { scheduledAt: true, scheduledEnd: true },
+      orderBy: { scheduledAt: 'asc' },
+    });
+
+    return {
+      ranges: appointments.map((a) => ({
+        startTime: a.scheduledAt.toISOString(),
+        endTime: a.scheduledEnd.toISOString(),
+      })),
+    };
+  }
+
   async getAvailability(branchId: string, query: PublicAvailabilityQueryDto) {
     await this.assertBranchPublished(branchId);
 

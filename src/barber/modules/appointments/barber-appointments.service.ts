@@ -152,6 +152,18 @@ export class BarberAppointmentsService {
     });
   }
 
+  // Elimina definitivamente un agendamiento (acción del admin).
+  async deleteAppointment(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberAppointment',
+      ctx,
+      id,
+      'Appointment',
+    );
+    await this.prisma.barberAppointment.delete({ where: { id } });
+    return { ok: true };
+  }
+
   private async assertAppointmentRelations(
     ctx: TenantContext,
     ids: { customerId?: string; serviceId?: string; staffId?: string },

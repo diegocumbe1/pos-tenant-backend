@@ -59,6 +59,15 @@ export class BarberPublicController {
     return this.publicService.getAvailability(branchId, query);
   }
 
+  @Get('branches/:branchId/busy')
+  @Header('Cache-Control', 'no-store')
+  getBusy(
+    @Param('branchId') branchId: string,
+    @Query() query: PublicAvailabilityQueryDto,
+  ) {
+    return this.publicService.getBusyRanges(branchId, query);
+  }
+
   @Post('branches/:branchId/appointments')
   createAppointment(
     @Param('branchId') branchId: string,

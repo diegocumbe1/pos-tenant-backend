@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -83,5 +84,11 @@ export class BarberAppointmentsController {
     @Body() dto: RejectBarberAppointmentDto,
   ) {
     return this.appointmentsService.rejectAppointment(ctx, id, dto.reason);
+  }
+
+  @Delete(':id')
+  @RequirePermissions('barber:appointments:write')
+  remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.appointmentsService.deleteAppointment(ctx, id);
   }
 }

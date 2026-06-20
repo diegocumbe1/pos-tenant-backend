@@ -25,6 +25,43 @@ export class TimeRangeDto {
   end!: string;
 }
 
+/**
+ * Tenant-editable wording for the public booking flow.  For example, a sports
+ * venue can use "cancha/canchas" and "Reserva tu cancha" instead of the
+ * barber-oriented service/cita vocabulary.
+ */
+export class PublicBookingCopyDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  itemSingular?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  itemPlural?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  bookingNoun?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  primaryCta?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  selectionPrompt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  schedulePrompt?: string;
+}
+
 export class BookingSettingsDto {
   @IsOptional()
   @IsString()
@@ -34,6 +71,12 @@ export class BookingSettingsDto {
   @IsOptional()
   @IsBoolean()
   onlineBookingEnabled?: boolean;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => PublicBookingCopyDto)
+  publicCopy?: PublicBookingCopyDto;
 
   // Horarios por día: { monday: [{start,end}], ... }. Lista vacía = cerrado.
   // Se valida/normaliza en el servicio porque las claves son dinámicas.

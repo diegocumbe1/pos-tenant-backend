@@ -172,6 +172,7 @@ model BarberSettings {
   bookingSlug            String   @unique
   bookingMode            String   @default("services")
   businessHours          Json     @default("{}")
+  publicBookingCopy      Json     @default("{}")
   onlineBookingEnabled   Boolean  @default(true)
   publicProfilePublished Boolean  @default(true)
   whatsappEnabled        Boolean  @default(false)

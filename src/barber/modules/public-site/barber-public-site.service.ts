@@ -16,6 +16,7 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { SupabaseService } from '../../../supabase/supabase.service';
 import { slugify } from '../../shared/barber-slug';
+import { resolvePublicBookingCopy } from '../../shared/public-booking-copy';
 import { VerticalSiteStrategy } from '../../../public-site/strategies/vertical-site-strategy';
 import { VerticalSiteStrategyResolver } from '../../../public-site/strategies/vertical-site-strategy.resolver';
 import {
@@ -496,6 +497,7 @@ export class PublicSiteService {
       select: {
         businessHours: true,
         bookingMode: true,
+        publicBookingCopy: true,
         onlineBookingEnabled: true,
       },
     });
@@ -503,6 +505,10 @@ export class PublicSiteService {
       businessHours: settings?.businessHours ?? {},
       bookingMode:
         settings?.bookingMode === 'resources' ? 'resources' : 'services',
+      publicCopy: resolvePublicBookingCopy(
+        settings?.bookingMode,
+        settings?.publicBookingCopy,
+      ),
       onlineBookingEnabled: settings?.onlineBookingEnabled ?? true,
     };
   }
