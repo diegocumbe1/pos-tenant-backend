@@ -13,9 +13,10 @@ export class NotifyAppointmentBodyDto {
   @MinLength(1)
   serviceName!: string;
 
+  // Opcional: en reservas de recurso/espacio no hay especialista asignado.
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  specialistName!: string;
+  specialistName?: string;
 
   @IsString()
   @MinLength(1)

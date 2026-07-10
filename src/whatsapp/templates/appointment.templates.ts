@@ -2,7 +2,7 @@ export interface AppointmentTemplateInput {
   customerName: string;
   customerPhone: string;
   serviceName: string;
-  specialistName: string;
+  specialistName?: string;
   startTime: string;
   businessName: string;
 }
@@ -28,7 +28,7 @@ export const renderCustomerConfirmation = (a: AppointmentTemplateInput): string 
     `📅 Fecha: ${formatDate(a.startTime)}`,
     `⏰ Hora: ${formatTime(a.startTime)}`,
     `✂️ Servicio: ${a.serviceName}`,
-    `👤 Especialista: ${a.specialistName}`,
+    ...(a.specialistName ? [`👤 Especialista: ${a.specialistName}`] : []),
     '',
     'Nos vemos pronto. 🙌',
   ].join('\n');
@@ -40,5 +40,5 @@ export const renderBusinessNotification = (a: AppointmentTemplateInput): string 
     `👤 Cliente: ${a.customerName} (${a.customerPhone})`,
     `✂️ Servicio: ${a.serviceName}`,
     `📅 ${formatDate(a.startTime)} a las ${formatTime(a.startTime)}`,
-    `👤 Especialista: ${a.specialistName}`,
+    ...(a.specialistName ? [`👤 Especialista: ${a.specialistName}`] : []),
   ].join('\n');

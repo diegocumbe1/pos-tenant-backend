@@ -14,7 +14,7 @@ export interface NotifyAppointmentDto {
   customerName: string;
   customerPhone: string;
   serviceName: string;
-  specialistName: string;
+  specialistName?: string;
   startTime: string;
   businessName: string;
   businessPhone?: string;

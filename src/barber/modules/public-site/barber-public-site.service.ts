@@ -499,6 +499,7 @@ export class PublicSiteService {
         bookingMode: true,
         publicBookingCopy: true,
         onlineBookingEnabled: true,
+        whatsappEnabled: true,
       },
     });
     return {
@@ -510,6 +511,7 @@ export class PublicSiteService {
         settings?.publicBookingCopy,
       ),
       onlineBookingEnabled: settings?.onlineBookingEnabled ?? true,
+      whatsappEnabled: settings?.whatsappEnabled ?? false,
     };
   }
 
