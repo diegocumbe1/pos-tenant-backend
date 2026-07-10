@@ -4,36 +4,35 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseService } from '../supabase/supabase.service';
+import {
+  ImageKind,
+  ImageUploadService,
+  UploadedImageFile,
+} from './image-upload.service';
 import {
   DeleteAssetDto,
   UploadAssetDto,
   UploadCatalogImagesDto,
 } from './dto/upload-asset.dto';
 
-type UploadedFile = {
-  buffer?: Buffer;
-  mimetype?: string;
-  size?: number;
-  originalname?: string;
-};
+type UploadedFile = UploadedImageFile;
 
-const ALLOWED_MIME_TYPES = new Map([
-  ['image/jpeg', 'jpg'],
-  ['image/png', 'png'],
-  ['image/webp', 'webp'],
-]);
-
-const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+// Ancho máximo de salida por tipo de asset. Todas las imágenes se reescalan y
+// se convierten a WebP en `ImageUploadService`, así el navegador nunca descarga
+// la foto original de varios MB. Las tarjetas de menú/POS se ven a ~240px, por
+// eso 640px (thumbnail) cubre pantallas retina con archivos de decenas de KB.
+const PRODUCT_IMAGE_KIND: ImageKind = 'thumbnail';
+const BARBER_SERVICE_IMAGE_KIND: ImageKind = 'service';
 
 @Injectable()
 export class AssetsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly prisma: PrismaService,
+    private readonly imageUpload: ImageUploadService,
   ) {}
 
   async upload(ctx: TenantContext, dto: UploadAssetDto, file?: UploadedFile) {
@@ -41,31 +40,31 @@ export class AssetsService {
       throw new BadRequestException('Image file is required');
     }
 
-    const extension = ALLOWED_MIME_TYPES.get(file.mimetype ?? '');
-    if (!extension) {
-      throw new BadRequestException(
-        'Only image/jpeg, image/png and image/webp files are allowed',
-      );
-    }
-
-    if ((file.size ?? file.buffer.length) > MAX_FILE_SIZE_BYTES) {
-      throw new BadRequestException('Image file must be 5 MB or smaller');
-    }
-
     this.validateScope(dto);
-    const path = this.buildPath(ctx.tenantId, dto, extension);
-    const uploaded = await this.supabase.uploadPublicAsset({
-      path,
-      buffer: file.buffer,
-      contentType: file.mimetype!,
+
+    // Optimiza (auto-rota EXIF + reescala + WebP q80) antes de subir. Los MIME/
+    // tamaño/dimensiones los valida `ImageUploadService`.
+    const uploaded = await this.imageUpload.uploadImage({
+      file,
+      pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
+      kind: dto.scope === 'menu' ? this.menuKind(dto.kind) : PRODUCT_IMAGE_KIND,
     });
 
     return {
       ok: true,
-      ...uploaded,
-      contentType: file.mimetype,
-      sizeBytes: file.size ?? file.buffer.length,
+      bucket: uploaded.bucket,
+      path: uploaded.path,
+      publicUrl: uploaded.publicUrl,
+      contentType: uploaded.contentType,
+      sizeBytes: uploaded.sizeBytes,
+      width: uploaded.width,
+      height: uploaded.height,
     };
+  }
+
+  /** El banner de la carta es una portada ancha; el logo va pequeño. */
+  private menuKind(kind: string): ImageKind {
+    return kind === 'banner' ? 'section' : 'logo';
   }
 
   async uploadCatalogImages(
@@ -82,27 +81,23 @@ export class AssetsService {
     const normalizedType = this.normalizeCatalogItemType(itemType);
     await this.assertCatalogItem(ctx, normalizedType, itemId);
 
-    const uploadedImages = await Promise.all(
-      files.map(async (file) => {
-        const image = this.validateImageFile(file);
-        const path = this.buildCatalogPath(
-          ctx.tenantId,
-          normalizedType,
-          itemId,
-          image.extension,
-        );
-        const uploaded = await this.supabase.uploadPublicAsset({
-          path,
-          buffer: file.buffer!,
-          contentType: file.mimetype!,
-        });
+    const kind =
+      normalizedType === 'product'
+        ? PRODUCT_IMAGE_KIND
+        : BARBER_SERVICE_IMAGE_KIND;
 
-        return {
-          ...uploaded,
-          contentType: file.mimetype,
-          sizeBytes: file.size ?? file.buffer!.length,
-        };
-      }),
+    const uploadedImages = await Promise.all(
+      files.map((file) =>
+        this.imageUpload.uploadImage({
+          file,
+          pathPrefix: this.buildCatalogPathPrefix(
+            ctx.tenantId,
+            normalizedType,
+            itemId,
+          ),
+          kind,
+        }),
+      ),
     );
 
     const incomingUrls = uploadedImages.map((image) => image.publicUrl);
@@ -147,45 +142,23 @@ export class AssetsService {
     }
   }
 
-  private validateImageFile(file?: UploadedFile) {
-    if (!file?.buffer?.length) {
-      throw new BadRequestException('Image file is required');
-    }
-
-    const extension = ALLOWED_MIME_TYPES.get(file.mimetype ?? '');
-    if (!extension) {
-      throw new BadRequestException(
-        'Only image/jpeg, image/png and image/webp files are allowed',
-      );
-    }
-
-    if ((file.size ?? file.buffer.length) > MAX_FILE_SIZE_BYTES) {
-      throw new BadRequestException('Image file must be 5 MB or smaller');
-    }
-
-    return { extension };
-  }
-
-  private buildPath(tenantId: string, dto: UploadAssetDto, extension: string) {
-    const assetId = `${Date.now()}-${randomUUID()}.${extension}`;
-
+  // Carpeta destino (sin filename): `ImageUploadService` appendea `<ts>-<uuid>.webp`.
+  private buildPathPrefix(tenantId: string, dto: UploadAssetDto) {
     if (dto.scope === 'menu') {
-      return `tenants/${tenantId}/menu/${dto.kind}/${assetId}`;
+      return `tenants/${tenantId}/menu/${dto.kind}`;
     }
 
     const entityId = this.cleanPathSegment(dto.entityId!);
-    return `tenants/${tenantId}/products/${entityId}/${assetId}`;
+    return `tenants/${tenantId}/products/${entityId}`;
   }
 
-  private buildCatalogPath(
+  private buildCatalogPathPrefix(
     tenantId: string,
     itemType: CatalogItemType,
     itemId: string,
-    extension: string,
   ) {
     const cleanItemId = this.cleanPathSegment(itemId);
-    const assetId = `${Date.now()}-${randomUUID()}.${extension}`;
-    return `tenants/${tenantId}/catalog/${itemType}/${cleanItemId}/${assetId}`;
+    return `tenants/${tenantId}/catalog/${itemType}/${cleanItemId}`;
   }
 
   private normalizeCatalogItemType(itemType: string): CatalogItemType {
