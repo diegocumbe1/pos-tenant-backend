@@ -13,6 +13,12 @@ import {
   STOCK_MOVEMENT_TYPES,
 } from './dto/stock-movement.dto';
 import { UpsertRecipeLineDto } from './dto/recipe-line.dto';
+import {
+  assertCompatibleUnits,
+  convertQuantity,
+  isPhysicallyConvertible,
+  type ConversionCtx,
+} from './unit-conversion';
 
 type IngredientRow = Prisma.IngredientGetPayload<Record<string, never>>;
 type RecipeLineRow = Prisma.RecipeLineGetPayload<{
@@ -40,14 +46,22 @@ export class InventoryService {
     const initialStock = dto.grossStockQuantity ?? dto.currentStock ?? 0;
     const totalPurchaseCost = dto.totalPurchaseCost ?? 0;
     const technicalWastePercentage = dto.technicalWastePercentage ?? 0;
+    // El factor solo es relevante cuando NO hay conversión física (ej: paquete→unidad).
+    const purchaseToRecipeFactor = isPhysicallyConvertible(
+      purchaseUnit,
+      recipeUnit,
+    )
+      ? null
+      : (dto.purchaseToRecipeFactor ?? null);
 
     this.assertWaste(technicalWastePercentage);
-    this.assertCompatibleUnits(purchaseUnit, recipeUnit);
+    assertCompatibleUnits(purchaseUnit, recipeUnit, purchaseToRecipeFactor);
 
     const metrics = this.calculateMetrics({
       grossStockQuantity: initialStock,
       purchaseUnit,
       recipeUnit,
+      purchaseToRecipeFactor,
       technicalWastePercentage,
       totalPurchaseCost,
     });
@@ -61,6 +75,7 @@ export class InventoryService {
           name: dto.name,
           purchaseUnit,
           recipeUnit,
+          purchaseToRecipeFactor,
           grossStockQuantity: initialStock,
           currentStock: initialStock,
           netUsableQuantity: metrics.netUsableQuantity,
@@ -116,14 +131,23 @@ export class InventoryService {
       dto.technicalWastePercentage ?? current.technicalWastePercentage;
     const totalPurchaseCost =
       dto.totalPurchaseCost ?? current.totalPurchaseCost;
+    const purchaseToRecipeFactor = isPhysicallyConvertible(
+      purchaseUnit,
+      recipeUnit,
+    )
+      ? null
+      : (dto.purchaseToRecipeFactor ??
+        current.purchaseToRecipeFactor ??
+        null);
 
     this.assertWaste(technicalWastePercentage);
-    this.assertCompatibleUnits(purchaseUnit, recipeUnit);
+    assertCompatibleUnits(purchaseUnit, recipeUnit, purchaseToRecipeFactor);
 
     const metrics = this.calculateMetrics({
       grossStockQuantity: current.currentStock,
       purchaseUnit,
       recipeUnit,
+      purchaseToRecipeFactor,
       technicalWastePercentage,
       totalPurchaseCost,
     });
@@ -135,6 +159,7 @@ export class InventoryService {
         name: dto.name,
         purchaseUnit: dto.purchaseUnit,
         recipeUnit: dto.recipeUnit ?? dto.unit,
+        purchaseToRecipeFactor,
         technicalWastePercentage: dto.technicalWastePercentage,
         totalPurchaseCost: dto.totalPurchaseCost,
         grossStockQuantity: current.currentStock,
@@ -208,6 +233,7 @@ export class InventoryService {
       grossStockQuantity: newStock,
       purchaseUnit: ingredient.purchaseUnit,
       recipeUnit: ingredient.recipeUnit,
+      purchaseToRecipeFactor: ingredient.purchaseToRecipeFactor,
       technicalWastePercentage: ingredient.technicalWastePercentage,
       totalPurchaseCost,
     });
@@ -276,7 +302,11 @@ export class InventoryService {
   async upsertRecipeLine(ctx: TenantContext, dto: UpsertRecipeLineDto) {
     await this.assertProduct(ctx, dto.productId);
     const ingredient = await this.assertIngredient(ctx, dto.ingredientId);
-    this.assertCompatibleUnits(dto.unit, ingredient.recipeUnit);
+    assertCompatibleUnits(
+      dto.unit,
+      ingredient.recipeUnit,
+      ingredient.purchaseToRecipeFactor,
+    );
 
     const line = await this.prisma.recipeLine.upsert({
       where: {
@@ -380,6 +410,11 @@ export class InventoryService {
       line.ingredient.netUnitCost,
       line.ingredient.recipeUnit,
       line.unit,
+      {
+        purchaseUnit: line.ingredient.purchaseUnit,
+        recipeUnit: line.ingredient.recipeUnit,
+        purchaseToRecipeFactor: line.ingredient.purchaseToRecipeFactor,
+      },
     );
     const lineCost = line.quantity * unitCost;
 
@@ -426,6 +461,7 @@ export class InventoryService {
     grossStockQuantity: number;
     purchaseUnit: string;
     recipeUnit: string;
+    purchaseToRecipeFactor?: number | null;
     technicalWastePercentage: number;
     totalPurchaseCost: number;
   }) {
@@ -433,10 +469,15 @@ export class InventoryService {
       throw new BadRequestException('Stock cannot be negative');
     }
 
-    const grossQuantityInRecipeUnit = this.convertQuantity(
+    const grossQuantityInRecipeUnit = convertQuantity(
       input.grossStockQuantity,
       input.purchaseUnit,
       input.recipeUnit,
+      {
+        purchaseUnit: input.purchaseUnit,
+        recipeUnit: input.recipeUnit,
+        purchaseToRecipeFactor: input.purchaseToRecipeFactor,
+      },
     );
     const usableRatio = 1 - input.technicalWastePercentage / 100;
     const netUsableQuantity = grossQuantityInRecipeUnit * usableRatio;
@@ -463,33 +504,13 @@ export class InventoryService {
     }
   }
 
-  private assertCompatibleUnits(from: string, to: string) {
-    this.convertQuantity(1, from, to);
-  }
-
-  private convertQuantity(quantity: number, from: string, to: string) {
-    if (from === to) return quantity;
-
-    const gramsPerUnit: Record<string, number> = {
-      g: 1,
-      kg: 1000,
-      lb: 453.59237,
-    };
-    const mlPerUnit: Record<string, number> = { ml: 1, L: 1000 };
-
-    if (from in gramsPerUnit && to in gramsPerUnit) {
-      return (quantity * gramsPerUnit[from]) / gramsPerUnit[to];
-    }
-
-    if (from in mlPerUnit && to in mlPerUnit) {
-      return (quantity * mlPerUnit[from]) / mlPerUnit[to];
-    }
-
-    throw new BadRequestException(`Incompatible units: ${from} -> ${to}`);
-  }
-
-  private convertUnitCost(costPerFromUnit: number, from: string, to: string) {
-    const oneTo = this.convertQuantity(1, to, from);
+  private convertUnitCost(
+    costPerFromUnit: number,
+    from: string,
+    to: string,
+    ctx?: ConversionCtx,
+  ) {
+    const oneTo = convertQuantity(1, to, from, ctx);
     return costPerFromUnit * oneTo;
   }
 }

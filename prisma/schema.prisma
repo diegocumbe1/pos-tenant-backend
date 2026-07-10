@@ -673,6 +673,10 @@ model Ingredient {
   name                     String
   purchaseUnit             String
   recipeUnit               String
+  // Cuántas unidades de receta trae 1 unidad de compra cuando NO hay conversión
+  // física posible (ej: 1 paquete = 10 unidades). null = conversión automática
+  // por dimensión (kg→g) o misma unidad.
+  purchaseToRecipeFactor   Float?
   grossStockQuantity       Float     @default(0)
   currentStock             Float     @default(0)
   netUsableQuantity        Float     @default(0)

@@ -39,6 +39,13 @@ export class CreateIngredientDto {
   @IsIn(MEASURE_UNITS as unknown as string[])
   unit?: string;
 
+  // Cuántas unidades de receta trae 1 unidad de compra (ej: 1 paquete = 10 unidades).
+  // Requerido cuando compra y receta no tienen conversión física (paquete→unidad).
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  purchaseToRecipeFactor?: number;
+
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -97,6 +104,11 @@ export class UpdateIngredientDto {
   @IsOptional()
   @IsIn(MEASURE_UNITS as unknown as string[])
   unit?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  purchaseToRecipeFactor?: number;
 
   @IsOptional()
   @IsNumber()

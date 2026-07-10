@@ -29,6 +29,7 @@ import { PrintingDocumentService } from '../printing/printing-document.service';
 import { ReceiptsService } from '../receipts/receipts.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import { RequestMetricsStore } from '../../../monitoring/request-metrics.store';
+import { convertQuantity as convertUnitQuantity } from '../inventory/unit-conversion';
 
 // Opciones para las transacciones interactivas de órdenes. El default de
 // Prisma es timeout 5s / maxWait 2s, que se queda corto cuando la DB está
@@ -386,10 +387,11 @@ export class OrdersService {
         for (const line of linesByProduct.get(item.productId) ?? []) {
           ingredientById.set(line.ingredientId, line.ingredient);
 
-          const netRequiredInRecipeUnit = this.convertQuantity(
+          const netRequiredInRecipeUnit = convertUnitQuantity(
             line.quantity * itemQty,
             line.unit,
             line.ingredient.recipeUnit,
+            line.ingredient,
           );
           const usableRatio =
             1 - line.ingredient.technicalWastePercentage / 100;
@@ -401,10 +403,11 @@ export class OrdersService {
 
           const grossRequiredInRecipeUnit =
             netRequiredInRecipeUnit / usableRatio;
-          const grossRequiredInPurchaseUnit = this.convertQuantity(
+          const grossRequiredInPurchaseUnit = convertUnitQuantity(
             grossRequiredInRecipeUnit,
             line.ingredient.recipeUnit,
             line.ingredient.purchaseUnit,
+            line.ingredient,
           );
           const previousStock =
             stockBalances.get(line.ingredientId) ??
@@ -458,10 +461,11 @@ export class OrdersService {
         const ingredient = ingredientById.get(ingredientId)!;
         const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
         const netUsableQuantity =
-          this.convertQuantity(
+          convertUnitQuantity(
             newStock,
             ingredient.purchaseUnit,
             ingredient.recipeUnit,
+            ingredient,
           ) * usableRatio;
 
         await tx.ingredient.update({
@@ -918,26 +922,4 @@ export class OrdersService {
     };
   }
 
-  private convertQuantity(quantity: number, from: string, to: string) {
-    if (from === to) return quantity;
-
-    const gramsPerUnit: Record<string, number> = {
-      g: 1,
-      kg: 1000,
-      lb: 453.59237,
-    };
-    const mlPerUnit: Record<string, number> = { ml: 1, L: 1000 };
-
-    if (from in gramsPerUnit && to in gramsPerUnit) {
-      return (quantity * gramsPerUnit[from]) / gramsPerUnit[to];
-    }
-
-    if (from in mlPerUnit && to in mlPerUnit) {
-      return (quantity * mlPerUnit[from]) / mlPerUnit[to];
-    }
-
-    throw new UnprocessableEntityException(
-      `Incompatible units: ${from} -> ${to}`,
-    );
-  }
 }
