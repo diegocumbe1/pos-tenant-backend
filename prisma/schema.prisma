@@ -677,6 +677,11 @@ model Ingredient {
   // física posible (ej: 1 paquete = 10 unidades). null = conversión automática
   // por dimensión (kg→g) o misma unidad.
   purchaseToRecipeFactor   Float?
+  // Preparación (sub-receta): este "ingrediente" se produce a partir de otros
+  // (ej: carne de birria). Su stock se crea produciendo tandas, no comprando.
+  isPreparation            Boolean   @default(false)
+  // Cuánto produce 1 tanda, en la unidad de compra/almacenamiento (ej: 5 kg).
+  yieldQuantity            Float?
   grossStockQuantity       Float     @default(0)
   currentStock             Float     @default(0)
   netUsableQuantity        Float     @default(0)
@@ -692,8 +697,12 @@ model Ingredient {
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
-  movements   StockMovement[]
-  recipeLines RecipeLine[]
+  movements             StockMovement[]
+  recipeLines           RecipeLine[]
+  // Componentes de ESTA preparación (cuando isPreparation = true).
+  preparationComponents PreparationComponent[] @relation("PreparationParent")
+  // Preparaciones en las que este ingrediente se usa como componente.
+  usedInPreparations    PreparationComponent[] @relation("PreparationComponent")
 
   @@unique([branchId, name])
   @@index([tenantId])
@@ -701,6 +710,27 @@ model Ingredient {
   @@index([categoryId])
   @@index([isActive])
   @@map("ingredients")
+}
+
+// Línea de sub-receta: un componente (ingrediente) que consume una preparación.
+model PreparationComponent {
+  id            String     @id @default(cuid())
+  tenantId      String
+  branchId      String
+  preparationId String
+  preparation   Ingredient @relation("PreparationParent", fields: [preparationId], references: [id], onDelete: Cascade)
+  componentId   String
+  component     Ingredient @relation("PreparationComponent", fields: [componentId], references: [id])
+  quantity      Float
+  unit          String
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([preparationId, componentId])
+  @@index([tenantId])
+  @@index([branchId])
+  @@index([componentId])
+  @@map("preparation_components")
 }
 
 model StockMovement {

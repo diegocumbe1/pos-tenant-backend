@@ -4,6 +4,7 @@ import {
   IsIn,
   IsNumber,
   IsOptional,
+  IsPositive,
   IsString,
   Max,
   Min,
@@ -45,6 +46,17 @@ export class CreateIngredientDto {
   @IsNumber()
   @Min(0)
   purchaseToRecipeFactor?: number;
+
+  // Preparación: se produce a partir de otros ingredientes (ej: carne de birria).
+  @IsOptional()
+  @IsBoolean()
+  isPreparation?: boolean;
+
+  // Cuánto produce 1 tanda, en la unidad de compra (ej: 5 kg).
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  yieldQuantity?: number;
 
   @IsOptional()
   @IsNumber()
@@ -109,6 +121,15 @@ export class UpdateIngredientDto {
   @IsNumber()
   @Min(0)
   purchaseToRecipeFactor?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isPreparation?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  yieldQuantity?: number;
 
   @IsOptional()
   @IsNumber()

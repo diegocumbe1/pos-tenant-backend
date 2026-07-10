@@ -18,6 +18,10 @@ import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { CreateIngredientDto, UpdateIngredientDto } from './dto/ingredient.dto';
 import { UpsertRecipeLineDto } from './dto/recipe-line.dto';
+import {
+  ProducePreparationDto,
+  UpsertPreparationComponentDto,
+} from './dto/preparation.dto';
 import { CreateStockMovementDto } from './dto/stock-movement.dto';
 import { InventoryService } from './inventory.service';
 
@@ -108,6 +112,41 @@ export class InventoryController {
     @Param('id') id: string,
   ) {
     return this.inventoryService.removeRecipeLine(ctx, id);
+  }
+
+  // ─── Preparaciones (sub-recetas) ────────────────────────────────────────────
+
+  @Get('inventory/preparations/:id')
+  getPreparation(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.inventoryService.getPreparation(ctx, id);
+  }
+
+  @Post('inventory/preparations/:id/components')
+  @HttpCode(HttpStatus.CREATED)
+  upsertPreparationComponent(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpsertPreparationComponentDto,
+  ) {
+    return this.inventoryService.upsertPreparationComponent(ctx, id, dto);
+  }
+
+  @Delete('inventory/preparations/components/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removePreparationComponent(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.inventoryService.removePreparationComponent(ctx, id);
+  }
+
+  @Post('inventory/preparations/:id/produce')
+  producePreparation(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: ProducePreparationDto,
+  ) {
+    return this.inventoryService.producePreparation(ctx, id, dto);
   }
 
   @Get('products/:id/cost')

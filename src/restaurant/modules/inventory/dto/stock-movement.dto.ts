@@ -2,6 +2,7 @@ import { IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export const STOCK_MOVEMENT_TYPES = [
   'PURCHASE',
+  'PRODUCTION', // entrada por producir una tanda de preparación
   'CONSUMPTION',
   'ADJUSTMENT',
   'WASTE',

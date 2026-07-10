@@ -14,6 +14,10 @@ import {
 } from './dto/stock-movement.dto';
 import { UpsertRecipeLineDto } from './dto/recipe-line.dto';
 import {
+  ProducePreparationDto,
+  UpsertPreparationComponentDto,
+} from './dto/preparation.dto';
+import {
   assertCompatibleUnits,
   convertQuantity,
   isPhysicallyConvertible,
@@ -76,6 +80,8 @@ export class InventoryService {
           purchaseUnit,
           recipeUnit,
           purchaseToRecipeFactor,
+          isPreparation: dto.isPreparation ?? false,
+          yieldQuantity: dto.yieldQuantity,
           grossStockQuantity: initialStock,
           currentStock: initialStock,
           netUsableQuantity: metrics.netUsableQuantity,
@@ -160,6 +166,8 @@ export class InventoryService {
         purchaseUnit: dto.purchaseUnit,
         recipeUnit: dto.recipeUnit ?? dto.unit,
         purchaseToRecipeFactor,
+        isPreparation: dto.isPreparation,
+        yieldQuantity: dto.yieldQuantity,
         technicalWastePercentage: dto.technicalWastePercentage,
         totalPurchaseCost: dto.totalPurchaseCost,
         grossStockQuantity: current.currentStock,
@@ -341,6 +349,271 @@ export class InventoryService {
 
     if (!line) throw new NotFoundException(`Recipe line ${id} not found`);
     await this.prisma.recipeLine.delete({ where: { id } });
+  }
+
+  // ─── Preparaciones (sub-recetas con producción) ─────────────────────────────
+
+  /** Devuelve la preparación con sus componentes y el costo estimado por tanda. */
+  async getPreparation(ctx: TenantContext, id: string) {
+    const preparation = await this.assertPreparation(ctx, id);
+    const components = await this.prisma.preparationComponent.findMany({
+      where: { tenantId: ctx.tenantId, branchId: ctx.branchId, preparationId: id },
+      include: { component: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const lines = components.map((line) => this.toPreparationComponentDto(line));
+    const batchCost = lines.reduce((sum, line) => sum + line.lineCost, 0);
+
+    return {
+      preparation: this.toIngredientDto(preparation),
+      components: lines,
+      batchCost,
+      // Costo por unidad de compra producida (ej: COP/kg de birria).
+      unitCost:
+        preparation.yieldQuantity && preparation.yieldQuantity > 0
+          ? batchCost / preparation.yieldQuantity
+          : 0,
+    };
+  }
+
+  async upsertPreparationComponent(
+    ctx: TenantContext,
+    preparationId: string,
+    dto: UpsertPreparationComponentDto,
+  ) {
+    await this.assertPreparation(ctx, preparationId);
+    if (dto.componentId === preparationId) {
+      throw new BadRequestException(
+        'Una preparación no puede incluirse a sí misma',
+      );
+    }
+    const component = await this.assertIngredient(ctx, dto.componentId);
+    assertCompatibleUnits(
+      dto.unit,
+      component.recipeUnit,
+      component.purchaseToRecipeFactor,
+    );
+
+    const line = await this.prisma.preparationComponent.upsert({
+      where: {
+        preparationId_componentId: {
+          preparationId,
+          componentId: dto.componentId,
+        },
+      },
+      update: { quantity: dto.quantity, unit: dto.unit },
+      create: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        preparationId,
+        componentId: dto.componentId,
+        quantity: dto.quantity,
+        unit: dto.unit,
+      },
+      include: { component: true },
+    });
+
+    return this.toPreparationComponentDto(line);
+  }
+
+  async removePreparationComponent(ctx: TenantContext, id: string) {
+    const line = await this.prisma.preparationComponent.findFirst({
+      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { id: true },
+    });
+    if (!line) throw new NotFoundException(`Preparation component ${id} not found`);
+    await this.prisma.preparationComponent.delete({ where: { id } });
+  }
+
+  /**
+   * Produce N tandas: descuenta el stock de los componentes y suma el stock de la
+   * preparación (costo por costeo promedio ponderado).
+   */
+  async producePreparation(
+    ctx: TenantContext,
+    id: string,
+    dto: ProducePreparationDto,
+  ) {
+    const batches = dto.batches;
+    if (!(batches > 0)) {
+      throw new BadRequestException('batches debe ser mayor que 0');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const preparation = await tx.ingredient.findFirst({
+        where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      });
+      if (!preparation) throw new NotFoundException(`Ingredient ${id} not found`);
+      if (!preparation.isPreparation) {
+        throw new BadRequestException(`${preparation.name} no es una preparación`);
+      }
+      if (!preparation.yieldQuantity || preparation.yieldQuantity <= 0) {
+        throw new BadRequestException(
+          'Define el rendimiento por tanda antes de producir',
+        );
+      }
+
+      const components = await tx.preparationComponent.findMany({
+        where: { tenantId: ctx.tenantId, branchId: ctx.branchId, preparationId: id },
+        include: { component: true },
+      });
+      if (components.length === 0) {
+        throw new BadRequestException(
+          'La preparación no tiene componentes definidos',
+        );
+      }
+
+      let batchCost = 0;
+
+      // 1) Descontar componentes y acumular el costo de producción.
+      for (const line of components) {
+        const ing = line.component;
+        // Cantidad requerida en la unidad de compra del componente.
+        const requiredInPurchaseUnit = convertQuantity(
+          line.quantity * batches,
+          line.unit,
+          ing.purchaseUnit,
+          ing,
+        );
+        const newStock = ing.currentStock - requiredInPurchaseUnit;
+        if (newStock < 0) {
+          const round = (n: number) => Math.round(n * 10000) / 10000;
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            message: `Stock insuficiente de ${ing.name}`,
+            stock: {
+              ingredientId: ing.id,
+              ingredientName: ing.name,
+              available: round(ing.currentStock),
+              requested: round(requiredInPurchaseUnit),
+              unit: ing.purchaseUnit,
+            },
+          });
+        }
+
+        // Costo del componente usado = cantidad en unidad de receta × costo neto.
+        const usedInRecipeUnit = convertQuantity(
+          line.quantity * batches,
+          line.unit,
+          ing.recipeUnit,
+          ing,
+        );
+        batchCost += usedInRecipeUnit * ing.netUnitCost;
+
+        const usableRatio = 1 - ing.technicalWastePercentage / 100;
+        await tx.stockMovement.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            ingredientId: ing.id,
+            type: 'CONSUMPTION',
+            quantity: -requiredInPurchaseUnit,
+            previousStock: ing.currentStock,
+            newStock,
+            notes: `Producción de ${preparation.name}`,
+            createdBy: ctx.userId,
+            createdByName: ctx.name,
+          },
+        });
+        await tx.ingredient.update({
+          where: { id: ing.id },
+          data: {
+            currentStock: newStock,
+            grossStockQuantity: newStock,
+            netUsableQuantity:
+              convertQuantity(newStock, ing.purchaseUnit, ing.recipeUnit, ing) *
+              usableRatio,
+          },
+        });
+      }
+
+      // 2) Sumar el stock producido de la preparación (promedio ponderado del costo).
+      const producedQty = preparation.yieldQuantity * batches;
+      const prevStock = preparation.currentStock;
+      const newPrepStock = prevStock + producedQty;
+      const prevValue = prevStock * preparation.grossUnitCost;
+      const newTotalValue = prevValue + batchCost;
+      const grossUnitCost = newPrepStock > 0 ? newTotalValue / newPrepStock : 0;
+      const usableRatio = 1 - preparation.technicalWastePercentage / 100;
+      const netUsableQuantity =
+        convertQuantity(
+          newPrepStock,
+          preparation.purchaseUnit,
+          preparation.recipeUnit,
+          preparation,
+        ) * usableRatio;
+      const netUnitCost =
+        netUsableQuantity > 0 ? newTotalValue / netUsableQuantity : 0;
+
+      await tx.stockMovement.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          ingredientId: preparation.id,
+          type: 'PRODUCTION',
+          quantity: producedQty,
+          unitCost: producedQty > 0 ? batchCost / producedQty : undefined,
+          previousStock: prevStock,
+          newStock: newPrepStock,
+          notes: `Producción de ${batches} tanda(s)`,
+          createdBy: ctx.userId,
+          createdByName: ctx.name,
+        },
+      });
+
+      const updated = await tx.ingredient.update({
+        where: { id: preparation.id },
+        data: {
+          currentStock: newPrepStock,
+          grossStockQuantity: newPrepStock,
+          totalPurchaseCost: newTotalValue,
+          netUsableQuantity,
+          grossUnitCost,
+          netUnitCost,
+        },
+      });
+
+      return {
+        preparation: this.toIngredientDto(updated),
+        producedQty,
+        batchCost,
+      };
+    });
+  }
+
+  private async assertPreparation(ctx: TenantContext, id: string) {
+    const ingredient = await this.assertIngredient(ctx, id);
+    if (!ingredient.isPreparation) {
+      throw new BadRequestException(`${ingredient.name} no es una preparación`);
+    }
+    return ingredient;
+  }
+
+  private toPreparationComponentDto(
+    line: Prisma.PreparationComponentGetPayload<{ include: { component: true } }>,
+  ) {
+    const unitCost = this.convertUnitCost(
+      line.component.netUnitCost,
+      line.component.recipeUnit,
+      line.unit,
+      {
+        purchaseUnit: line.component.purchaseUnit,
+        recipeUnit: line.component.recipeUnit,
+        purchaseToRecipeFactor: line.component.purchaseToRecipeFactor,
+      },
+    );
+    return {
+      id: line.id,
+      preparationId: line.preparationId,
+      componentId: line.componentId,
+      quantity: line.quantity,
+      unit: line.unit,
+      component: this.toIngredientDto(line.component),
+      unitCost,
+      lineCost: line.quantity * unitCost,
+    };
   }
 
   async productCost(ctx: TenantContext, productId: string) {
