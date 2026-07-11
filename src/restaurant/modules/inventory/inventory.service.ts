@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -35,8 +36,8 @@ export class InventoryService {
 
   async findIngredients(ctx: TenantContext) {
     const ingredients = await this.prisma.ingredient.findMany({
-      where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
-      orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+      where: { tenantId: ctx.tenantId, branchId: ctx.branchId, isActive: true },
+      orderBy: [{ name: 'asc' }],
     });
 
     return {
@@ -45,6 +46,9 @@ export class InventoryService {
   }
 
   async createIngredient(ctx: TenantContext, dto: CreateIngredientDto) {
+    const name = this.normalizeIngredientName(dto.name);
+    await this.assertIngredientNameAvailable(ctx, name);
+    await this.releaseInactiveIngredientName(ctx, name);
     const purchaseUnit = dto.purchaseUnit;
     const recipeUnit = dto.recipeUnit || dto.unit || dto.purchaseUnit;
     const initialStock = dto.grossStockQuantity ?? dto.currentStock ?? 0;
@@ -76,7 +80,7 @@ export class InventoryService {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           categoryId: dto.categoryId,
-          name: dto.name,
+          name,
           purchaseUnit,
           recipeUnit,
           purchaseToRecipeFactor,
@@ -131,6 +135,12 @@ export class InventoryService {
     dto: UpdateIngredientDto,
   ) {
     const current = await this.assertIngredient(ctx, id);
+    const nextName =
+      dto.name !== undefined ? this.normalizeIngredientName(dto.name) : undefined;
+    if (nextName && nextName.toLocaleLowerCase() !== current.name.toLocaleLowerCase()) {
+      await this.assertIngredientNameAvailable(ctx, nextName, id);
+      await this.releaseInactiveIngredientName(ctx, nextName);
+    }
     const purchaseUnit = dto.purchaseUnit ?? current.purchaseUnit;
     const recipeUnit = dto.recipeUnit ?? dto.unit ?? current.recipeUnit;
     const technicalWastePercentage =
@@ -162,7 +172,7 @@ export class InventoryService {
       where: { id },
       data: {
         categoryId: dto.categoryId,
-        name: dto.name,
+        name: nextName,
         purchaseUnit: dto.purchaseUnit,
         recipeUnit: dto.recipeUnit ?? dto.unit,
         purchaseToRecipeFactor,
@@ -190,10 +200,13 @@ export class InventoryService {
   }
 
   async removeIngredient(ctx: TenantContext, id: string) {
-    await this.assertIngredient(ctx, id);
+    const current = await this.assertIngredient(ctx, id);
     await this.prisma.ingredient.update({
       where: { id },
-      data: { isActive: false },
+      data: {
+        isActive: false,
+        name: `${current.name}__deleted__${id.slice(-8)}`,
+      },
     });
   }
 
@@ -650,6 +663,56 @@ export class InventoryService {
 
     if (!ingredient) throw new NotFoundException(`Ingredient ${id} not found`);
     return ingredient;
+  }
+
+  private normalizeIngredientName(name: string) {
+    const normalized = name.trim().replace(/\s+/g, ' ');
+    if (!normalized) throw new BadRequestException('Ingredient name is required');
+    return normalized;
+  }
+
+  private async assertIngredientNameAvailable(
+    ctx: TenantContext,
+    name: string,
+    excludeId?: string,
+  ) {
+    const existing = await this.prisma.ingredient.findFirst({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        isActive: true,
+        name: { equals: name, mode: 'insensitive' },
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true, name: true },
+    });
+    if (!existing) return;
+    throw new ConflictException({
+      statusCode: 409,
+      error: 'Conflict',
+      code: 'INGREDIENT_NAME_EXISTS',
+      message: `Ya existe un ingrediente llamado "${existing.name}" en esta sucursal.`,
+      details: { ingredientId: existing.id },
+    });
+  }
+
+  private async releaseInactiveIngredientName(ctx: TenantContext, name: string) {
+    const inactiveMatches = await this.prisma.ingredient.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        isActive: false,
+        name: { equals: name, mode: 'insensitive' },
+      },
+      select: { id: true, name: true },
+    });
+
+    for (const item of inactiveMatches) {
+      await this.prisma.ingredient.update({
+        where: { id: item.id },
+        data: { name: `${item.name}__deleted__${item.id.slice(-8)}` },
+      });
+    }
   }
 
   private async assertProduct(ctx: TenantContext, id: string) {
