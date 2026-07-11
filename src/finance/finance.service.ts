@@ -4,10 +4,11 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { PayFrequency, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
+import { PayrollQueryDto } from './dto/payroll-query.dto';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
 import { CreatePayrollDto, UpdatePayrollDto } from './dto/payroll.dto';
 import {
@@ -160,8 +161,8 @@ export class FinanceService {
     };
   }
 
-  async payroll(ctx: TenantContext, query: PeriodQueryDto) {
-    const { periodMonth, range } = this.resolvePayrollMonth(query);
+  async payroll(ctx: TenantContext, query: PayrollQueryDto) {
+    const periodMonth = query.period ?? this.currentPeriodMonth();
     const rows = await this.prisma.payroll.findMany({
       where: {
         tenantId: ctx.tenantId,
@@ -171,24 +172,43 @@ export class FinanceService {
       orderBy: { staffName: 'asc' },
     });
 
-    const grossTotal = rows.reduce((a, r) => a + r.grossCOP, 0);
-    const netTotal = rows.reduce((a, r) => a + r.netCOP, 0);
+    const entries = rows.map((r) => {
+      // grossCOP/netCOP se guardan POR PERÍODO de pago. Según la frecuencia,
+      // multiplicamos por los ciclos de pago que caen en el mes.
+      const cyclesInMonth = this.payCyclesInMonth(periodMonth, r.payFrequency);
+      return {
+        id: r.id,
+        userId: r.userId,
+        staffName: r.staffName,
+        role: r.role,
+        payFrequency: r.payFrequency,
+        // Por período de pago
+        grossCOP: r.grossCOP,
+        netCOP: r.netCOP,
+        bonusesCOP: r.bonusesCOP,
+        deductionsCOP: r.deductionsCOP,
+        // Consolidado del mes (frecuencia × ciclos)
+        cyclesInMonth,
+        monthlyGrossCOP: r.grossCOP * cyclesInMonth,
+        monthlyNetCOP: r.netCOP * cyclesInMonth,
+        paidAt: r.paidAt?.getTime() ?? null,
+      };
+    });
+
+    const grossTotal = entries.reduce((a, e) => a + e.monthlyGrossCOP, 0);
+    const netTotal = entries.reduce((a, e) => a + e.monthlyNetCOP, 0);
+
+    const monthStart = new Date(`${periodMonth}-01T00:00:00Z`);
+    const monthEnd = new Date(monthStart);
+    monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
 
     return {
       periodMonth,
       grossTotal,
       netTotal,
-      entries: rows.map((r) => ({
-        id: r.id,
-        userId: r.userId,
-        staffName: r.staffName,
-        role: r.role,
-        grossCOP: r.grossCOP,
-        netCOP: r.netCOP,
-        paidAt: r.paidAt?.getTime() ?? null,
-      })),
-      dateFrom: range.from.toISOString(),
-      dateTo: range.to.toISOString(),
+      entries,
+      dateFrom: monthStart.toISOString(),
+      dateTo: monthEnd.toISOString(),
     };
   }
 
@@ -299,8 +319,11 @@ export class FinanceService {
           staffName: dto.staffName,
           role: dto.role,
           periodMonth: dto.periodMonth,
+          payFrequency: dto.payFrequency ?? PayFrequency.MONTHLY,
           grossCOP: dto.grossCOP,
           netCOP: dto.netCOP,
+          bonusesCOP: dto.bonusesCOP ?? 0,
+          deductionsCOP: dto.deductionsCOP ?? 0,
           paidAt: dto.paidAt ? new Date(dto.paidAt) : null,
         },
       });
@@ -323,8 +346,11 @@ export class FinanceService {
           staffName: dto.staffName,
           role: dto.role,
           periodMonth: dto.periodMonth,
+          payFrequency: dto.payFrequency,
           grossCOP: dto.grossCOP,
           netCOP: dto.netCOP,
+          bonusesCOP: dto.bonusesCOP,
+          deductionsCOP: dto.deductionsCOP,
           paidAt:
             dto.paidAt === undefined
               ? undefined
@@ -456,18 +482,28 @@ export class FinanceService {
     staffName: string;
     role: string;
     periodMonth: string;
+    payFrequency: PayFrequency;
     grossCOP: number;
     netCOP: number;
+    bonusesCOP: number;
+    deductionsCOP: number;
     paidAt: Date | null;
   }) {
+    const cyclesInMonth = this.payCyclesInMonth(r.periodMonth, r.payFrequency);
     return {
       id: r.id,
       userId: r.userId,
       staffName: r.staffName,
       role: r.role,
       periodMonth: r.periodMonth,
+      payFrequency: r.payFrequency,
       grossCOP: r.grossCOP,
       netCOP: r.netCOP,
+      bonusesCOP: r.bonusesCOP,
+      deductionsCOP: r.deductionsCOP,
+      cyclesInMonth,
+      monthlyGrossCOP: r.grossCOP * cyclesInMonth,
+      monthlyNetCOP: r.netCOP * cyclesInMonth,
       paidAt: r.paidAt?.getTime() ?? null,
     };
   }
@@ -531,5 +567,29 @@ export class FinanceService {
       range.from.getMonth() + 1,
     ).padStart(2, '0')}`;
     return { periodMonth, range };
+  }
+
+  private currentPeriodMonth(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  /**
+   * Ciclos de pago que caen dentro del mes según la frecuencia.
+   * - MONTHLY: 1
+   * - BIWEEKLY (quincenal): 2
+   * - WEEKLY: cuenta los viernes (día de pago) del mes → 4 o 5
+   */
+  private payCyclesInMonth(periodMonth: string, freq: PayFrequency): number {
+    if (freq === PayFrequency.MONTHLY) return 1;
+    if (freq === PayFrequency.BIWEEKLY) return 2;
+
+    const [year, month] = periodMonth.split('-').map(Number);
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    let fridays = 0;
+    for (let d = 1; d <= daysInMonth; d++) {
+      if (new Date(Date.UTC(year, month - 1, d)).getUTCDay() === 5) fridays++;
+    }
+    return fridays;
   }
 }

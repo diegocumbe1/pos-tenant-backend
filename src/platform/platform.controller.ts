@@ -200,6 +200,16 @@ export class PlatformController {
     return this.platform.getUsage(id);
   }
 
+  @Get('tenants/:id/operations')
+  @ApiOperation({
+    summary: 'Read-only operational cockpit for a tenant',
+    description:
+      'Super-admin observability: branches, users, products, inventory, tables and recent orders without tenant impersonation.',
+  })
+  getTenantOperations(@Param('id') id: string) {
+    return this.platform.getTenantOperations(id);
+  }
+
   // ─── Estado de cuenta ───────────────────────────────────────────────────────
 
   @Patch('tenants/:id/status')

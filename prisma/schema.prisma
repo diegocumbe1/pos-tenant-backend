@@ -1088,19 +1088,28 @@ model Payroll {
   tenant      Tenant    @relation(fields: [tenantId], references: [id])
   branchId    String
   branch      Branch    @relation(fields: [branchId], references: [id])
-  userId      String?
-  staffName   String
-  role        String
-  periodMonth String // "YYYY-MM"
-  grossCOP    Int
-  netCOP      Int
-  paidAt      DateTime?
-  createdAt   DateTime  @default(now())
+  userId        String?
+  staffName     String
+  role          String
+  periodMonth   String       // "YYYY-MM"
+  payFrequency  PayFrequency @default(MONTHLY)
+  grossCOP      Int          // bruto por período de pago (base + bonos)
+  netCOP        Int          // neto por período de pago
+  bonusesCOP    Int          @default(0)
+  deductionsCOP Int          @default(0)
+  paidAt        DateTime?
+  createdAt     DateTime     @default(now())
 
   @@unique([branchId, userId, periodMonth])
   @@index([tenantId])
   @@index([branchId, periodMonth])
   @@map("payrolls")
+}
+
+enum PayFrequency {
+  WEEKLY // semanal
+  BIWEEKLY // quincenal
+  MONTHLY // mensual
 }
 
 model FinanceGoal {

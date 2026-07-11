@@ -19,6 +19,7 @@ import { CurrentTenant } from '../auth/decorators/current-tenant.decorator';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { FinanceService } from './finance.service';
 import { PeriodQueryDto } from './dto/period-query.dto';
+import { PayrollQueryDto } from './dto/payroll-query.dto';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
 import { CreatePayrollDto, UpdatePayrollDto } from './dto/payroll.dto';
 import {
@@ -55,7 +56,7 @@ export class FinanceController {
   @Get('payroll')
   payroll(
     @CurrentTenant() ctx: TenantContext,
-    @Query() query: PeriodQueryDto,
+    @Query() query: PayrollQueryDto,
   ) {
     return this.financeService.payroll(ctx, query);
   }
