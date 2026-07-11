@@ -26,3 +26,9 @@ export class FailPrintJobDto {
   @IsString()
   error: string;
 }
+
+export class CancelPrintJobDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}

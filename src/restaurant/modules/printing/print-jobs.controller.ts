@@ -18,7 +18,11 @@ import { RequirePermissions } from '../../../auth/decorators/require-permissions
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrintJobsService } from './print-jobs.service';
-import { CreatePrintJobDto, FailPrintJobDto } from './dto/print-job.dto';
+import {
+  CancelPrintJobDto,
+  CreatePrintJobDto,
+  FailPrintJobDto,
+} from './dto/print-job.dto';
 
 @ApiTags('Print Jobs')
 @ApiBearerAuth()
@@ -70,6 +74,25 @@ export class PrintJobsController {
     @Body() dto: FailPrintJobDto,
   ) {
     return this.printJobsService.fail(ctx, id, dto.error);
+  }
+
+  @Post('pending/cancel')
+  @RequirePermissions('restaurant:print:update')
+  cancelPending(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: CancelPrintJobDto,
+  ) {
+    return this.printJobsService.cancelPending(ctx, dto.reason);
+  }
+
+  @Post(':id/cancel')
+  @RequirePermissions('restaurant:print:update')
+  cancel(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CancelPrintJobDto,
+  ) {
+    return this.printJobsService.cancel(ctx, id, dto.reason);
   }
 
   @Post(':id/retry')

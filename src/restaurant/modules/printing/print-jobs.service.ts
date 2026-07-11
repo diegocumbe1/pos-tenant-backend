@@ -24,6 +24,8 @@ const TARGET_BY_DOC: Record<PrintDocumentType, PrinterTarget> = {
   EXPENSE_VOUCHER: PrinterTarget.CASHIER,
 };
 
+const DEFAULT_CANCEL_REASON = 'CANCELLED_BY_USER';
+
 export interface EnqueueParams {
   tenantId: string;
   branchId: string;
@@ -128,6 +130,36 @@ export class PrintJobsService {
       },
     });
     return this.mapJob(job);
+  }
+
+  async cancel(ctx: TenantContext, id: string, reason?: string) {
+    const existing = await this.assertJob(ctx, id);
+    if (existing.status !== PrintJobStatus.QUEUED) {
+      return this.mapJob(existing);
+    }
+    const job = await this.prisma.printJob.update({
+      where: { id },
+      data: {
+        status: PrintJobStatus.FAILED,
+        lastError: reason?.trim() || DEFAULT_CANCEL_REASON,
+      },
+    });
+    return this.mapJob(job);
+  }
+
+  async cancelPending(ctx: TenantContext, reason?: string) {
+    const result = await this.prisma.printJob.updateMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        status: PrintJobStatus.QUEUED,
+      },
+      data: {
+        status: PrintJobStatus.FAILED,
+        lastError: reason?.trim() || DEFAULT_CANCEL_REASON,
+      },
+    });
+    return { cancelled: result.count };
   }
 
   async retry(ctx: TenantContext, id: string) {

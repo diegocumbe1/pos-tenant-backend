@@ -57,9 +57,12 @@ export class PrintersService {
   /** Heartbeat del agente local: marca la impresora como alcanzable (o no). */
   async heartbeat(ctx: TenantContext, id: string, online: boolean) {
     await this.assertPrinter(ctx, id);
+    if (!online) {
+      return this.prisma.printer.findUnique({ where: { id } });
+    }
     return this.prisma.printer.update({
       where: { id },
-      data: { lastSeenAt: online ? new Date() : null },
+      data: { lastSeenAt: new Date() },
     });
   }
 
