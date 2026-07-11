@@ -46,7 +46,7 @@ export class ProductsService {
       ctx.branchId,
     );
 
-    return this.prisma.product.create({
+    const product = await this.prisma.product.create({
       data: {
         ...dto,
         tenantId: ctx.tenantId,
@@ -54,6 +54,11 @@ export class ProductsService {
         imageUrls: dto.imageUrls ?? [],
       },
     });
+
+    // Precio inicial → primera entrada del histórico (best-effort: nunca bloquea el create).
+    await this.recordPriceHistory(ctx, product.id, product.priceCOP, product.targetMarginPct);
+
+    return product;
   }
 
   async update(ctx: TenantContext, id: string, dto: UpdateProductDto) {
@@ -66,10 +71,55 @@ export class ProductsService {
       );
     }
 
-    return this.prisma.product.update({
+    // Si cambia precio o % objetivo, registra una entrada en el histórico (trazabilidad).
+    const touchesPricing =
+      dto.priceCOP !== undefined || dto.targetMarginPct !== undefined;
+
+    const updated = await this.prisma.product.update({
       where: { id },
       data: dto,
     });
+
+    if (touchesPricing) {
+      await this.recordPriceHistory(ctx, id, updated.priceCOP, updated.targetMarginPct);
+    }
+
+    return updated;
+  }
+
+  /**
+   * Registra una entrada del histórico de precio. Best-effort: si la tabla aún no
+   * existe (migración sin aplicar) o falla, NO bloquea el create/update del producto.
+   */
+  private async recordPriceHistory(
+    ctx: TenantContext,
+    productId: string,
+    priceCOP: number,
+    targetMarginPct: number,
+  ) {
+    try {
+      await this.prisma.productPriceHistory.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId || null,
+          productId,
+          priceCOP,
+          targetMarginPct,
+          changedByUserId: ctx.userId ?? null,
+        },
+      });
+    } catch {
+      // Trazabilidad no crítica: se ignora si la migración aún no está aplicada.
+    }
+  }
+
+  async priceHistory(ctx: TenantContext, id: string) {
+    await this.assertBelongsToTenant(id, ctx.tenantId);
+    const history = await this.prisma.productPriceHistory.findMany({
+      where: { tenantId: ctx.tenantId, productId: id },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { history };
   }
 
   async toggle(ctx: TenantContext, id: string) {

@@ -124,6 +124,7 @@ model Branch {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   name      String
   address   String?
+  phone     String?
   // Datos de pago del negocio (cuenta bancaria, Nequi/Daviplata, QR) que salen
   // en el POS al cobrar y en el recibo. JSON con forma BranchPaymentInfo (FE).
   paymentInfo Json?
@@ -650,7 +651,7 @@ model Product {
   imageUrls       String[]
   isAvailable     Boolean         @default(true)
   sortOrder       Int             @default(0)
-  targetMarginPct Int             @default(65)
+  targetMarginPct Float           @default(65)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   deletedAt       DateTime?
@@ -658,6 +659,7 @@ model Product {
   orderItems   OrderItem[]
   kitchenItems KitchenTicketItem[]
   recipeLines  RecipeLine[]
+  priceHistory ProductPriceHistory[]
 
   @@index([tenantId])
   @@index([tenantId, branchId, deletedAt])
@@ -773,6 +775,8 @@ model RecipeLine {
   ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
   quantity     Float
   unit         String
+  // Merma por línea de receta (pérdida al preparar), aparte de la merma técnica del ingrediente.
+  wastePercent Float      @default(0)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -781,6 +785,23 @@ model RecipeLine {
   @@index([branchId])
   @@index([ingredientId])
   @@map("recipe_lines")
+}
+
+// Histórico de precio/margen de un producto: cada cambio queda registrado con fecha.
+// La app usa siempre el valor actual del producto; esto es sólo trazabilidad.
+model ProductPriceHistory {
+  id              String   @id @default(cuid())
+  tenantId        String
+  branchId        String?
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  priceCOP        Int
+  targetMarginPct Float
+  changedByUserId String?
+  createdAt       DateTime @default(now())
+
+  @@index([tenantId, productId, createdAt])
+  @@map("product_price_history")
 }
 
 // ─── Carta pública ────────────────────────────────────────────────────────────

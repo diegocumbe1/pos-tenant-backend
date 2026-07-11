@@ -1,8 +1,10 @@
 import {
   IsBoolean,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
 } from 'class-validator';
 
@@ -39,7 +41,8 @@ export class CreateProductDto {
   sortOrder?: number;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
+  @Max(100)
   targetMarginPct?: number;
 }

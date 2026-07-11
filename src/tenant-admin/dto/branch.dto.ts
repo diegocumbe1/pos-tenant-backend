@@ -67,7 +67,13 @@ export class CreateBranchDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
 }
 
 export class UpdateBranchDto {
@@ -78,7 +84,13 @@ export class UpdateBranchDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
 
   @IsOptional()
   @ValidateNested()

@@ -339,6 +339,7 @@ export class InventoryService {
       update: {
         quantity: dto.quantity,
         unit: dto.unit,
+        wastePercent: dto.wastePercent ?? 0,
       },
       create: {
         tenantId: ctx.tenantId,
@@ -347,6 +348,7 @@ export class InventoryService {
         ingredientId: dto.ingredientId,
         quantity: dto.quantity,
         unit: dto.unit,
+        wastePercent: dto.wastePercent ?? 0,
       },
       include: { ingredient: true },
     });
@@ -752,7 +754,9 @@ export class InventoryService {
         purchaseToRecipeFactor: line.ingredient.purchaseToRecipeFactor,
       },
     );
-    const lineCost = line.quantity * unitCost;
+    // Aplica la merma por línea: si se pierde X% al preparar, se necesita más cantidad.
+    const wastePercent = line.wastePercent ?? 0;
+    const lineCost = line.quantity * (1 + wastePercent / 100) * unitCost;
 
     return {
       id: line.id,
@@ -760,8 +764,10 @@ export class InventoryService {
       branchId: line.branchId,
       productId: line.productId,
       ingredientId: line.ingredientId,
+      ingredientName: line.ingredient.name,
       quantity: line.quantity,
       unit: line.unit,
+      wastePercent,
       ingredient: this.toIngredientDto(line.ingredient),
       unitCost,
       lineCost,

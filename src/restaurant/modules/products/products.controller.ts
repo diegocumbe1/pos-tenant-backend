@@ -69,6 +69,11 @@ export class ProductsController {
     return this.productsService.update(ctx, id, dto);
   }
 
+  @Get(':id/price-history')
+  priceHistory(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.productsService.priceHistory(ctx, id);
+  }
+
   @Patch(':id/toggle')
   toggle(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.productsService.toggle(ctx, id);

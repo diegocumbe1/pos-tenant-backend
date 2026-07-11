@@ -1,4 +1,4 @@
-import { IsIn, IsNumber, IsString, Min } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { MEASURE_UNITS } from './ingredient.dto';
 
 export class UpsertRecipeLineDto {
@@ -14,4 +14,11 @@ export class UpsertRecipeLineDto {
 
   @IsIn(MEASURE_UNITS as unknown as string[])
   unit!: string;
+
+  // Merma por línea (0–100). Pérdida al preparar, aparte de la merma técnica del ingrediente.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  wastePercent?: number;
 }
