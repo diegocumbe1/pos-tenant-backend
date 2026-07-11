@@ -246,6 +246,87 @@ export class PlatformService {
     };
   }
 
+  /**
+   * Cockpit operativo de solo-lectura para super-admin: sedes, usuarios,
+   * productos, inventario, mesas y últimas órdenes de un tenant, sin necesidad
+   * de impersonar. Devuelve conteos + listas acotadas para observabilidad.
+   */
+  async getTenantOperations(id: string) {
+    const tenant = await this.loadTenant(id);
+
+    const [branches, users, productCount, ingredients, tableCount, recentOrders] =
+      await Promise.all([
+        this.prisma.branch.findMany({
+          where: { tenantId: id },
+          select: { id: true, name: true, address: true, createdAt: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.prisma.user.findMany({
+          where: { tenantId: id },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            isActive: true,
+            role: { select: { code: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.prisma.product.count({ where: { tenantId: id, deletedAt: null } }),
+        this.prisma.ingredient.findMany({
+          where: { tenantId: id, isActive: true },
+          select: { currentStock: true, minStock: true },
+        }),
+        this.prisma.restaurantTable.count({
+          where: { tenantId: id, deletedAt: null },
+        }),
+        this.prisma.order.findMany({
+          where: { tenantId: id },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: {
+            id: true,
+            branchId: true,
+            tableId: true,
+            status: true,
+            totalCOP: true,
+            createdAt: true,
+            closedAt: true,
+          },
+        }),
+      ]);
+
+    const lowStockIngredients = ingredients.filter(
+      (i) => i.currentStock <= i.minStock,
+    ).length;
+
+    return {
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        plan: tenant.plan,
+        status: tenant.status,
+      },
+      counts: {
+        branches: branches.length,
+        users: users.length,
+        products: productCount,
+        ingredients: ingredients.length,
+        lowStockIngredients,
+        tables: tableCount,
+      },
+      branches,
+      users: users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role?.code ?? null,
+        isActive: u.isActive,
+      })),
+      recentOrders,
+    };
+  }
+
   // ─── Usuarios del tenant ──────────────────────────────────────────────────────
 
   async listTenantUsers(tenantId: string) {

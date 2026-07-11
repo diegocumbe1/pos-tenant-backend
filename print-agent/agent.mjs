@@ -62,8 +62,11 @@ const envLoaded = loadDotEnv(ENV_PATH);
 const API_URL = (process.env.API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 const EMAIL = process.env.AGENT_EMAIL;
 const PASSWORD = process.env.AGENT_PASSWORD;
-const TENANT_ID = process.env.TENANT_ID;
-const BRANCH_ID = process.env.BRANCH_ID;
+// tenant/branch NO se configuran: se derivan del perfil devuelto por el login.
+// TENANT_ID nunca hace falta (un usuario pertenece a un solo tenant).
+// BRANCH_ID solo se usa como override cuando el usuario atiende varias sedes,
+// para decir CUÁL sirve esta impresora; con una sola sede se autoselecciona.
+const ENV_BRANCH_ID = process.env.BRANCH_ID;
 const POLL_MS = Number(process.env.POLL_MS ?? 3000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 20000);
 const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
@@ -72,7 +75,7 @@ const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
 const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
 const SEND_RETRY_DELAY_MS = Number(process.env.SEND_RETRY_DELAY_MS ?? 1500);
 
-const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD', 'TENANT_ID', 'BRANCH_ID'].filter(
+const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD'].filter(
   (k) => !process.env[k],
 );
 if (missing.length > 0) {
@@ -87,6 +90,10 @@ if (missing.length > 0) {
 }
 
 let accessToken = null;
+// Contexto derivado del login (no del .env). Se fija en el primer login y se
+// mantiene estable en los re-login por token expirado.
+let tenantId = null;
+let branchId = null;
 
 const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 
@@ -95,9 +102,49 @@ function authHeaders() {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
-    'X-Tenant-Id': TENANT_ID,
-    'X-Branch-Id': BRANCH_ID,
+    'X-Tenant-Id': tenantId,
+    'X-Branch-Id': branchId,
   };
+}
+
+/** Resuelve tenant/branch desde el perfil del usuario autenticado. El servidor
+ *  ya conoce el tenant por el JWT; aquí solo derivamos los valores que van como
+ *  headers, en vez de configurarlos a mano por sede. */
+function resolveContext(profile) {
+  const derivedTenantId = profile?.tenant?.id;
+  if (!derivedTenantId) {
+    throw new Error(
+      'login sin tenant en el perfil (¿usuario sin tenant o platform-admin?)',
+    );
+  }
+  tenantId = derivedTenantId;
+
+  const branches = Array.isArray(profile.branches) ? profile.branches : [];
+  const activeBranches = branches.filter((b) => b?.isActive !== false);
+  const usable = activeBranches.length > 0 ? activeBranches : branches;
+
+  if (ENV_BRANCH_ID) {
+    // Override explícito: validar que el usuario tenga acceso a esa sede.
+    const match = usable.find((b) => b.id === ENV_BRANCH_ID);
+    if (!match) {
+      throw new Error(
+        `BRANCH_ID=${ENV_BRANCH_ID} no está entre las sedes del usuario ` +
+          `(${usable.map((b) => b.id).join(', ') || 'ninguna'}).`,
+      );
+    }
+    branchId = match.id;
+  } else if (usable.length === 1) {
+    branchId = usable[0].id; // sede única → autoselección
+  } else if (usable.length === 0) {
+    throw new Error('el usuario no tiene ninguna sede asignada.');
+  } else {
+    throw new Error(
+      'el usuario atiende varias sedes: define BRANCH_ID en .env para indicar ' +
+        `cuál sirve esta impresora. Opciones: ${usable
+          .map((b) => `${b.id} (${b.name})`)
+          .join(', ')}.`,
+    );
+  }
 }
 
 async function login() {
@@ -110,7 +157,8 @@ async function login() {
   const data = await res.json();
   accessToken = data.access_token ?? data.accessToken;
   if (!accessToken) throw new Error('login sin access_token');
-  log('sesión iniciada');
+  resolveContext(data.profile);
+  log(`sesión iniciada (tenant ${tenantId} / branch ${branchId})`);
 }
 
 /** Llama la API reintentando login una vez ante 401 (token expirado). */
@@ -254,8 +302,8 @@ async function loop(fn, everyMs, label) {
 }
 
 async function main() {
-  log(`Lynko Print Agent → ${API_URL} (tenant ${TENANT_ID} / branch ${BRANCH_ID})`);
-  await login();
+  log(`Lynko Print Agent → ${API_URL}`);
+  await login(); // deriva tenant/branch del perfil
   // Dos bucles independientes: jobs (rápido) y heartbeat (lento).
   loop(drainJobs, POLL_MS, 'jobs');
   loop(heartbeat, HEARTBEAT_MS, 'heartbeat');
