@@ -17,6 +17,7 @@ export type PrintBlock =
   | { kind: 'barcode'; data: string; format?: 'CODE128' | 'EAN13' }
   | { kind: 'image'; url: string }
   | { kind: 'feed'; lines: number }
+  | { kind: 'drawer' }
   | { kind: 'cut' };
 
 export interface PrintDocument {

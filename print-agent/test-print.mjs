@@ -6,9 +6,10 @@ const LF = 0x0a;
 const ip = process.argv[2];
 const port = Number(process.argv[3] ?? 9100);
 const cut = process.argv.includes('--cut');
+const drawer = process.argv.includes('--drawer');
 
 if (!ip) {
-  console.error('Uso: node test-print.mjs <ip> [port] [--cut]');
+  console.error('Uso: node test-print.mjs <ip> [port] [--cut] [--drawer]');
   process.exit(1);
 }
 
@@ -24,6 +25,7 @@ const text = [
 const bytes = [
   ESC,
   0x40,
+  ...(drawer ? [ESC, 0x70, 0x00, 0x19, 0xfa] : []),
   ...Buffer.from(text, 'ascii'),
   LF,
   LF,
@@ -45,7 +47,11 @@ socket.connect(port, ip, () => {
   socket.write(Buffer.from(bytes), () => {
     setTimeout(() => {
       socket.destroy();
-      console.log(`prueba enviada a ${ip}:${port}${cut ? ' con corte' : ' sin corte'}`);
+      console.log(
+        `prueba enviada a ${ip}:${port}` +
+          `${drawer ? ' con apertura de caja' : ''}` +
+          `${cut ? ' con corte' : ' sin corte'}`,
+      );
     }, 300);
   });
 });

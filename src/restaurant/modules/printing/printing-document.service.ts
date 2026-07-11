@@ -88,6 +88,7 @@ export class PrintingDocumentService {
 
   buildReceipt(input: ReceiptDoc): PrintDocument {
     const blocks: PrintBlock[] = [
+      { kind: 'drawer' },
       { kind: 'text', text: input.businessName ?? 'Recibo', align: 'center', bold: true, size: 'lg' },
       { kind: 'text', text: 'RECIBO DE VENTA', align: 'center', size: 'sm' },
       { kind: 'line' },

@@ -20,6 +20,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
 import { RegisterPaymentDto } from './dto/payment.dto';
+import { VoidOrderDto } from './dto/void-order.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -82,5 +83,14 @@ export class OrdersController {
     @Body() dto: CloseOrderDto,
   ) {
     return this.ordersService.close(ctx, id, dto);
+  }
+
+  @Patch(':id/void')
+  voidOrder(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: VoidOrderDto,
+  ) {
+    return this.ordersService.voidOrder(ctx, id, dto);
   }
 }

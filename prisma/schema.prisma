@@ -1181,6 +1181,7 @@ enum OrderEventType {
   PAYMENT_REGISTERED
   CLOSED
   CLAIM
+  VOIDED
 }
 
 // ─── Reclamos del cliente ─────────────────────────────────────────────────────

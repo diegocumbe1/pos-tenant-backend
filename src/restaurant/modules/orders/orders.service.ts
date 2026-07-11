@@ -15,6 +15,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
 import { RegisterPaymentDto } from './dto/payment.dto';
+import { VoidOrderDto } from './dto/void-order.dto';
 import {
   KITCHEN_TICKET_UPDATED,
   KitchenTicketUpdatedEvent,
@@ -776,6 +777,91 @@ export class OrdersService {
       paymentSplits,
       cashSessionId,
       receiptUrl,
+    };
+  }
+
+  async voidOrder(ctx: TenantContext, id: string, dto: VoidOrderDto) {
+    const order = await this.assertOpenOrder(id, ctx.tenantId);
+    const paymentCount = await this.prisma.paymentSplit.count({
+      where: { orderId: id, tenantId: ctx.tenantId },
+    });
+    if (paymentCount > 0) {
+      throw new UnprocessableEntityException(
+        'Cannot void an order with registered payments',
+      );
+    }
+
+    const voidedAt = new Date();
+    const voidType = dto.voidType ?? 'other';
+    await this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id },
+        data: {
+          status: 'VOIDED',
+          closedAt: voidedAt,
+          totalCOP: 0,
+        },
+      });
+
+      await tx.restaurantTable.update({
+        where: { id: order.tableId },
+        data: { status: 'AVAILABLE' },
+      });
+
+      await this.orderEvents.record(
+        {
+          tenantId: ctx.tenantId,
+          orderId: id,
+          type: 'VOIDED' as OrderEventType,
+          at: voidedAt,
+          note: dto.reason,
+          metadata: {
+            voidType,
+            byUserId: ctx.userId ?? null,
+            byUserName: dto.byUserName ?? null,
+            originalTotalCOP: order.items.reduce(
+              (sum, item) => sum + item.priceCOP * item.qty,
+              0,
+            ),
+            items: order.items.map((item) => ({
+              productId: item.productId,
+              name: item.name,
+              qty: item.qty,
+              priceCOP: item.priceCOP,
+            })),
+          },
+        },
+        tx,
+      );
+
+      if (voidType === 'claim') {
+        await tx.orderClaim.create({
+          data: {
+            tenantId: ctx.tenantId,
+            orderId: id,
+            description: dto.reason,
+            severity: 'MEDIUM',
+            byUserId: ctx.userId ?? null,
+            byUserName: dto.byUserName ?? null,
+          },
+        });
+      }
+    }, ORDER_TX_OPTIONS);
+
+    this.events.emit(TABLE_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      tableId: order.tableId,
+      reason: 'order-voided',
+    } satisfies TableUpdatedEvent);
+
+    return {
+      id,
+      status: 'VOIDED',
+      voidType,
+      reason: dto.reason,
+      affectsFinance: false,
+      affectsCash: false,
     };
   }
 

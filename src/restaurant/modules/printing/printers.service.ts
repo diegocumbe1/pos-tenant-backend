@@ -68,7 +68,10 @@ export class PrintersService {
   async heartbeat(ctx: TenantContext, id: string, online: boolean) {
     await this.assertPrinter(ctx, id);
     if (!online) {
-      return this.prisma.printer.findUnique({ where: { id } });
+      return this.prisma.printer.update({
+        where: { id },
+        data: { lastSeenAt: null },
+      });
     }
     return this.prisma.printer.update({
       where: { id },
