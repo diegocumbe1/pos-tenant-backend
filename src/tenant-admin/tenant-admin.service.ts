@@ -269,6 +269,11 @@ export class TenantAdminService {
     });
   }
 
+  // El FE usa ADMINISTRATIVE donde el BE guarda ADMIN.
+  private static readonly BE_TO_FE_ROLE_CODE: Record<string, string> = {
+    ADMIN: 'ADMINISTRATIVE',
+  };
+
   /**
    * Matriz completa: roles del tenant × permissions, con flag `enabled` por cada par.
    * Usado por la UI "Configuración > Roles y permisos".
@@ -296,7 +301,9 @@ export class TenantAdminService {
         const enabled = new Set(r.rolePermissions.map((rp) => rp.permissionId));
         return {
           id: r.id,
-          code: r.code,
+          // El FE usa ADMINISTRATIVE donde el BE guarda ADMIN. Exponemos el código FE
+          // para que la matriz y el guardado (por id) coincidan con el frontend.
+          code: TenantAdminService.BE_TO_FE_ROLE_CODE[r.code] ?? r.code,
           name: r.name,
           isSystem: r.isSystem,
           permissions: permissions.map((p) => ({
