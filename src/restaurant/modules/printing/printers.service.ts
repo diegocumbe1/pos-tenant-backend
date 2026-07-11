@@ -74,23 +74,25 @@ export class PrintersService {
       type: 'KITCHEN_TICKET',
       printerTarget: printer.target,
       createdAt: new Date().toISOString(),
+      // Template de EJEMPLO (no datos reales): recibo con cantidad, producto, valor,
+      // total y forma de pago — para que el cliente vea cómo saldra impreso.
       blocks: [
         { kind: 'text', text: printer.name, align: 'center', bold: true, size: 'lg' },
-        { kind: 'text', text: 'PRUEBA DE IMPRESION', align: 'center', size: 'sm' },
+        { kind: 'text', text: 'TICKET DE PRUEBA', align: 'center', size: 'sm' },
+        { kind: 'text', text: `${printer.target} · ${printer.paperWidth} mm`, align: 'center', size: 'sm' },
         { kind: 'line' },
-        { kind: 'row', left: 'Destino', right: printer.target },
-        { kind: 'row', left: 'Conexion', right: printer.connection },
-        {
-          kind: 'row',
-          left: 'Direccion',
-          right: printer.ipAddress
-            ? `${printer.ipAddress}:${printer.port ?? 9100}`
-            : (printer.address ?? 'USB'),
-        },
-        { kind: 'row', left: 'Papel', right: `${printer.paperWidth} mm` },
+        { kind: 'row', left: 'Cant  Producto', right: 'Valor', bold: true },
+        { kind: 'line' },
+        { kind: 'row', left: '1  Producto de ejemplo', right: '$12.000' },
+        { kind: 'row', left: '2  Bebida de ejemplo', right: '$16.000' },
+        { kind: 'line' },
+        { kind: 'row', left: 'Subtotal', right: '$28.000' },
+        { kind: 'row', left: 'TOTAL', right: '$28.000', bold: true },
+        { kind: 'row', left: 'Forma de pago', right: 'Efectivo' },
+        { kind: 'line' },
         { kind: 'text', text: new Date().toLocaleString('es-CO'), align: 'center', size: 'sm' },
+        { kind: 'text', text: 'Prueba de impresion · Lynko', align: 'center', size: 'sm' },
         { kind: 'feed', lines: 1 },
-        { kind: 'text', text: 'Lynko POS', align: 'center', size: 'sm' },
         { kind: 'cut' },
       ],
     };

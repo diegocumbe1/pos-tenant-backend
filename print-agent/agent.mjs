@@ -21,6 +21,10 @@ const BRANCH_ID = process.env.BRANCH_ID;
 const POLL_MS = Number(process.env.POLL_MS ?? 3000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 20000);
 const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
+// Reintentos controlados ante fallos TCP transitorios (impresora ocupada, calentando,
+// blip de red) antes de marcar el job como FAILED en el backend.
+const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
+const SEND_RETRY_DELAY_MS = Number(process.env.SEND_RETRY_DELAY_MS ?? 1500);
 
 if (!EMAIL || !PASSWORD || !TENANT_ID || !BRANCH_ID) {
   console.error(
@@ -90,6 +94,25 @@ function sendToPrinter(ip, port, bytes) {
   });
 }
 
+/** Envía con reintentos controlados: reintenta fallos transitorios y, si todos
+ *  fallan, propaga el último error para marcar el job FAILED. */
+async function sendWithRetry(ip, port, bytes) {
+  let lastErr;
+  for (let attempt = 1; attempt <= Math.max(1, SEND_RETRIES); attempt++) {
+    try {
+      await sendToPrinter(ip, port, bytes);
+      return attempt; // éxito
+    } catch (e) {
+      lastErr = e;
+      if (attempt < SEND_RETRIES) {
+        log(`reintento ${attempt}/${SEND_RETRIES - 1} → ${ip}:${port}: ${e?.message ?? e}`);
+        await new Promise((r) => setTimeout(r, SEND_RETRY_DELAY_MS));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /** Prueba de conectividad: ¿acepta la impresora una conexión TCP? */
 function probePrinter(ip, port) {
   return new Promise((resolve) => {
@@ -127,12 +150,15 @@ async function drainJobs() {
     const port = printer.port ?? 9100;
     try {
       const bytes = renderToEscPos(job.document, printer.paperWidth ?? 80);
-      await sendToPrinter(printer.ipAddress, port, bytes);
+      const attempts = await sendWithRetry(printer.ipAddress, port, bytes);
       await ackJob(job.id);
-      log(`impreso job ${job.id} → ${printer.name} (${printer.ipAddress}:${port})`);
+      log(
+        `impreso job ${job.id} → ${printer.name} (${printer.ipAddress}:${port})` +
+          (attempts > 1 ? ` [tras ${attempts} intentos]` : ''),
+      );
     } catch (e) {
       await failJob(job.id, String(e?.message ?? e));
-      log(`FALLO job ${job.id} → ${printer.ipAddress}:${port}: ${e?.message ?? e}`);
+      log(`FALLO job ${job.id} → ${printer.ipAddress}:${port} tras ${SEND_RETRIES} intentos: ${e?.message ?? e}`);
     }
   }
 }
