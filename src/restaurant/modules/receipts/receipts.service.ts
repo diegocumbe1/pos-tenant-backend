@@ -51,11 +51,12 @@ export class ReceiptsService {
     const share = await this.prisma.receiptShare.findUnique({
       where: { token },
     });
-    if (!share) throw new NotFoundException('Receipt not found');
-    if (share.expiresAt && share.expiresAt < new Date())
+    const resolvedShare = share ?? (await this.findOrCreateByClosedOrderId(token));
+    if (!resolvedShare) throw new NotFoundException('Receipt not found');
+    if (resolvedShare.expiresAt && resolvedShare.expiresAt < new Date())
       throw new NotFoundException('Receipt expired');
     // No exponer tenant/branch/orderId; solo el documento re-renderizable.
-    return { document: share.payload, createdAt: share.createdAt.toISOString() };
+    return { document: resolvedShare.payload, createdAt: resolvedShare.createdAt.toISOString() };
   }
 
   /**
@@ -196,6 +197,25 @@ export class ReceiptsService {
 
   private generateToken() {
     return randomBytes(18).toString('base64url'); // ~24 chars, impredecible
+  }
+
+  private async findOrCreateByClosedOrderId(orderId: string) {
+    const existing = await this.prisma.receiptShare.findFirst({
+      where: { orderId, splitId: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) return existing;
+
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, status: 'CLOSED' },
+      include: ORDER_INCLUDE,
+    });
+    if (!order) return null;
+
+    const created = await this.createForOrder(order as OrderWithRelations);
+    return this.prisma.receiptShare.findUnique({
+      where: { id: created.receiptShareId },
+    });
   }
 
   private publicUrl(token: string) {
