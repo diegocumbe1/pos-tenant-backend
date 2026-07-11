@@ -200,7 +200,10 @@ export class ReceiptsService {
 
   private publicUrl(token: string) {
     const base = process.env.PUBLIC_APP_URL?.replace(/\/$/, '');
-    return base ? `${base}/r/${token}` : `/r/${token}`;
+    if (base) return `${base}/r/${token}`;
+    return process.env.NODE_ENV === 'production'
+      ? `https://uselynko.com/r/${token}`
+      : `/r/${token}`;
   }
 }
 
