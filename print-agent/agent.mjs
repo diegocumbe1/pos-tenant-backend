@@ -38,20 +38,35 @@ function loadDotEnv(file) {
     text = buf.toString('utf8');
   }
   text = text.replace(/^﻿/, ''); // quita BOM UTF-8
-  for (const raw of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
     let val = line.slice(eq + 1).trim();
+    // Algunos instaladores/copiados en Windows dejan:
+    // AGENT_PASSWORD=
+    // mi-clave
+    // Lo toleramos para no obligar al restaurante a editar a mano cada vez.
+    if (!val && key === 'AGENT_PASSWORD') {
+      const next = lines[i + 1]?.trim();
+      if (next && !next.includes('=')) {
+        val = next;
+        i += 1;
+      }
+    }
     if (
       (val.startsWith('"') && val.endsWith('"')) ||
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1);
     }
-    if (key && process.env[key] === undefined) process.env[key] = val;
+    if (key && (process.env[key] === undefined || process.env[key] === '')) {
+      process.env[key] = val;
+    }
   }
   return true;
 }
@@ -74,6 +89,7 @@ const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
 // blip de red) antes de marcar el job como FAILED en el backend.
 const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
 const SEND_RETRY_DELAY_MS = Number(process.env.SEND_RETRY_DELAY_MS ?? 1500);
+const PRINT_DISABLE_CUT = (process.env.PRINT_DISABLE_CUT ?? 'false') === 'true';
 
 const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD'].filter(
   (k) => !process.env[k],
@@ -250,7 +266,9 @@ async function drainJobs() {
     }
     const port = printer.port ?? 9100;
     try {
-      const bytes = renderToEscPos(job.document, printer.paperWidth ?? 80);
+      const bytes = renderToEscPos(job.document, printer.paperWidth ?? 80, {
+        disableCut: PRINT_DISABLE_CUT,
+      });
       const attempts = await sendWithRetry(printer.ipAddress, port, bytes);
       await ackJob(job.id);
       log(
@@ -282,10 +300,15 @@ async function heartbeat() {
   for (const p of printers) {
     if (p.connection !== 'NETWORK' || !p.isActive || !p.ipAddress) continue;
     const online = await probePrinter(p.ipAddress, p.port ?? 9100);
-    await api(`/restaurant/printers/${p.id}/heartbeat`, {
+    const hb = await api(`/restaurant/printers/${p.id}/heartbeat`, {
       method: 'POST',
       body: JSON.stringify({ online }),
     });
+    if (!hb.ok) {
+      log(`heartbeat error ${hb.status} → ${p.name} (${p.ipAddress}:${p.port ?? 9100})`);
+    } else {
+      log(`heartbeat ${online ? 'online' : 'offline'} → ${p.name} (${p.ipAddress}:${p.port ?? 9100})`);
+    }
   }
 }
 

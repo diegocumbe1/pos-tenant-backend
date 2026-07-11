@@ -63,7 +63,7 @@ function appendQr(buf, data, moduleSize = 6) {
   buf.push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30);
 }
 
-function appendBlock(buf, block, cols) {
+function appendBlock(buf, block, cols, options = {}) {
   switch (block.kind) {
     case 'text':
       setAlign(buf, block.align ?? 'left');
@@ -105,7 +105,9 @@ function appendBlock(buf, block, cols) {
       buf.push(ESC, 0x64, Math.max(0, Math.min(255, block.lines ?? 1)));
       break;
     case 'cut':
-      buf.push(GS, 0x56, 0x42, 0x00); // corte parcial
+      if (!options.disableCut) {
+        buf.push(GS, 0x56, 0x42, 0x00); // corte parcial
+      }
       break;
     case 'drawer':
       buf.push(ESC, 0x70, 0x00, 0x19, 0xfa); // abrir cajón monedero (pin 2)
@@ -116,11 +118,11 @@ function appendBlock(buf, block, cols) {
 }
 
 /** PrintDocument → Buffer ESC/POS listo para enviar por TCP. */
-export function renderToEscPos(doc, paperWidth = 80) {
+export function renderToEscPos(doc, paperWidth = 80, options = {}) {
   const cols = COLS[paperWidth] ?? 48;
   const buf = new ByteBuffer();
   buf.push(ESC, 0x40); // init
-  for (const block of doc.blocks ?? []) appendBlock(buf, block, cols);
+  for (const block of doc.blocks ?? []) appendBlock(buf, block, cols, options);
   buf.push(LF, LF); // avance final
   return buf.toBuffer();
 }

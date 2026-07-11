@@ -7,6 +7,8 @@ import { PrintDocument } from './printing.types';
 
 @Injectable()
 export class PrintersService {
+  private readonly onlineWindowMs = 60_000;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly printJobs: PrintJobsService,
@@ -17,7 +19,15 @@ export class PrintersService {
       where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
       orderBy: { createdAt: 'asc' },
     });
-    return { printers };
+    const now = Date.now();
+    return {
+      printers: printers.map((printer) => ({
+        ...printer,
+        online:
+          !!printer.lastSeenAt &&
+          now - printer.lastSeenAt.getTime() <= this.onlineWindowMs,
+      })),
+    };
   }
 
   async create(ctx: TenantContext, dto: CreatePrinterDto) {
