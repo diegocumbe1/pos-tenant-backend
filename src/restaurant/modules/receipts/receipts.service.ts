@@ -26,7 +26,17 @@ export class ReceiptsService {
   ) {}
 
   /** Endpoint autenticado: genera/recupera el recibo compartible de una orden. */
-  async share(ctx: TenantContext, orderId: string, splitId?: string) {
+  async share(
+    ctx: TenantContext,
+    orderId: string,
+    splitId?: string,
+    payload?: Record<string, unknown>,
+  ) {
+    if (payload) {
+      const result = await this.createFromPayload(ctx, orderId, payload, splitId);
+      return { token: result.token, url: result.url };
+    }
+
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, tenantId: ctx.tenantId },
       include: ORDER_INCLUDE,
@@ -87,6 +97,53 @@ export class ReceiptsService {
       token: share.token,
       url: this.publicUrl(share.token),
       document,
+      receiptShareId: share.id,
+    };
+  }
+
+  async createFromPayload(
+    ctx: TenantContext,
+    orderId: string,
+    payload: Record<string, unknown>,
+    splitId?: string,
+  ) {
+    const existing = await this.prisma.receiptShare.findFirst({
+      where: {
+        tenantId: ctx.tenantId,
+        orderId,
+        splitId: splitId ?? null,
+      },
+    });
+
+    if (existing) {
+      const updated = await this.prisma.receiptShare.update({
+        where: { id: existing.id },
+        data: { payload: payload as unknown as Prisma.InputJsonValue },
+      });
+      return {
+        token: updated.token,
+        url: this.publicUrl(updated.token),
+        document: updated.payload as unknown as PrintDocument,
+        receiptShareId: updated.id,
+      };
+    }
+
+    const token = this.generateToken();
+    const share = await this.prisma.receiptShare.create({
+      data: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        orderId,
+        splitId: splitId ?? null,
+        token,
+        payload: payload as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    return {
+      token: share.token,
+      url: this.publicUrl(share.token),
+      document: share.payload as unknown as PrintDocument,
       receiptShareId: share.id,
     };
   }

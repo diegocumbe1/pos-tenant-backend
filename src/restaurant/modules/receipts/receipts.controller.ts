@@ -29,7 +29,7 @@ export class ReceiptsController {
   @Post('share')
   @HttpCode(HttpStatus.CREATED)
   share(@CurrentTenant() ctx: TenantContext, @Body() dto: ShareReceiptDto) {
-    return this.receiptsService.share(ctx, dto.orderId, dto.splitId);
+    return this.receiptsService.share(ctx, dto.orderId, dto.splitId, dto.payload);
   }
 }
 

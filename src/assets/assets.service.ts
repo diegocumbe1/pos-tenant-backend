@@ -42,6 +42,22 @@ export class AssetsService {
 
     this.validateScope(dto);
 
+    if (dto.scope === 'payment' && this.isPdf(file)) {
+      const uploaded = await this.imageUpload.uploadPdf({
+        file,
+        pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
+      });
+
+      return {
+        ok: true,
+        bucket: uploaded.bucket,
+        path: uploaded.path,
+        publicUrl: uploaded.publicUrl,
+        contentType: uploaded.contentType,
+        sizeBytes: uploaded.sizeBytes,
+      };
+    }
+
     // Optimiza (auto-rota EXIF + reescala + WebP q80) antes de subir. Los MIME/
     // tamaño/dimensiones los valida `ImageUploadService`.
     const uploaded = await this.imageUpload.uploadImage({
@@ -66,6 +82,10 @@ export class AssetsService {
       width: uploaded.width,
       height: uploaded.height,
     };
+  }
+
+  private isPdf(file: UploadedFile) {
+    return file.mimetype?.split(';')[0] === 'application/pdf';
   }
 
   /** El banner de la carta es una portada ancha; el logo va pequeño. */

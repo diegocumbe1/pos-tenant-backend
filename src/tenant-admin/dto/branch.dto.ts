@@ -38,6 +38,21 @@ export class BranchPaymentInfoDto {
   @IsOptional() @IsString() @MaxLength(500)
   qrImagePath?: string;
 
+  @IsOptional() @IsString() @MaxLength(500)
+  qrPdfUrl?: string;
+
+  @IsOptional() @IsString() @MaxLength(500)
+  qrPdfPath?: string;
+
+  @IsOptional() @IsString() @MaxLength(160)
+  qrPdfFileName?: string;
+
+  @IsOptional() @IsIn(['nu', 'other'])
+  qrProvider?: 'nu' | 'other';
+
+  @IsOptional() @IsIn(['image', 'pdf'])
+  qrSourceType?: 'image' | 'pdf';
+
   @IsOptional() @IsString() @MaxLength(280)
   transferInstructions?: string;
 

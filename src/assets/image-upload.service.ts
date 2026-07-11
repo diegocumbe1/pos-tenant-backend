@@ -58,7 +58,16 @@ export type ImageUploadResult = {
   contentType: 'image/webp';
 };
 
+export type FileUploadResult = {
+  bucket: string;
+  path: string;
+  publicUrl: string;
+  sizeBytes: number;
+  contentType: 'application/pdf';
+};
+
 const MAX_INPUT_SIZE_BYTES = 5 * 1024 * 1024;
+const PDF_HEADER = '%PDF-';
 const ALLOWED_INPUT_MIMES = new Set([
   'image/jpeg',
   'image/png',
@@ -155,6 +164,33 @@ export class ImageUploadService {
     };
   }
 
+  async uploadPdf(input: Omit<ImageUploadInput, 'kind' | 'maxWidth'>): Promise<FileUploadResult> {
+    const file = input.file;
+    this.assertPdfFile(file);
+
+    const buffer = file.buffer as Buffer;
+    const filename = `${Date.now()}-${randomUUID()}.pdf`;
+    const path = `${this.normalizePrefix(input.pathPrefix)}/${filename}`;
+
+    const uploaded = await this.supabase.uploadPublicAsset({
+      path,
+      buffer,
+      contentType: 'application/pdf',
+    });
+
+    this.logger.log(
+      `pdf uploaded path=${uploaded.path} inputBytes=${buffer.length}`,
+    );
+
+    return {
+      bucket: uploaded.bucket,
+      path: uploaded.path,
+      publicUrl: uploaded.publicUrl,
+      sizeBytes: buffer.length,
+      contentType: 'application/pdf',
+    };
+  }
+
   private assertInputFile(file: UploadedImageFile) {
     if (!file?.buffer?.length) {
       throw new BadRequestException('Image file is required');
@@ -179,6 +215,32 @@ export class ImageUploadService {
           ...ALLOWED_INPUT_MIMES,
         ].join(', ')}`,
       );
+    }
+  }
+
+  private assertPdfFile(file: UploadedImageFile) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('PDF file is required');
+    }
+    if (file.truncated) {
+      throw new BadRequestException(
+        'PDF file exceeds 5 MB limit (upload was truncated)',
+      );
+    }
+    if (file.size && file.size > MAX_INPUT_SIZE_BYTES) {
+      throw new BadRequestException('PDF file must be 5 MB or smaller');
+    }
+    if (file.buffer.length > MAX_INPUT_SIZE_BYTES) {
+      throw new BadRequestException('PDF file must be 5 MB or smaller');
+    }
+    const declared = file.mimetype?.split(';')[0];
+    if (declared !== 'application/pdf') {
+      throw new BadRequestException(
+        `Unsupported payment QR file type "${declared ?? 'unknown'}". Allowed: image/jpeg, image/png, image/webp, application/pdf`,
+      );
+    }
+    if (file.buffer.subarray(0, PDF_HEADER.length).toString('utf8') !== PDF_HEADER) {
+      throw new BadRequestException('Invalid PDF file');
     }
   }
 

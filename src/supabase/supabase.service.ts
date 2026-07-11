@@ -279,6 +279,24 @@ export class SupabaseService {
     );
 
     if (!getError) {
+      const { error: updateError } = await this.admin.storage.updateBucket(
+        this.assetsBucket,
+        {
+          public: true,
+          fileSizeLimit: '5MB',
+          allowedMimeTypes: [
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            'application/pdf',
+          ],
+        },
+      );
+      if (updateError) {
+        this.logger.warn(
+          `Assets bucket update failed: ${updateError.message}`,
+        );
+      }
       this.assetsBucketReady = true;
       return;
     }
@@ -288,7 +306,12 @@ export class SupabaseService {
       {
         public: true,
         fileSizeLimit: '5MB',
-        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        allowedMimeTypes: [
+          'image/jpeg',
+          'image/png',
+          'image/webp',
+          'application/pdf',
+        ],
       },
     );
 

@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsObject, IsOptional, IsString } from 'class-validator';
 
 export class ShareReceiptDto {
   @IsString()
@@ -7,4 +7,8 @@ export class ShareReceiptDto {
   @IsOptional()
   @IsString()
   splitId?: string;
+
+  @IsOptional()
+  @IsObject()
+  payload?: Record<string, unknown>;
 }

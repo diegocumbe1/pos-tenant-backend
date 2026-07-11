@@ -50,9 +50,17 @@ export class AssetsController {
       type: 'object',
       required: ['file', 'scope', 'kind'],
       properties: {
-        file: { type: 'string', format: 'binary' },
-        scope: { type: 'string', enum: ['menu', 'product'] },
-        kind: { type: 'string', enum: ['logo', 'banner', 'product-image'] },
+        file: {
+          type: 'string',
+          format: 'binary',
+          description:
+            'Images for menu/product/payment QR, or application/pdf only for payment-qr (Nu/Bre-B PDF).',
+        },
+        scope: { type: 'string', enum: ['menu', 'product', 'payment'] },
+        kind: {
+          type: 'string',
+          enum: ['logo', 'banner', 'product-image', 'payment-qr'],
+        },
         entityId: { type: 'string' },
       },
     },
