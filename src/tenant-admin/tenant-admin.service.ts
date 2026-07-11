@@ -46,14 +46,30 @@ export class TenantAdminService {
     });
   }
 
+  async getBranch(tenantId: string, branchId: string) {
+    const branch = await this.prisma.branch.findUnique({ where: { id: branchId } });
+    if (!branch || branch.tenantId !== tenantId) {
+      throw new NotFoundException(`Branch ${branchId} not found`);
+    }
+    return branch;
+  }
+
   async updateBranch(tenantId: string, branchId: string, dto: UpdateBranchDto) {
     const branch = await this.prisma.branch.findUnique({ where: { id: branchId } });
     if (!branch || branch.tenantId !== tenantId) {
       throw new NotFoundException(`Branch ${branchId} not found`);
     }
+    // paymentInfo se mergea sobre lo existente (no pisar campos no enviados).
+    const paymentInfo =
+      dto.paymentInfo !== undefined
+        ? {
+            ...((branch.paymentInfo as Record<string, unknown> | null) ?? {}),
+            ...dto.paymentInfo,
+          }
+        : undefined;
     return this.prisma.branch.update({
       where: { id: branchId },
-      data: { name: dto.name, address: dto.address },
+      data: { name: dto.name, address: dto.address, paymentInfo },
     });
   }
 
