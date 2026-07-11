@@ -252,78 +252,217 @@ export class PlatformService {
    * de impersonar. Devuelve conteos + listas acotadas para observabilidad.
    */
   async getTenantOperations(id: string) {
-    const tenant = await this.loadTenant(id);
+    await this.loadTenant(id);
 
-    const [branches, users, productCount, ingredients, tableCount, recentOrders] =
-      await Promise.all([
-        this.prisma.branch.findMany({
-          where: { tenantId: id },
-          select: { id: true, name: true, address: true, createdAt: true },
-          orderBy: { createdAt: 'asc' },
-        }),
-        this.prisma.user.findMany({
-          where: { tenantId: id },
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            isActive: true,
-            role: { select: { code: true } },
+    const [
+      branches,
+      users,
+      productCategories,
+      products,
+      ingredients,
+      areas,
+      tables,
+      recentOrders,
+      counts,
+    ] = await Promise.all([
+      this.prisma.branch.findMany({
+        where: { tenantId: id },
+        select: {
+          id: true,
+          name: true,
+          address: true,
+          phone: true,
+          createdAt: true,
+          _count: {
+            select: {
+              userBranches: true,
+              products: true,
+              ingredients: true,
+              tables: true,
+              orders: true,
+            },
           },
-          orderBy: { createdAt: 'asc' },
-        }),
-        this.prisma.product.count({ where: { tenantId: id, deletedAt: null } }),
-        this.prisma.ingredient.findMany({
-          where: { tenantId: id, isActive: true },
-          select: { currentStock: true, minStock: true },
-        }),
-        this.prisma.restaurantTable.count({
-          where: { tenantId: id, deletedAt: null },
-        }),
-        this.prisma.order.findMany({
-          where: { tenantId: id },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-          select: {
-            id: true,
-            branchId: true,
-            tableId: true,
-            status: true,
-            totalCOP: true,
-            createdAt: true,
-            closedAt: true,
-          },
-        }),
-      ]);
-
-    const lowStockIngredients = ingredients.filter(
-      (i) => i.currentStock <= i.minStock,
-    ).length;
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.user.findMany({
+        where: { tenantId: id },
+        include: {
+          role: { select: { code: true } },
+          userBranches: { select: { branchId: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 50,
+      }),
+      this.prisma.productCategory.findMany({
+        where: { tenantId: id },
+        select: {
+          id: true,
+          branchId: true,
+          name: true,
+          emoji: true,
+          sortOrder: true,
+          _count: { select: { products: true } },
+        },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        take: 50,
+      }),
+      this.prisma.product.findMany({
+        where: { tenantId: id, deletedAt: null },
+        select: {
+          id: true,
+          branchId: true,
+          categoryId: true,
+          name: true,
+          priceCOP: true,
+          emoji: true,
+          isAvailable: true,
+          sortOrder: true,
+          createdAt: true,
+          updatedAt: true,
+          category: { select: { name: true } },
+        },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        take: 50,
+      }),
+      this.prisma.ingredient.findMany({
+        where: { tenantId: id, isActive: true },
+        select: {
+          id: true,
+          branchId: true,
+          categoryId: true,
+          name: true,
+          recipeUnit: true,
+          currentStock: true,
+          minStock: true,
+          netUnitCost: true,
+          isPreparation: true,
+          updatedAt: true,
+        },
+        orderBy: { name: 'asc' },
+        take: 50,
+      }),
+      this.prisma.area.findMany({
+        where: { tenantId: id, deletedAt: null },
+        select: {
+          id: true,
+          branchId: true,
+          name: true,
+          emoji: true,
+          _count: { select: { tables: true } },
+        },
+        orderBy: { name: 'asc' },
+        take: 50,
+      }),
+      this.prisma.restaurantTable.findMany({
+        where: { tenantId: id, deletedAt: null },
+        select: {
+          id: true,
+          branchId: true,
+          areaId: true,
+          code: true,
+          seats: true,
+          status: true,
+        },
+        orderBy: [{ branchId: 'asc' }, { code: 'asc' }],
+        take: 50,
+      }),
+      this.prisma.order.findMany({
+        where: { tenantId: id },
+        select: {
+          id: true,
+          branchId: true,
+          tableId: true,
+          status: true,
+          totalCOP: true,
+          createdAt: true,
+          closedAt: true,
+          table: { select: { code: true } },
+          _count: { select: { items: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 25,
+      }),
+      this.resolveTenantOperationCounts(id),
+    ]);
 
     return {
-      tenant: {
-        id: tenant.id,
-        name: tenant.name,
-        plan: tenant.plan,
-        status: tenant.status,
-      },
-      counts: {
-        branches: branches.length,
-        users: users.length,
-        products: productCount,
-        ingredients: ingredients.length,
-        lowStockIngredients,
-        tables: tableCount,
-      },
-      branches,
-      users: users.map((u) => ({
-        id: u.id,
-        email: u.email,
-        name: u.name,
-        role: u.role?.code ?? null,
-        isActive: u.isActive,
+      counts,
+      branches: branches.map((branch) => ({
+        id: branch.id,
+        name: branch.name,
+        address: branch.address ?? undefined,
+        phone: branch.phone ?? undefined,
+        createdAt: branch.createdAt.toISOString(),
+        usersCount: branch._count.userBranches,
+        productsCount: branch._count.products,
+        ingredientsCount: branch._count.ingredients,
+        tablesCount: branch._count.tables,
+        ordersCount: branch._count.orders,
       })),
-      recentOrders,
+      users: users.map((user) => this.toTenantUserDto(user)),
+      productCategories: productCategories.map((category) => ({
+        id: category.id,
+        branchId: category.branchId ?? undefined,
+        name: category.name,
+        emoji: category.emoji ?? undefined,
+        sortOrder: category.sortOrder,
+        productsCount: category._count.products,
+      })),
+      products: products.map((product) => ({
+        id: product.id,
+        branchId: product.branchId ?? undefined,
+        categoryId: product.categoryId,
+        categoryName: product.category?.name,
+        name: product.name,
+        priceCOP: product.priceCOP,
+        emoji: product.emoji ?? undefined,
+        isAvailable: product.isAvailable,
+        sortOrder: product.sortOrder,
+        createdAt: product.createdAt.toISOString(),
+        updatedAt: product.updatedAt.toISOString(),
+      })),
+      ingredients: ingredients.map((ingredient) => ({
+        id: ingredient.id,
+        branchId: ingredient.branchId,
+        categoryId: ingredient.categoryId,
+        name: ingredient.name,
+        unit: ingredient.recipeUnit,
+        currentStock: ingredient.currentStock,
+        minStock: ingredient.minStock,
+        costPerUnit: ingredient.netUnitCost,
+        stockValueCOP: Math.round(
+          ingredient.currentStock * ingredient.netUnitCost,
+        ),
+        isPreparation: ingredient.isPreparation,
+        updatedAt: ingredient.updatedAt.toISOString(),
+      })),
+      areas: areas.map((area) => ({
+        id: area.id,
+        branchId: area.branchId,
+        name: area.name,
+        emoji: area.emoji ?? undefined,
+        tablesCount: area._count.tables,
+      })),
+      tables: tables.map((table) => ({
+        id: table.id,
+        branchId: table.branchId,
+        areaId: table.areaId ?? undefined,
+        code: table.code,
+        seats: table.seats,
+        status: table.status,
+      })),
+      recentOrders: recentOrders.map((order) => ({
+        id: order.id,
+        branchId: order.branchId,
+        tableId: order.tableId,
+        tableCode: order.table.code,
+        status: order.status,
+        totalCOP: order.totalCOP ?? 0,
+        itemsCount: order._count.items,
+        createdAt: order.createdAt.toISOString(),
+        closedAt: order.closedAt?.toISOString(),
+      })),
     };
   }
 
@@ -1043,6 +1182,64 @@ export class PlatformService {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+  private async resolveTenantOperationCounts(tenantId: string) {
+    const [
+      branches,
+      users,
+      activeUsers,
+      productCategories,
+      products,
+      availableProducts,
+      ingredients,
+      lowStockIngredients,
+      areas,
+      tables,
+      openOrders,
+      closedOrders,
+      orders,
+    ] = await Promise.all([
+      this.prisma.branch.count({ where: { tenantId } }),
+      this.prisma.user.count({ where: { tenantId } }),
+      this.prisma.user.count({ where: { tenantId, isActive: true } }),
+      this.prisma.productCategory.count({ where: { tenantId } }),
+      this.prisma.product.count({ where: { tenantId, deletedAt: null } }),
+      this.prisma.product.count({
+        where: { tenantId, deletedAt: null, isAvailable: true },
+      }),
+      this.prisma.ingredient.count({ where: { tenantId, isActive: true } }),
+      this.prisma.ingredient.count({
+        where: {
+          tenantId,
+          isActive: true,
+          currentStock: { lte: this.prisma.ingredient.fields.minStock },
+        },
+      }),
+      this.prisma.area.count({ where: { tenantId, deletedAt: null } }),
+      this.prisma.restaurantTable.count({
+        where: { tenantId, deletedAt: null },
+      }),
+      this.prisma.order.count({ where: { tenantId, status: 'OPEN' } }),
+      this.prisma.order.count({ where: { tenantId, status: 'CLOSED' } }),
+      this.prisma.order.count({ where: { tenantId } }),
+    ]);
+
+    return {
+      branches,
+      users,
+      activeUsers,
+      productCategories,
+      products,
+      availableProducts,
+      ingredients,
+      lowStockIngredients,
+      areas,
+      tables,
+      openOrders,
+      closedOrders,
+      orders,
+    };
+  }
 
   private currentMonth(): string {
     return new Date().toISOString().slice(0, 7); // YYYY-MM
