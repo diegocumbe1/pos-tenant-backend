@@ -19,7 +19,7 @@ import { TenantContext } from '../auth/types/tenant-context.interface';
 import { CreateBranchDto, UpdateBranchDto } from './dto/branch.dto';
 import {
   CreateRoleDto,
-  TogglePermissionDto,
+  SetRolePermissionsDto,
   UpdateRoleDto,
 } from './dto/role.dto';
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
@@ -135,12 +135,12 @@ export class TenantAdminController {
 
   @Patch('roles/:id/permissions')
   @RequirePermissions('admin:roles:manage')
-  togglePermission(
+  setRolePermissions(
     @CurrentTenant() ctx: TenantContext,
     @Param('id') id: string,
-    @Body() dto: TogglePermissionDto,
+    @Body() dto: SetRolePermissionsDto,
   ) {
-    return this.service.togglePermission(ctx.tenantId, id, dto);
+    return this.service.setRolePermissions(ctx.tenantId, id, dto);
   }
 
   @Delete('roles/:id')

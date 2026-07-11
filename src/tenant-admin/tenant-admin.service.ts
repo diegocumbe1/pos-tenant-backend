@@ -13,7 +13,8 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { CreateBranchDto, UpdateBranchDto } from './dto/branch.dto';
 import {
   CreateRoleDto,
-  TogglePermissionDto,
+  RolePermissionItem,
+  SetRolePermissionsDto,
   UpdateRoleDto,
 } from './dto/role.dto';
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
@@ -339,10 +340,18 @@ export class TenantAdminService {
     });
   }
 
-  async togglePermission(
+  // Permisos reservados a ROOT: nunca se asignan desde el scope del tenant.
+  private static readonly ROOT_ONLY_PERMISSIONS = new Set(['admin:tenants:manage']);
+
+  /**
+   * Actualiza los permisos de un rol. Dos modos:
+   *   • Bulk: dto.permissions = set completo del rol → replace-all con los habilitados.
+   *   • Legacy: dto.permissionCode + dto.enabled → togglea un solo permiso.
+   */
+  async setRolePermissions(
     tenantId: string,
     roleId: string,
-    dto: TogglePermissionDto,
+    dto: SetRolePermissionsDto,
   ) {
     const role = await this.prisma.role.findUnique({ where: { id: roleId } });
     if (!role || role.tenantId !== tenantId) {
@@ -351,22 +360,80 @@ export class TenantAdminService {
     if (role.code === 'ROOT') {
       throw new ForbiddenException('Cannot modify ROOT permissions');
     }
-    const permission = await this.prisma.permission.findUnique({
-      where: { code: dto.permissionCode },
-    });
-    if (!permission) {
-      throw new NotFoundException(`Permission ${dto.permissionCode} not found`);
-    }
-    // Permisos admin:tenants:manage están reservados para ROOT
-    if (permission.code === 'admin:tenants:manage') {
-      throw new ForbiddenException('admin:tenants:manage is ROOT-only');
+
+    // ── Modo bulk (set completo) ──────────────────────────────────────────────
+    if (Array.isArray(dto.permissions)) {
+      return this.replaceRolePermissions(roleId, dto.permissions);
     }
 
-    if (dto.enabled) {
+    // ── Modo legacy (toggle individual) ───────────────────────────────────────
+    if (typeof dto.permissionCode === 'string') {
+      return this.toggleSinglePermission(roleId, dto.permissionCode, !!dto.enabled);
+    }
+
+    throw new BadRequestException(
+      'Envía { permissions: [...] } (bulk) o { permissionCode, enabled } (individual)',
+    );
+  }
+
+  /** Reemplaza el set de permisos del rol por los que vengan habilitados en `items`. */
+  private async replaceRolePermissions(
+    roleId: string,
+    items: Array<string | RolePermissionItem>,
+  ) {
+    // Códigos que deben quedar habilitados.
+    const desiredCodes = new Set<string>();
+    for (const item of items) {
+      if (typeof item === 'string') {
+        desiredCodes.add(item);
+      } else if (item && typeof item === 'object') {
+        const code = item.permissionCode ?? item.code;
+        // Objeto sin `enabled` → se interpreta como habilitado (lista de habilitados).
+        if (code && item.enabled !== false) desiredCodes.add(code);
+      }
+    }
+    // Nunca asignar permisos ROOT-only desde el tenant.
+    for (const rootOnly of TenantAdminService.ROOT_ONLY_PERMISSIONS) {
+      desiredCodes.delete(rootOnly);
+    }
+
+    // Resolver códigos → ids (ignora códigos desconocidos en silencio).
+    const permissions = await this.prisma.permission.findMany({
+      where: { code: { in: [...desiredCodes] } },
+      select: { id: true },
+    });
+
+    await this.prisma.$transaction([
+      this.prisma.rolePermission.deleteMany({ where: { roleId } }),
+      this.prisma.rolePermission.createMany({
+        data: permissions.map((p) => ({ roleId, permissionId: p.id })),
+        skipDuplicates: true,
+      }),
+    ]);
+
+    this.permissionsCache.invalidate(roleId);
+    return { ok: true, count: permissions.length };
+  }
+
+  /** Habilita/deshabilita un único permiso (compat con la API anterior). */
+  private async toggleSinglePermission(
+    roleId: string,
+    permissionCode: string,
+    enabled: boolean,
+  ) {
+    if (TenantAdminService.ROOT_ONLY_PERMISSIONS.has(permissionCode)) {
+      throw new ForbiddenException(`${permissionCode} is ROOT-only`);
+    }
+    const permission = await this.prisma.permission.findUnique({
+      where: { code: permissionCode },
+    });
+    if (!permission) {
+      throw new NotFoundException(`Permission ${permissionCode} not found`);
+    }
+
+    if (enabled) {
       await this.prisma.rolePermission.upsert({
-        where: {
-          roleId_permissionId: { roleId, permissionId: permission.id },
-        },
+        where: { roleId_permissionId: { roleId, permissionId: permission.id } },
         update: {},
         create: { roleId, permissionId: permission.id },
       });
