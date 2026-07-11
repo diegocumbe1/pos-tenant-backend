@@ -793,7 +793,80 @@ export class OrdersService {
 
     const voidedAt = new Date();
     const voidType = dto.voidType ?? 'other';
+    let restoredStockMovements = 0;
     await this.prisma.$transaction(async (tx) => {
+      const consumedMovements = await tx.stockMovement.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          orderId: id,
+          type: 'CONSUMPTION',
+        },
+        include: { ingredient: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      const stockBalances = new Map<string, number>();
+      const ingredientById = new Map<
+        string,
+        (typeof consumedMovements)[number]['ingredient']
+      >();
+      const reversalMovements: Prisma.StockMovementCreateManyInput[] = [];
+
+      for (const movement of consumedMovements) {
+        if (movement.quantity >= 0) continue;
+        const restoreQuantity = Math.abs(movement.quantity);
+        const previousStock =
+          stockBalances.get(movement.ingredientId) ??
+          movement.ingredient.currentStock;
+        const newStock = previousStock + restoreQuantity;
+
+        stockBalances.set(movement.ingredientId, newStock);
+        ingredientById.set(movement.ingredientId, movement.ingredient);
+        reversalMovements.push({
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          ingredientId: movement.ingredientId,
+          type: 'VOID_REVERSAL',
+          quantity: restoreQuantity,
+          previousStock,
+          newStock,
+          orderId: id,
+          notes: `Reversal for voided order ${id}`,
+          createdBy: ctx.userId,
+          createdByName: dto.byUserName ?? ctx.name,
+        });
+      }
+
+      if (reversalMovements.length > 0) {
+        await tx.stockMovement.createMany({ data: reversalMovements });
+        restoredStockMovements = reversalMovements.length;
+      }
+
+      for (const [ingredientId, newStock] of stockBalances) {
+        const ingredient = ingredientById.get(ingredientId)!;
+        const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
+        const netUsableQuantity =
+          convertUnitQuantity(
+            newStock,
+            ingredient.purchaseUnit,
+            ingredient.recipeUnit,
+            ingredient,
+          ) * usableRatio;
+
+        await tx.ingredient.update({
+          where: { id: ingredientId },
+          data: {
+            currentStock: newStock,
+            grossStockQuantity: newStock,
+            netUsableQuantity,
+            netUnitCost:
+              netUsableQuantity > 0
+                ? ingredient.totalPurchaseCost / netUsableQuantity
+                : 0,
+          },
+        });
+      }
+
       await tx.order.update({
         where: { id },
         data: {
@@ -829,6 +902,7 @@ export class OrdersService {
               qty: item.qty,
               priceCOP: item.priceCOP,
             })),
+            restoredStockMovements,
           },
         },
         tx,
@@ -862,6 +936,8 @@ export class OrdersService {
       reason: dto.reason,
       affectsFinance: false,
       affectsCash: false,
+      affectsInventory: false,
+      restoredStockMovements,
     };
   }
 

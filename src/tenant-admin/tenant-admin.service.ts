@@ -84,8 +84,8 @@ export class TenantAdminService {
     }
     const updated = await this.prisma.tenant.update({
       where: { id: tenantId },
-      data: { name: dto.name },
-      select: { id: true, name: true, plan: true, verticalId: true },
+      data: { name: dto.name, documentId: dto.documentId },
+      select: { id: true, name: true, documentId: true, plan: true, verticalId: true },
     });
     return { tenant: updated };
   }

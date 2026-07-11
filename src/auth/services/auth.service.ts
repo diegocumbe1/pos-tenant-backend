@@ -47,6 +47,7 @@ type LoginProfileRow = {
   tenant: {
     id: string;
     name: string;
+    documentId?: string | null;
     plan: string;
     status: string;
     featureOverrides: Record<string, boolean | number> | null;
@@ -74,6 +75,7 @@ type BranchProfile = {
 type TenantProfile = {
   id: string;
   name: string;
+  documentId?: string | null;
   slug: string;
   vertical: string | null;
   plan: string;
@@ -636,6 +638,7 @@ export class AuthService {
           ELSE json_build_object(
             'id', t.id,
             'name', t.name,
+            'documentId', t."documentId",
             'plan', t.plan,
             'status', t.status,
             'featureOverrides', t."featureOverrides",
@@ -710,6 +713,7 @@ export class AuthService {
     tenant: {
       id: string;
       name: string;
+      documentId?: string | null;
       plan: string;
       vertical?: { code: string } | null;
     } | null,
@@ -718,6 +722,7 @@ export class AuthService {
     return {
       id: tenant.id,
       name: tenant.name,
+      documentId: tenant.documentId ?? null,
       slug: slugify(tenant.name),
       vertical: tenant.vertical?.code ?? null,
       plan: tenant.plan,

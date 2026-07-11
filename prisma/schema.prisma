@@ -14,6 +14,7 @@ datasource db {
 model Tenant {
   id               String            @id
   name             String
+  documentId       String?
   plan             String            @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
   verticalId       String?
   vertical         BusinessVertical? @relation(fields: [verticalId], references: [id])
