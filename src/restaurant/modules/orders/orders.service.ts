@@ -738,7 +738,7 @@ export class OrdersService {
           items: true,
           table: { select: { code: true } },
           waiter: { select: { name: true } },
-          tenant: { select: { name: true } },
+          tenant: { select: { name: true, documentId: true } },
           paymentSplits: { include: { contributions: true, items: true } },
         },
       });
@@ -1035,6 +1035,7 @@ export class OrdersService {
       const document = this.printingDocs.buildKitchenTicket({
         ticketId: ticket.id,
         orderId: ticket.orderId,
+        tenantId: ctx.tenantId,
         tableCode: table?.code ?? null,
         priority: ticket.priority,
         sentAt: ticket.sentAt,

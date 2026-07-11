@@ -14,7 +14,7 @@ const ORDER_INCLUDE = {
   items: true,
   table: { select: { code: true } },
   waiter: { select: { name: true } },
-  tenant: { select: { name: true } },
+  tenant: { select: { name: true, documentId: true } },
   paymentSplits: { include: { contributions: true, items: true } },
 } as const;
 
@@ -186,6 +186,8 @@ export class ReceiptsService {
       tableCode: order.table?.code ?? null,
       waiterName: order.waiter?.name ?? null,
       businessName: order.tenant?.name ?? null,
+      businessNit: order.tenant?.documentId ?? null,
+      tenantId: order.tenantId,
       closedAt: order.closedAt ?? new Date(),
       items,
       payments,

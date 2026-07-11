@@ -11,6 +11,7 @@ const COP = new Intl.NumberFormat('es-CO', {
 export interface KitchenTicketDoc {
   ticketId: string;
   orderId: string;
+  tenantId?: string | null;
   tableCode?: string | null;
   waiterName?: string | null;
   priority?: string | null;
@@ -24,6 +25,8 @@ export interface ReceiptDoc {
   tableCode?: string | null;
   waiterName?: string | null;
   businessName?: string | null;
+  businessNit?: string | null;
+  tenantId?: string | null;
   closedAt: Date;
   items: Array<{ name: string; qty: number; priceCOP: number }>;
   payments: Array<{ method: string; amount: number; cardType?: string | null }>;
@@ -52,7 +55,19 @@ export interface ZReportDoc {
  */
 @Injectable()
 export class PrintingDocumentService {
+  private shortOrderCode(orderId: string, tenantId?: string | null, date?: Date): string {
+    const dateKey = (date ?? new Date()).toISOString().slice(0, 10).replace(/-/g, '');
+    const seed = `${tenantId ?? ''}|${dateKey}|${orderId}`;
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i += 1) {
+      hash ^= seed.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return String(hash >>> 0).padStart(10, '0').slice(-8);
+  }
+
   buildKitchenTicket(input: KitchenTicketDoc): PrintDocument {
+    const orderCode = this.shortOrderCode(input.orderId, input.tenantId, input.sentAt);
     const blocks: PrintBlock[] = [
       { kind: 'text', text: 'COMANDA COCINA', align: 'center', bold: true, size: 'lg' },
       { kind: 'line' },
@@ -74,7 +89,7 @@ export class PrintingDocumentService {
       blocks.push({ kind: 'text', text: `${item.qty}x  ${item.name}`, size: 'md', bold: true });
     }
     blocks.push({ kind: 'feed', lines: 1 });
-    blocks.push({ kind: 'text', text: `#${input.orderId}`, align: 'center', size: 'sm' });
+    blocks.push({ kind: 'text', text: `Orden #${orderCode}`, align: 'center', size: 'sm' });
     blocks.push({ kind: 'cut' });
 
     return this.doc(
@@ -87,16 +102,21 @@ export class PrintingDocumentService {
   }
 
   buildReceipt(input: ReceiptDoc): PrintDocument {
+    const orderCode = this.shortOrderCode(input.orderId, input.tenantId, input.closedAt);
     const blocks: PrintBlock[] = [
       { kind: 'drawer' },
       { kind: 'text', text: input.businessName ?? 'Recibo', align: 'center', bold: true, size: 'lg' },
       { kind: 'text', text: 'RECIBO DE VENTA', align: 'center', size: 'sm' },
+      ...(input.businessNit?.trim()
+        ? [{ kind: 'text', text: `NIT: ${input.businessNit.trim()}`, align: 'center', size: 'sm' } as PrintBlock]
+        : []),
       { kind: 'line' },
     ];
     if (input.tableCode)
       blocks.push({ kind: 'row', left: 'Mesa', right: input.tableCode });
     if (input.waiterName)
       blocks.push({ kind: 'row', left: 'Atendió', right: input.waiterName });
+    blocks.push({ kind: 'row', left: 'Orden', right: orderCode });
     blocks.push({ kind: 'row', left: 'Fecha', right: this.dateTime(input.closedAt) });
     blocks.push({ kind: 'line' });
 
@@ -120,7 +140,7 @@ export class PrintingDocumentService {
     if (input.publicUrl) {
       blocks.push({ kind: 'feed', lines: 1 });
       blocks.push({ kind: 'text', text: 'Recibo digital', align: 'center', size: 'sm' });
-      blocks.push({ kind: 'qr', data: input.publicUrl });
+      blocks.push({ kind: 'text', text: input.publicUrl, align: 'center', size: 'sm' });
     }
     blocks.push({ kind: 'feed', lines: 1 });
     blocks.push({ kind: 'text', text: 'Sin valor fiscal', align: 'center', size: 'sm' });
