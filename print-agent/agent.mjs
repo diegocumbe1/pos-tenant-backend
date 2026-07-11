@@ -10,7 +10,53 @@
 //
 // Sin dependencias externas: usa `net` (TCP) y el `fetch` global de Node 18+.
 import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { renderToEscPos } from './escpos.mjs';
+
+// ─── Carga robusta del .env ───────────────────────────────────────────────────
+// Lee el `.env` que está JUNTO a este script (no depende del directorio actual
+// ni del flag --env-file, que exige Node 20.6+). Tolera BOM y archivos guardados
+// en UTF-16 (típico al guardarlos con Bloc de notas / PowerShell). No pisa
+// variables que ya vengan del entorno (p.ej. las puestas con `set`).
+const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ENV_PATH = path.join(AGENT_DIR, '.env');
+
+function loadDotEnv(file) {
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch {
+    return false; // no hay .env → quizá las variables vienen del entorno
+  }
+  // Detecta codificación: UTF-16LE si hay bytes nulos intercalados o BOM FF FE.
+  let text;
+  if ((buf[0] === 0xff && buf[1] === 0xfe) || (buf.length > 1 && buf[1] === 0x00)) {
+    text = buf.toString('utf16le');
+  } else {
+    text = buf.toString('utf8');
+  }
+  text = text.replace(/^﻿/, ''); // quita BOM UTF-8
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (key && process.env[key] === undefined) process.env[key] = val;
+  }
+  return true;
+}
+
+const envLoaded = loadDotEnv(ENV_PATH);
 
 // ─── Config (variables de entorno) ───────────────────────────────────────────
 const API_URL = (process.env.API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
@@ -26,9 +72,16 @@ const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
 const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
 const SEND_RETRY_DELAY_MS = Number(process.env.SEND_RETRY_DELAY_MS ?? 1500);
 
-if (!EMAIL || !PASSWORD || !TENANT_ID || !BRANCH_ID) {
+const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD', 'TENANT_ID', 'BRANCH_ID'].filter(
+  (k) => !process.env[k],
+);
+if (missing.length > 0) {
+  console.error('[agent] Faltan variables: ' + missing.join(', '));
+  console.error('[agent] Archivo .env buscado en: ' + ENV_PATH);
   console.error(
-    '[agent] Faltan variables: AGENT_EMAIL, AGENT_PASSWORD, TENANT_ID, BRANCH_ID. Ver .env.example',
+    envLoaded
+      ? '[agent] El .env existe pero no define esas variables (revisa que no esté vacío y que sea texto UTF-8).'
+      : '[agent] No se encontró .env en esa ruta. Créalo ahí, o pásalas con `set NOMBRE=valor` antes de `node agent.mjs`.',
   );
   process.exit(1);
 }
