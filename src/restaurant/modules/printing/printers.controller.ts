@@ -19,7 +19,11 @@ import { RequirePermissions } from '../../../auth/decorators/require-permissions
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrintersService } from './printers.service';
-import { CreatePrinterDto, UpdatePrinterDto } from './dto/printer.dto';
+import {
+  CreatePrinterDto,
+  PrinterHeartbeatDto,
+  UpdatePrinterDto,
+} from './dto/printer.dto';
 
 @ApiTags('Printers')
 @ApiBearerAuth()
@@ -57,5 +61,25 @@ export class PrintersController {
   @RequirePermissions('restaurant:printers:manage')
   remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.printersService.remove(ctx, id);
+  }
+
+  /** Encola un ticket de prueba que el agente local (LAN) o el front (USB) imprime. */
+  @Post(':id/test-print')
+  @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions('restaurant:printers:manage')
+  testPrint(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.printersService.testPrint(ctx, id);
+  }
+
+  /** Heartbeat del agente local: reporta si la impresora LAN respondió por TCP. */
+  @Post(':id/heartbeat')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('restaurant:print:update')
+  heartbeat(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: PrinterHeartbeatDto,
+  ) {
+    return this.printersService.heartbeat(ctx, id, dto.online);
   }
 }

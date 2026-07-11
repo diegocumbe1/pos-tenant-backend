@@ -53,6 +53,13 @@ export class TenantAdminController {
     return this.service.createBranch(ctx.tenantId, dto);
   }
 
+  // Sin @RequirePermissions: cualquier usuario del tenant (cajero/mesero) necesita
+  // leer los datos de pago al cobrar. Solo requiere auth + tenant válidos.
+  @Get('branches/:id')
+  getBranch(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.service.getBranch(ctx.tenantId, id);
+  }
+
   @Patch('branches/:id')
   @RequirePermissions('restaurant:settings:write')
   updateBranch(

@@ -47,7 +47,13 @@ export class AssetsService {
     const uploaded = await this.imageUpload.uploadImage({
       file,
       pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
-      kind: dto.scope === 'menu' ? this.menuKind(dto.kind) : PRODUCT_IMAGE_KIND,
+      // El QR debe quedar nítido para escanear → 'section' (1600px). Menú por kind, producto thumbnail.
+      kind:
+        dto.scope === 'payment'
+          ? 'section'
+          : dto.scope === 'menu'
+            ? this.menuKind(dto.kind)
+            : PRODUCT_IMAGE_KIND,
     });
 
     return {
@@ -137,6 +143,10 @@ export class AssetsService {
       throw new BadRequestException('Product assets must use product-image');
     }
 
+    if (dto.scope === 'payment' && dto.kind !== 'payment-qr') {
+      throw new BadRequestException('Payment assets must use payment-qr');
+    }
+
     if (dto.kind === 'product-image' && !dto.entityId) {
       throw new BadRequestException('entityId is required for product images');
     }
@@ -146,6 +156,10 @@ export class AssetsService {
   private buildPathPrefix(tenantId: string, dto: UploadAssetDto) {
     if (dto.scope === 'menu') {
       return `tenants/${tenantId}/menu/${dto.kind}`;
+    }
+
+    if (dto.scope === 'payment') {
+      return `tenants/${tenantId}/payment/qr`;
     }
 
     const entityId = this.cleanPathSegment(dto.entityId!);

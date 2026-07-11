@@ -147,6 +147,82 @@ export class CreatePaymentDto {
   extendPeriod?: boolean;
 }
 
+export class UpsertBillingContactDto {
+  @ApiProperty({ example: 'Lisdreth Natalia Perilla' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiPropertyOptional({ example: 'Dueño' })
+  @IsOptional()
+  @IsString()
+  role?: string;
+
+  @ApiProperty({ example: '+57 312 4758685' })
+  @IsString()
+  @IsNotEmpty()
+  phone!: string;
+
+  @ApiPropertyOptional({ example: '+57 312 4758685' })
+  @IsOptional()
+  @IsString()
+  whatsapp?: string;
+
+  @ApiPropertyOptional({ example: 'ruta43grillburger@gmail.com' })
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  isPrimary?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}
+
+export class UpdateBillingContactDto {
+  @ApiPropertyOptional({ example: 'Lisdreth Natalia Perilla' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  name?: string;
+
+  @ApiPropertyOptional({ example: 'Dueño' })
+  @IsOptional()
+  @IsString()
+  role?: string;
+
+  @ApiPropertyOptional({ example: '+57 312 4758685' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  phone?: string;
+
+  @ApiPropertyOptional({ example: '+57 312 4758685' })
+  @IsOptional()
+  @IsString()
+  whatsapp?: string;
+
+  @ApiPropertyOptional({ example: 'ruta43grillburger@gmail.com' })
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isPrimary?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}
+
 export class PlatformFinanceQueryDto {
   @ApiPropertyOptional({ enum: PERIODS, default: 'month' })
   @IsOptional()

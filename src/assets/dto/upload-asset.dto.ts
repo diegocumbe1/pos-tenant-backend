@@ -1,11 +1,11 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
 export class UploadAssetDto {
-  @IsIn(['menu', 'product'])
-  scope!: 'menu' | 'product';
+  @IsIn(['menu', 'product', 'payment'])
+  scope!: 'menu' | 'product' | 'payment';
 
-  @IsIn(['logo', 'banner', 'product-image'])
-  kind!: 'logo' | 'banner' | 'product-image';
+  @IsIn(['logo', 'banner', 'product-image', 'payment-qr'])
+  kind!: 'logo' | 'banner' | 'product-image' | 'payment-qr';
 
   @IsOptional()
   @IsString()

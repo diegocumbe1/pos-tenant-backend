@@ -12,10 +12,12 @@ import {
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
   SetTenantStatusDto,
+  UpdateBillingContactDto,
   UpdatePlanDto,
   UpdatePlatformExpenseDto,
   UpdatePlatformFinanceGoalDto,
   UpdateSubscriptionDto,
+  UpsertBillingContactDto,
   UpsertPlatformFinanceGoalDto,
 } from './dto/platform.dto';
 import {
@@ -463,6 +465,147 @@ export class PlatformService {
       { ...this.toPaymentDto(payment), extendedPeriod: extend },
     );
     return this.toPaymentDto(payment);
+  }
+
+  // ─── Contactos de cobro ───────────────────────────────────────────────────────
+
+  async listBillingContacts(tenantId: string) {
+    await this.loadTenant(tenantId);
+    const contacts = await this.prisma.billingContact.findMany({
+      where: { tenantId },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+    });
+    return { contacts: contacts.map((c) => this.toBillingContactDto(c)) };
+  }
+
+  async createBillingContact(
+    tenantId: string,
+    dto: UpsertBillingContactDto,
+    actorUserId: string,
+  ) {
+    await this.loadTenant(tenantId);
+    // Primer contacto del tenant → primario por defecto.
+    const existing = await this.prisma.billingContact.count({
+      where: { tenantId },
+    });
+    const isPrimary = dto.isPrimary ?? existing === 0;
+
+    const contact = await this.prisma.$transaction(async (tx) => {
+      if (isPrimary) {
+        await tx.billingContact.updateMany({
+          where: { tenantId, isPrimary: true },
+          data: { isPrimary: false },
+        });
+      }
+      return tx.billingContact.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          role: dto.role,
+          phone: dto.phone,
+          whatsapp: dto.whatsapp,
+          email: dto.email,
+          isPrimary,
+          notes: dto.notes,
+        },
+      });
+    });
+
+    await this.audit(
+      actorUserId,
+      'billing-contact.create',
+      'billing-contact',
+      contact.id,
+      null,
+      this.toBillingContactDto(contact),
+    );
+    return this.toBillingContactDto(contact);
+  }
+
+  async updateBillingContact(
+    tenantId: string,
+    contactId: string,
+    dto: UpdateBillingContactDto,
+    actorUserId: string,
+  ) {
+    const before = await this.prisma.billingContact.findFirst({
+      where: { id: contactId, tenantId },
+    });
+    if (!before) {
+      throw new NotFoundException(`Billing contact ${contactId} not found`);
+    }
+
+    const contact = await this.prisma.$transaction(async (tx) => {
+      if (dto.isPrimary === true) {
+        await tx.billingContact.updateMany({
+          where: { tenantId, isPrimary: true, id: { not: contactId } },
+          data: { isPrimary: false },
+        });
+      }
+      return tx.billingContact.update({
+        where: { id: contactId },
+        data: {
+          name: dto.name,
+          role: dto.role,
+          phone: dto.phone,
+          whatsapp: dto.whatsapp,
+          email: dto.email,
+          isPrimary: dto.isPrimary,
+          notes: dto.notes,
+        },
+      });
+    });
+
+    await this.audit(
+      actorUserId,
+      'billing-contact.update',
+      'billing-contact',
+      contact.id,
+      this.toBillingContactDto(before),
+      this.toBillingContactDto(contact),
+    );
+    return this.toBillingContactDto(contact);
+  }
+
+  async deleteBillingContact(
+    tenantId: string,
+    contactId: string,
+    actorUserId: string,
+  ) {
+    const before = await this.prisma.billingContact.findFirst({
+      where: { id: contactId, tenantId },
+    });
+    if (!before) {
+      throw new NotFoundException(`Billing contact ${contactId} not found`);
+    }
+    await this.prisma.billingContact.delete({ where: { id: contactId } });
+    await this.audit(
+      actorUserId,
+      'billing-contact.delete',
+      'billing-contact',
+      contactId,
+      this.toBillingContactDto(before),
+      null,
+    );
+    return { ok: true };
+  }
+
+  private toBillingContactDto(
+    c: Prisma.BillingContactGetPayload<Record<string, never>>,
+  ) {
+    return {
+      id: c.id,
+      tenantId: c.tenantId,
+      name: c.name,
+      role: c.role ?? undefined,
+      phone: c.phone,
+      whatsapp: c.whatsapp ?? undefined,
+      email: c.email ?? undefined,
+      isPrimary: c.isPrimary,
+      notes: c.notes ?? undefined,
+      createdAt: c.createdAt.toISOString(),
+      updatedAt: c.updatedAt.toISOString(),
+    };
   }
 
   /**

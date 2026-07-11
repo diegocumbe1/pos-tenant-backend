@@ -1,0 +1,188 @@
+// ─── Lynko Print Agent ──────────────────────────────────────────────────────
+// Puente local nube ⇄ impresora LAN. Corre en un equipo DENTRO de la red del
+// restaurante (laptop, mini-PC, Raspberry). El backend en la nube NO puede
+// alcanzar 192.168.x.x:9100; este agente sí. Flujo:
+//
+//   1) Login → access_token.
+//   2) Poll  GET  /restaurant/print-jobs/pending   (jobs QUEUED con datos de impresora)
+//   3) Para cada job NETWORK: render ESC/POS → TCP a ip:9100 → ACK  (o FAIL)
+//   4) Heartbeat: prueba TCP a cada impresora LAN activa → reporta online/offline
+//
+// Sin dependencias externas: usa `net` (TCP) y el `fetch` global de Node 18+.
+import net from 'node:net';
+import { renderToEscPos } from './escpos.mjs';
+
+// ─── Config (variables de entorno) ───────────────────────────────────────────
+const API_URL = (process.env.API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+const EMAIL = process.env.AGENT_EMAIL;
+const PASSWORD = process.env.AGENT_PASSWORD;
+const TENANT_ID = process.env.TENANT_ID;
+const BRANCH_ID = process.env.BRANCH_ID;
+const POLL_MS = Number(process.env.POLL_MS ?? 3000);
+const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 20000);
+const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
+
+if (!EMAIL || !PASSWORD || !TENANT_ID || !BRANCH_ID) {
+  console.error(
+    '[agent] Faltan variables: AGENT_EMAIL, AGENT_PASSWORD, TENANT_ID, BRANCH_ID. Ver .env.example',
+  );
+  process.exit(1);
+}
+
+let accessToken = null;
+
+const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+    'X-Tenant-Id': TENANT_ID,
+    'X-Branch-Id': BRANCH_ID,
+  };
+}
+
+async function login() {
+  const res = await fetch(`${API_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+  });
+  if (!res.ok) throw new Error(`login ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  accessToken = data.access_token ?? data.accessToken;
+  if (!accessToken) throw new Error('login sin access_token');
+  log('sesión iniciada');
+}
+
+/** Llama la API reintentando login una vez ante 401 (token expirado). */
+async function api(path, init = {}, retry = true) {
+  const res = await fetch(`${API_URL}${path}`, { ...init, headers: authHeaders() });
+  if (res.status === 401 && retry) {
+    await login();
+    return api(path, init, false);
+  }
+  return res;
+}
+
+// ─── TCP a la impresora ───────────────────────────────────────────────────────
+/** Abre TCP a ip:port, envía bytes y resuelve al drenar. Rechaza en error/timeout. */
+function sendToPrinter(ip, port, bytes) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      err ? reject(err) : resolve();
+    };
+    socket.setTimeout(TCP_TIMEOUT_MS);
+    socket.once('timeout', () => done(new Error('TCP timeout')));
+    socket.once('error', (e) => done(e));
+    socket.connect(port, ip, () => {
+      socket.write(bytes, () => {
+        // Pequeño respiro para que la impresora drene antes de cerrar.
+        setTimeout(() => done(null), 250);
+      });
+    });
+  });
+}
+
+/** Prueba de conectividad: ¿acepta la impresora una conexión TCP? */
+function probePrinter(ip, port) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (online) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(online);
+    };
+    socket.setTimeout(TCP_TIMEOUT_MS);
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, ip, () => finish(true));
+  });
+}
+
+// ─── Ciclo de jobs ────────────────────────────────────────────────────────────
+async function drainJobs() {
+  const res = await api('/restaurant/print-jobs/pending');
+  if (!res.ok) {
+    log('pending error', res.status);
+    return;
+  }
+  const { jobs = [] } = await res.json();
+  for (const job of jobs) {
+    const printer = job.printer;
+    // El agente solo maneja impresoras de red. USB lo imprime el navegador.
+    if (!printer || printer.connection !== 'NETWORK') continue;
+    if (!printer.ipAddress) {
+      await failJob(job.id, 'Impresora LAN sin ipAddress configurada');
+      continue;
+    }
+    const port = printer.port ?? 9100;
+    try {
+      const bytes = renderToEscPos(job.document, printer.paperWidth ?? 80);
+      await sendToPrinter(printer.ipAddress, port, bytes);
+      await ackJob(job.id);
+      log(`impreso job ${job.id} → ${printer.name} (${printer.ipAddress}:${port})`);
+    } catch (e) {
+      await failJob(job.id, String(e?.message ?? e));
+      log(`FALLO job ${job.id} → ${printer.ipAddress}:${port}: ${e?.message ?? e}`);
+    }
+  }
+}
+
+async function ackJob(id) {
+  await api(`/restaurant/print-jobs/${id}/ack`, { method: 'POST' });
+}
+async function failJob(id, error) {
+  await api(`/restaurant/print-jobs/${id}/fail`, {
+    method: 'POST',
+    body: JSON.stringify({ error }),
+  });
+}
+
+// ─── Heartbeat de impresoras LAN ──────────────────────────────────────────────
+async function heartbeat() {
+  const res = await api('/restaurant/printers');
+  if (!res.ok) return;
+  const { printers = [] } = await res.json();
+  for (const p of printers) {
+    if (p.connection !== 'NETWORK' || !p.isActive || !p.ipAddress) continue;
+    const online = await probePrinter(p.ipAddress, p.port ?? 9100);
+    await api(`/restaurant/printers/${p.id}/heartbeat`, {
+      method: 'POST',
+      body: JSON.stringify({ online }),
+    });
+  }
+}
+
+// ─── Bucles ───────────────────────────────────────────────────────────────────
+async function loop(fn, everyMs, label) {
+  for (;;) {
+    try {
+      await fn();
+    } catch (e) {
+      log(`${label} error:`, e?.message ?? e);
+    }
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+}
+
+async function main() {
+  log(`Lynko Print Agent → ${API_URL} (tenant ${TENANT_ID} / branch ${BRANCH_ID})`);
+  await login();
+  // Dos bucles independientes: jobs (rápido) y heartbeat (lento).
+  loop(drainJobs, POLL_MS, 'jobs');
+  loop(heartbeat, HEARTBEAT_MS, 'heartbeat');
+}
+
+main().catch((e) => {
+  console.error('[agent] fatal:', e);
+  process.exit(1);
+});

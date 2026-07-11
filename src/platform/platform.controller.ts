@@ -29,10 +29,12 @@ import {
   SetTenantStatusDto,
   SetUserStatusDto,
   SubscriptionActionDto,
+  UpdateBillingContactDto,
   UpdatePlatformExpenseDto,
   UpdatePlanDto,
   UpdatePlatformFinanceGoalDto,
   UpdateSubscriptionDto,
+  UpsertBillingContactDto,
   UpsertPlatformFinanceGoalDto,
 } from './dto/platform.dto';
 import { PlatformAdminGuard } from './guards/platform-admin.guard';
@@ -313,5 +315,45 @@ export class PlatformController {
     @PlatformActor() actor: AuthenticatedUser,
   ) {
     return this.platform.createPayment(id, dto, actor.id);
+  }
+
+  // ─── Contactos de cobro ─────────────────────────────────────────────────────────
+
+  @Get('tenants/:id/billing-contacts')
+  @ApiOperation({ summary: 'List billing contacts of a tenant' })
+  listBillingContacts(@Param('id') id: string) {
+    return this.platform.listBillingContacts(id);
+  }
+
+  @Post('tenants/:id/billing-contacts')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a billing contact' })
+  createBillingContact(
+    @Param('id') id: string,
+    @Body() dto: UpsertBillingContactDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.createBillingContact(id, dto, actor.id);
+  }
+
+  @Patch('tenants/:id/billing-contacts/:contactId')
+  @ApiOperation({ summary: 'Update a billing contact' })
+  updateBillingContact(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+    @Body() dto: UpdateBillingContactDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.updateBillingContact(id, contactId, dto, actor.id);
+  }
+
+  @Delete('tenants/:id/billing-contacts/:contactId')
+  @ApiOperation({ summary: 'Delete a billing contact' })
+  deleteBillingContact(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.deleteBillingContact(id, contactId, actor.id);
   }
 }

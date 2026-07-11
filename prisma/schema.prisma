@@ -27,6 +27,7 @@ model Tenant {
   // Suscripción comercial vigente (entidad propia).
   subscription     Subscription?
   subscriptionPayments SubscriptionPayment[]
+  billingContacts      BillingContact[]
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   deletedAt        DateTime?
@@ -123,6 +124,9 @@ model Branch {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   name      String
   address   String?
+  // Datos de pago del negocio (cuenta bancaria, Nequi/Daviplata, QR) que salen
+  // en el POS al cobrar y en el recibo. JSON con forma BranchPaymentInfo (FE).
+  paymentInfo Json?
   createdAt DateTime @default(now())
 
   products             Product[]
@@ -1188,8 +1192,13 @@ model Printer {
   target     PrinterTarget
   connection PrinterConnection
   address    String?
+  // Conexión LAN (impresora en el router). El agente local abre TCP a ipAddress:port.
+  ipAddress  String?
+  port       Int?              @default(9100)
   paperWidth Int               @default(80) // 58 | 80
   isActive   Boolean           @default(true)
+  // Heartbeat del agente local: última vez que se confirmó alcanzable. null = nunca visto.
+  lastSeenAt DateTime?
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
 
@@ -1500,6 +1509,26 @@ model SubscriptionPayment {
   @@index([tenantId, paidAt])
   @@index([paidAt])
   @@map("subscription_payments")
+}
+
+// Contactos de cobro del tenant (gestionados desde el backoffice super-admin).
+// Teléfono / WhatsApp / correo para pagos manuales de suscripción.
+model BillingContact {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  role      String?
+  phone     String
+  whatsapp  String?
+  email     String?
+  isPrimary Boolean  @default(false)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("billing_contacts")
 }
 
 // Finanzas internas de la plataforma Lynko (NO tenant-scoped).

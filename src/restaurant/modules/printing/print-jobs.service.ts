@@ -63,6 +63,10 @@ export class PrintJobsService {
     return { jobs: jobs.map((j) => this.mapJob(j)) };
   }
 
+  /**
+   * Jobs encolados para el agente local. Incluye los datos de la impresora
+   * (conexión, ip, puerto, papel) para que el agente sepa a dónde abrir el TCP.
+   */
   async findPending(ctx: TenantContext) {
     const jobs = await this.prisma.printJob.findMany({
       where: {
@@ -70,9 +74,37 @@ export class PrintJobsService {
         branchId: ctx.branchId,
         status: PrintJobStatus.QUEUED,
       },
+      include: {
+        printer: {
+          select: {
+            id: true,
+            name: true,
+            target: true,
+            connection: true,
+            ipAddress: true,
+            port: true,
+            paperWidth: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'asc' },
     });
-    return { jobs: jobs.map((j) => this.mapJob(j)) };
+    return {
+      jobs: jobs.map((j) => ({
+        ...this.mapJob(j),
+        printer: j.printer
+          ? {
+              id: j.printer.id,
+              name: j.printer.name,
+              target: j.printer.target,
+              connection: j.printer.connection,
+              ipAddress: j.printer.ipAddress ?? undefined,
+              port: j.printer.port ?? undefined,
+              paperWidth: j.printer.paperWidth,
+            }
+          : undefined,
+      })),
+    };
   }
 
   // ─── Transiciones de estado (agente local) ───────────────────────────────

@@ -1,0 +1,13 @@
+{
+  "name": "lynko-print-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Puente local entre Lynko POS (nube) y las impresoras térmicas LAN del restaurante.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node --env-file=.env agent.mjs"
+  }
+}
