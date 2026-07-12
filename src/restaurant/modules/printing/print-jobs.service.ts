@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
   PrintDocumentType,
+  PrinterConnection,
   PrinterTarget,
   PrintJob,
   PrintJobStatus,
@@ -217,7 +218,13 @@ export class PrintJobsService {
     let printers: Array<{ id: string }> = [];
     if (params.printerId) {
       const printer = await this.prisma.printer.findFirst({
-        where: { id: params.printerId, tenantId, branchId, isActive: true },
+        where: {
+          id: params.printerId,
+          tenantId,
+          branchId,
+          isActive: true,
+          connection: { in: [PrinterConnection.NETWORK, PrinterConnection.AGENT] },
+        },
         select: { id: true },
       });
       if (!printer)
@@ -270,13 +277,25 @@ export class PrintJobsService {
     target: PrinterTarget,
   ) {
     const direct = await this.prisma.printer.findMany({
-      where: { tenantId, branchId, target, isActive: true },
+      where: {
+        tenantId,
+        branchId,
+        target,
+        isActive: true,
+        connection: { in: [PrinterConnection.NETWORK, PrinterConnection.AGENT] },
+      },
       select: { id: true },
     });
     if (direct.length > 0) return direct;
     if (target === PrinterTarget.DEFAULT) return [];
     return this.prisma.printer.findMany({
-      where: { tenantId, branchId, target: PrinterTarget.DEFAULT, isActive: true },
+      where: {
+        tenantId,
+        branchId,
+        target: PrinterTarget.DEFAULT,
+        isActive: true,
+        connection: { in: [PrinterConnection.NETWORK, PrinterConnection.AGENT] },
+      },
       select: { id: true },
     });
   }

@@ -93,7 +93,7 @@ export class PrintingDocumentService {
     blocks.push({ kind: 'cut' });
 
     return this.doc(
-      `kitchen-${input.ticketId}`,
+      `KITCHEN-${input.ticketId}`,
       PrintDocumentType.KITCHEN_TICKET,
       PrinterTarget.KITCHEN,
       blocks,
@@ -147,7 +147,7 @@ export class PrintingDocumentService {
     blocks.push({ kind: 'cut' });
 
     return this.doc(
-      `receipt-${input.splitId ?? input.orderId}`,
+      input.splitId ? `RECEIPT-${input.orderId}-${input.splitId}` : `RECEIPT-${input.orderId}`,
       PrintDocumentType.RECEIPT,
       PrinterTarget.CASHIER,
       blocks,
