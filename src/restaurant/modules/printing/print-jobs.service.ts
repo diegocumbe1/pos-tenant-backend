@@ -163,6 +163,27 @@ export class PrintJobsService {
     return { cancelled: result.count };
   }
 
+  // Cancela los jobs EN COLA (QUEUED) de una orden concreta, filtrando por el
+  // `meta.orderId` guardado dentro del PrintDocument (payload JSON). Se llama al
+  // cerrar/anular la orden para que el agente Lynko no imprima comandas/facturas
+  // colgadas de una orden ya finalizada — que quede en cola solo lo real.
+  async cancelByOrder(ctx: TenantContext, orderId: string, reason?: string) {
+    if (!orderId?.trim()) return { cancelled: 0 };
+    const result = await this.prisma.printJob.updateMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        status: PrintJobStatus.QUEUED,
+        payload: { path: ['meta', 'orderId'], equals: orderId },
+      },
+      data: {
+        status: PrintJobStatus.FAILED,
+        lastError: reason?.trim() || 'Orden finalizada',
+      },
+    });
+    return { cancelled: result.count };
+  }
+
   async retry(ctx: TenantContext, id: string) {
     const existing = await this.assertJob(ctx, id);
     if (!existing.printerId)
@@ -311,7 +332,7 @@ export class PrintJobsService {
     lastError?: string;
   }) {
     const payload = args.document as unknown as Prisma.InputJsonValue;
-    return this.prisma.printJob.upsert({
+    const existing = await this.prisma.printJob.findUnique({
       where: {
         tenantId_branchId_documentId: {
           tenantId: args.tenantId,
@@ -319,18 +340,42 @@ export class PrintJobsService {
           documentId: args.documentId,
         },
       },
-      // Idempotente: si ya existe el documento, no se duplica ni se re-encola.
-      update: {},
-      create: {
-        tenantId: args.tenantId,
-        branchId: args.branchId,
+    });
+
+    // No existe → crear.
+    if (!existing) {
+      return this.prisma.printJob.create({
+        data: {
+          tenantId: args.tenantId,
+          branchId: args.branchId,
+          printerId: args.printerId,
+          documentType: args.document.type,
+          documentId: args.documentId,
+          payload,
+          status: args.status,
+          lastError: args.lastError,
+          createdByUserId: args.createdByUserId ?? null,
+        },
+      });
+    }
+
+    // Ya existe y sigue EN COLA → idempotente: no duplicar (evita reimpresiones
+    // dobles al re-enviar el mismo documento mientras aún no se imprime).
+    if (existing.status === PrintJobStatus.QUEUED) return existing;
+
+    // Ya existe pero TERMINÓ (impreso o fallido) → es una re-impresión legítima:
+    // re-encolar con el payload nuevo, sin bloquear. Así "generar de nuevo la
+    // factura" tras cerrar la orden siempre funciona.
+    return this.prisma.printJob.update({
+      where: { id: existing.id },
+      data: {
         printerId: args.printerId,
-        documentType: args.document.type,
-        documentId: args.documentId,
         payload,
         status: args.status,
-        lastError: args.lastError,
-        createdByUserId: args.createdByUserId ?? null,
+        lastError: args.lastError ?? null,
+        attempts: 0,
+        sentAt: null,
+        acknowledgedAt: null,
       },
     });
   }

@@ -85,6 +85,16 @@ export class PrintJobsController {
     return this.printJobsService.cancelPending(ctx, dto.reason);
   }
 
+  @Post('order/:orderId/cancel')
+  @RequirePermissions('restaurant:print:update')
+  cancelByOrder(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('orderId') orderId: string,
+    @Body() dto: CancelPrintJobDto,
+  ) {
+    return this.printJobsService.cancelByOrder(ctx, orderId, dto.reason);
+  }
+
   @Post(':id/cancel')
   @RequirePermissions('restaurant:print:update')
   cancel(

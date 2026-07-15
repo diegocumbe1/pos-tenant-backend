@@ -532,7 +532,7 @@ async function seedRestaurantShowcase() {
     for (const item of order.items) {
       await prisma.orderItem.upsert({
         where: {
-          orderId_productId: { orderId: order.id, productId: item.productId },
+          orderId_lineKey: { orderId: order.id, lineKey: item.productId },
         },
         update: {
           name: item.name,
@@ -543,6 +543,7 @@ async function seedRestaurantShowcase() {
         create: {
           orderId: order.id,
           productId: item.productId,
+          lineKey: item.productId,
           name: item.name,
           priceCOP: item.priceCOP,
           qty: item.qty,

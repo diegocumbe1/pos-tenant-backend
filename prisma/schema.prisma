@@ -935,13 +935,20 @@ model OrderItem {
   order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId String
   product   Product  @relation(fields: [productId], references: [id])
+  // Identidad de la línea. Permite el mismo producto en varias líneas con
+  // distintas notas/opciones. El backend usa `lineKey ?? productId`.
+  lineKey   String
   name      String
   priceCOP  Int
   qty       Int
   sentQty   Int      @default(0)
+  // Opciones/especificaciones del ítem (persistidas para orden + comanda).
+  notes     String?
+  additions Json?
+  modifiers Json?
   addedAt   DateTime @default(now())
 
-  @@unique([orderId, productId])
+  @@unique([orderId, lineKey])
   @@index([orderId])
   @@map("order_items")
 }
@@ -975,10 +982,16 @@ model KitchenTicketItem {
   ticket    KitchenTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   productId String
   product   Product       @relation(fields: [productId], references: [id])
+  lineKey   String
   name      String
   qty       Int
+  // Opciones/especificaciones copiadas del OrderItem al enviar a cocina, para
+  // que la comanda impresa muestre las notas de cada plato.
+  notes     String?
+  additions Json?
+  modifiers Json?
 
-  @@unique([ticketId, productId])
+  @@unique([ticketId, lineKey])
   @@map("kitchen_ticket_items")
 }
 

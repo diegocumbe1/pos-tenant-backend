@@ -16,7 +16,13 @@ export interface KitchenTicketDoc {
   waiterName?: string | null;
   priority?: string | null;
   sentAt: Date;
-  items: Array<{ name: string; qty: number }>;
+  items: Array<{
+    name: string;
+    qty: number;
+    notes?: string | null;
+    additions?: string[];
+    modifiers?: string[];
+  }>;
 }
 
 export interface ReceiptDoc {
@@ -87,6 +93,13 @@ export class PrintingDocumentService {
     blocks.push({ kind: 'line' });
     for (const item of input.items) {
       blocks.push({ kind: 'text', text: `${item.qty}x  ${item.name}`, size: 'md', bold: true });
+      // Opciones/especificaciones del plato, debajo del nombre.
+      for (const mod of item.modifiers ?? [])
+        blocks.push({ kind: 'text', text: `   + ${mod}`, size: 'sm' });
+      for (const add of item.additions ?? [])
+        blocks.push({ kind: 'text', text: `   + ${add}`, size: 'sm' });
+      if (item.notes && item.notes.trim())
+        blocks.push({ kind: 'text', text: `   ** ${item.notes.trim()}`, size: 'sm', bold: true });
     }
     blocks.push({ kind: 'feed', lines: 1 });
     blocks.push({ kind: 'text', text: `Orden #${orderCode}`, align: 'center', size: 'sm' });

@@ -11,7 +11,7 @@ import { CashMovementType, OrderEventType, Prisma } from '@prisma/client';
 import { performance } from 'perf_hooks';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
-import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderDto, OrderItemDto } from './dto/create-order.dto';
 import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
 import { RegisterPaymentDto } from './dto/payment.dto';
@@ -148,9 +148,9 @@ export class OrdersService {
                   create: items.map((i) => ({
                     productId: i.productId,
                     name: productMap.get(i.productId)!.name,
-                    priceCOP: productMap.get(i.productId)!.priceCOP,
                     qty: i.qty,
                     sentQty: 0,
+                    ...this.itemOptionData(i, productMap.get(i.productId)!.priceCOP),
                   })),
                 }
               : undefined,
@@ -225,25 +225,42 @@ export class OrdersService {
       throw new NotFoundException('One or more products not found');
 
     const productMap = new Map(products.map((p) => [p.id, p]));
-    // Semántica aditiva/merge: el payload agrega ítems nuevos y actualiza la
-    // cantidad de los que ya existen. Los ítems de la orden que NO vengan en
-    // el payload se dejan intactos (no se eliminan). Las eliminaciones, si se
-    // necesitan, van por un endpoint aparte.
+    // Identidad por LÍNEA (lineKey), no por producto: el mismo producto puede
+    // venir en varias líneas con distintas notas/opciones y cada una es una
+    // fila independiente.
+    const existingByKey = new Map(order.items.map((i) => [i.lineKey, i]));
+
+    // Semántica aditiva/merge: el payload agrega líneas nuevas y actualiza la
+    // cantidad de las que ya existen. Las líneas de la orden que NO vengan en
+    // el payload se dejan intactas (no se eliminan). Las eliminaciones, si se
+    // necesitan, van por replacePending o por un endpoint aparte.
     const changedItems = dto.items
       .map((item) => ({
         desired: item,
-        existing: order.items.find((i) => i.productId === item.productId),
+        existing: existingByKey.get(this.lineKeyOf(item)),
       }))
       .filter(
         (entry) => entry.existing && entry.existing.qty !== entry.desired.qty,
       );
     const addedItems = dto.items.filter(
-      (item) =>
-        !order.items.some((existing) => existing.productId === item.productId),
+      (item) => !existingByKey.has(this.lineKeyOf(item)),
     );
 
+    // Reconciliación de pendientes: cuando el frontend manda el set COMPLETO de
+    // líneas pendientes (replacePending), las líneas no enviadas a cocina
+    // (sentQty === 0) que ya NO estén en el payload se eliminan. Así, restar la
+    // última unidad de una línea persiste (antes se "revivía" al rehidratar).
+    // Las líneas ya enviadas a cocina (sentQty > 0) nunca se eliminan por aquí.
+    const payloadKeys = new Set(dto.items.map((i) => this.lineKeyOf(i)));
+    const removedItems = dto.replacePending
+      ? order.items.filter(
+          (existing) =>
+            existing.sentQty === 0 && !payloadKeys.has(existing.lineKey),
+        )
+      : [];
+
     for (const item of dto.items) {
-      const existing = order.items.find((i) => i.productId === item.productId);
+      const existing = existingByKey.get(this.lineKeyOf(item));
       if (existing && item.qty < existing.sentQty) {
         throw new UnprocessableEntityException(
           `Cannot reduce ${existing.name} below sent quantity (${existing.sentQty})`,
@@ -259,9 +276,9 @@ export class OrdersService {
             orderId: id,
             productId: item.productId,
             name: productMap.get(item.productId)!.name,
-            priceCOP: productMap.get(item.productId)!.priceCOP,
             qty: item.qty,
             sentQty: 0,
+            ...this.itemOptionData(item, productMap.get(item.productId)!.priceCOP),
           })),
         });
       }
@@ -271,6 +288,13 @@ export class OrdersService {
         await tx.orderItem.update({
           where: { id: entry.existing!.id },
           data: { qty: entry.desired.qty },
+        });
+      }
+
+      // Eliminación de pendientes quitados por el mesero (replacePending).
+      if (removedItems.length > 0) {
+        await tx.orderItem.deleteMany({
+          where: { id: { in: removedItems.map((item) => item.id) } },
         });
       }
 
@@ -312,6 +336,19 @@ export class OrdersService {
               },
             };
           }),
+          ...removedItems.map((existing) => ({
+            tenantId: ctx.tenantId,
+            orderId: id,
+            type: OrderEventType.ITEM_REMOVED,
+            metadata: {
+              productId: existing.productId,
+              name: existing.name,
+              priceCOP: existing.priceCOP,
+              previousQty: existing.qty,
+              newQty: 0,
+              deltaQty: -existing.qty,
+            },
+          })),
         ],
         tx,
       );
@@ -345,8 +382,12 @@ export class OrdersService {
           items: {
             create: pendingItems.map((i) => ({
               productId: i.productId,
+              lineKey: i.lineKey,
               name: i.name,
               qty: i.qty - i.sentQty,
+              notes: i.notes ?? null,
+              additions: i.additions ?? Prisma.DbNull,
+              modifiers: i.modifiers ?? Prisma.DbNull,
             })),
           },
         },
@@ -1025,7 +1066,19 @@ export class OrdersService {
   private async emitKitchenTicketPrint(
     ctx: TenantContext,
     tableId: string,
-    ticket: { id: string; orderId: string; sentAt: Date; priority: string; items: Array<{ name: string; qty: number }> },
+    ticket: {
+      id: string;
+      orderId: string;
+      sentAt: Date;
+      priority: string;
+      items: Array<{
+        name: string;
+        qty: number;
+        notes?: string | null;
+        additions?: Prisma.JsonValue;
+        modifiers?: Prisma.JsonValue;
+      }>;
+    },
   ) {
     try {
       const table = await this.prisma.restaurantTable.findUnique({
@@ -1039,7 +1092,13 @@ export class OrdersService {
         tableCode: table?.code ?? null,
         priority: ticket.priority,
         sentAt: ticket.sentAt,
-        items: ticket.items.map((i) => ({ name: i.name, qty: i.qty })),
+        items: ticket.items.map((i) => ({
+          name: i.name,
+          qty: i.qty,
+          notes: i.notes ?? null,
+          additions: this.asStringArray(i.additions),
+          modifiers: this.asModifierLabels(i.modifiers),
+        })),
       });
       await this.printJobs.enqueue({
         tenantId: ctx.tenantId,
@@ -1050,6 +1109,48 @@ export class OrdersService {
     } catch {
       // sin impresora / error de driver → el front usa preview.
     }
+  }
+
+  // Identidad de línea: el frontend manda `lineKey`; si un cliente viejo no lo
+  // envía, caemos al `productId` (comportamiento previo, un producto = una línea).
+  private lineKeyOf(item: { lineKey?: string; productId: string }): string {
+    return item.lineKey ?? item.productId;
+  }
+
+  // Datos de opciones + precio a persistir para un ítem. El precio nunca baja del
+  // maestro del producto; sí admite recargos de opciones que envía el frontend.
+  private itemOptionData(item: OrderItemDto, masterPriceCOP: number) {
+    const notes = item.notes?.trim();
+    const additions =
+      item.additions?.map((a) => a.trim()).filter(Boolean) ?? [];
+    const modifiers = item.modifiers ?? [];
+    return {
+      lineKey: this.lineKeyOf(item),
+      priceCOP: Math.max(masterPriceCOP, item.priceCOP ?? masterPriceCOP),
+      notes: notes && notes.length > 0 ? notes : null,
+      additions: additions.length > 0 ? additions : Prisma.DbNull,
+      modifiers:
+        modifiers.length > 0 ? (modifiers as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+    };
+  }
+
+  // Normaliza el JSON `additions` (string[]) para impresión.
+  private asStringArray(value: Prisma.JsonValue | undefined): string[] {
+    return Array.isArray(value)
+      ? value.filter((v): v is string => typeof v === 'string')
+      : [];
+  }
+
+  // Normaliza el JSON `modifiers` a etiquetas legibles para la comanda.
+  private asModifierLabels(value: Prisma.JsonValue | undefined): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((m) =>
+        m && typeof m === 'object' && 'label' in m
+          ? String((m as { label: unknown }).label ?? '')
+          : '',
+      )
+      .filter(Boolean);
   }
 
   private async assertOpenOrder(id: string, tenantId: string) {

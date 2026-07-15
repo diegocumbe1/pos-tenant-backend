@@ -1520,7 +1520,7 @@ async function main() {
     await prisma.orderItem.upsert({
       where: { id: item.id },
       update: {},
-      create: item,
+      create: { lineKey: item.productId, ...item },
     });
   }
   console.log('✅ Order Items');
@@ -1617,7 +1617,7 @@ async function main() {
     await prisma.kitchenTicketItem.upsert({
       where: { id: ki.id },
       update: {},
-      create: ki,
+      create: { lineKey: ki.productId, ...ki },
     });
   }
   console.log('✅ Kitchen Tickets');

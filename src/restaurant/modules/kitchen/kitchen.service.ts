@@ -180,8 +180,12 @@ export class KitchenService {
       items: ticket.items.map((i: any) => ({
         id: i.id,
         productId: i.productId,
+        lineKey: i.lineKey,
         name: i.name,
         qty: i.qty,
+        notes: i.notes ?? null,
+        additions: i.additions ?? null,
+        modifiers: i.modifiers ?? null,
       })),
     };
   }
