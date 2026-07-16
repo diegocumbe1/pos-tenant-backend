@@ -82,6 +82,7 @@ export class PrintingDocumentService {
       blocks.push({ kind: 'row', left: 'Mesa', right: input.tableCode });
     if (input.waiterName)
       blocks.push({ kind: 'row', left: 'Mesero', right: input.waiterName });
+    blocks.push({ kind: 'row', left: 'Fecha', right: this.date(input.sentAt) });
     blocks.push({ kind: 'row', left: 'Hora', right: this.time(input.sentAt) });
     if (input.priority && input.priority !== 'normal')
       blocks.push({
@@ -218,6 +219,14 @@ export class PrintingDocumentService {
 
   private time(d: Date) {
     return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  private date(d: Date) {
+    return d.toLocaleDateString('es-CO', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
   }
 
   private dateTime(d: Date) {
