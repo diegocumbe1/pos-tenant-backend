@@ -121,8 +121,11 @@ function appendBlock(buf, block, cols, options = {}) {
 export function renderToEscPos(doc, paperWidth = 80, options = {}) {
   const cols = COLS[paperWidth] ?? 48;
   const buf = new ByteBuffer();
+  const hasKitchenCut =
+    doc.printerTarget === 'KITCHEN' &&
+    (doc.blocks ?? []).some((block) => block.kind === 'cut');
   buf.push(ESC, 0x40); // init
   for (const block of doc.blocks ?? []) appendBlock(buf, block, cols, options);
-  buf.push(LF, LF); // avance final
+  if (!hasKitchenCut) buf.push(LF, LF); // caja/otros mantienen el avance previo
   return buf.toBuffer();
 }
