@@ -103,7 +103,6 @@ export class PrintingDocumentService {
     }
     blocks.push({ kind: 'feed', lines: 1 });
     blocks.push({ kind: 'text', text: `Orden #${orderCode}`, align: 'center', size: 'sm' });
-    blocks.push({ kind: 'feed', lines: 2 });
     blocks.push({ kind: 'cut' });
 
     return this.doc(
