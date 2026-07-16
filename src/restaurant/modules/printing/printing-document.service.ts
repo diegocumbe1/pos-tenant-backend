@@ -218,7 +218,11 @@ export class PrintingDocumentService {
   }
 
   private time(d: Date) {
-    return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString('es-CO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'America/Bogota',
+    });
   }
 
   private date(d: Date) {
@@ -226,6 +230,7 @@ export class PrintingDocumentService {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric',
+      timeZone: 'America/Bogota',
     });
   }
 
@@ -236,6 +241,7 @@ export class PrintingDocumentService {
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      timeZone: 'America/Bogota',
     });
   }
 
