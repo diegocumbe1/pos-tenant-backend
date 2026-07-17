@@ -1,19 +1,23 @@
 // ─── Lynko Print Agent ──────────────────────────────────────────────────────
-// Puente local nube ⇄ impresora LAN. Corre en un equipo DENTRO de la red del
+// Puente local nube ⇄ impresora. Corre en un equipo DENTRO de la red del
 // restaurante (laptop, mini-PC, Raspberry). El backend en la nube NO puede
-// alcanzar 192.168.x.x:9100; este agente sí. Flujo:
+// alcanzar 192.168.x.x:9100 ni una cola USB local de Windows; este agente sí. Flujo:
 //
 //   1) Login → access_token.
 //   2) Poll  GET  /restaurant/print-jobs/pending   (jobs QUEUED con datos de impresora)
-//   3) Para cada job NETWORK: render ESC/POS → TCP a ip:9100 → ACK  (o FAIL)
-//   4) Heartbeat: prueba TCP a cada impresora LAN activa → reporta online/offline
+//   3) Job NETWORK: render ESC/POS → TCP a ip:9100 → ACK  (o FAIL)
+//      Job AGENT: render ESC/POS → cola RAW de Windows por nombre → ACK (o FAIL)
+//   4) Heartbeat: prueba cada impresora activa → reporta online/offline
 //
 // Sin dependencias externas: usa `net` (TCP) y el `fetch` global de Node 18+.
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { renderToEscPos } from './escpos.mjs';
+import { promisify } from 'node:util';
+import { renderPlainTextTest, renderToEscPos } from './escpos.mjs';
 
 // ─── Carga robusta del .env ───────────────────────────────────────────────────
 // Lee el `.env` que está JUNTO a este script (no depende del directorio actual
@@ -22,6 +26,8 @@ import { renderToEscPos } from './escpos.mjs';
 // variables que ya vengan del entorno (p.ej. las puestas con `set`).
 const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = path.join(AGENT_DIR, '.env');
+const RAW_PRINT_SCRIPT = path.join(AGENT_DIR, 'raw-print.ps1');
+const execFileAsync = promisify(execFile);
 
 function loadDotEnv(file) {
   let buf;
@@ -38,35 +44,20 @@ function loadDotEnv(file) {
     text = buf.toString('utf8');
   }
   text = text.replace(/^﻿/, ''); // quita BOM UTF-8
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
     let val = line.slice(eq + 1).trim();
-    // Algunos instaladores/copiados en Windows dejan:
-    // AGENT_PASSWORD=
-    // mi-clave
-    // Lo toleramos para no obligar al restaurante a editar a mano cada vez.
-    if (!val && key === 'AGENT_PASSWORD') {
-      const next = lines[i + 1]?.trim();
-      if (next && !next.includes('=')) {
-        val = next;
-        i += 1;
-      }
-    }
     if (
       (val.startsWith('"') && val.endsWith('"')) ||
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1);
     }
-    if (key && (process.env[key] === undefined || process.env[key] === '')) {
-      process.env[key] = val;
-    }
+    if (key && process.env[key] === undefined) process.env[key] = val;
   }
   return true;
 }
@@ -77,23 +68,31 @@ const envLoaded = loadDotEnv(ENV_PATH);
 const API_URL = (process.env.API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 const EMAIL = process.env.AGENT_EMAIL;
 const PASSWORD = process.env.AGENT_PASSWORD;
-// tenant/branch NO se configuran: se derivan del perfil devuelto por el login.
-// TENANT_ID nunca hace falta (un usuario pertenece a un solo tenant).
-// BRANCH_ID solo se usa como override cuando el usuario atiende varias sedes,
-// para decir CUÁL sirve esta impresora; con una sola sede se autoselecciona.
-const ENV_BRANCH_ID = process.env.BRANCH_ID;
+const TENANT_ID = process.env.TENANT_ID;
+const BRANCH_ID = process.env.BRANCH_ID;
 const POLL_MS = Number(process.env.POLL_MS ?? 3000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 20000);
 const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
+const TCP_DRAIN_WAIT_MS = Number(process.env.TCP_DRAIN_WAIT_MS ?? 1200);
+const STATUS_QUERY_ENABLED = String(process.env.STATUS_QUERY_ENABLED ?? 'false').toLowerCase() === 'true';
 // Reintentos controlados ante fallos TCP transitorios (impresora ocupada, calentando,
 // blip de red) antes de marcar el job como FAILED en el backend.
 const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
 const SEND_RETRY_DELAY_MS = Number(process.env.SEND_RETRY_DELAY_MS ?? 1500);
-const PRINT_DISABLE_CUT = (process.env.PRINT_DISABLE_CUT ?? 'false') === 'true';
+// Evita que, al prender de nuevo el PC/agente, se impriman comandas viejas que
+// quedaron QUEUED durante una caída. 10 min deja pasar trabajos recientes tras
+// un reinicio corto, pero corta el backlog peligroso de horas/días.
+const JOB_MAX_AGE_MS = Number(process.env.JOB_MAX_AGE_MS ?? 10 * 60 * 1000);
 
-const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD'].filter(
-  (k) => !process.env[k],
-);
+function isMissingConfigValue(key) {
+  const value = process.env[key]?.trim();
+  if (!value) return true;
+  if (key === 'AGENT_PASSWORD' && value === 'tu-contraseña-de-lynko') return true;
+  if (key === 'AGENT_EMAIL' && value === 'dueño@turestaurante.com') return true;
+  return value.startsWith('<') && value.endsWith('>');
+}
+
+const missing = ['AGENT_EMAIL', 'AGENT_PASSWORD', 'TENANT_ID', 'BRANCH_ID'].filter(isMissingConfigValue);
 if (missing.length > 0) {
   console.error('[agent] Faltan variables: ' + missing.join(', '));
   console.error('[agent] Archivo .env buscado en: ' + ENV_PATH);
@@ -106,61 +105,31 @@ if (missing.length > 0) {
 }
 
 let accessToken = null;
-// Contexto derivado del login (no del .env). Se fija en el primer login y se
-// mantiene estable en los re-login por token expirado.
-let tenantId = null;
-let branchId = null;
 
 const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
+
+function parseJobCreatedAt(job) {
+  const raw = job?.createdAt ?? job?.document?.createdAt;
+  if (!raw) return null;
+  const time = new Date(raw).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function isStaleJob(job) {
+  if (!Number.isFinite(JOB_MAX_AGE_MS) || JOB_MAX_AGE_MS <= 0) return false;
+  const createdAt = parseJobCreatedAt(job);
+  if (!createdAt) return false;
+  return Date.now() - createdAt > JOB_MAX_AGE_MS;
+}
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 function authHeaders() {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
-    'X-Tenant-Id': tenantId,
-    'X-Branch-Id': branchId,
+    'X-Tenant-Id': TENANT_ID,
+    'X-Branch-Id': BRANCH_ID,
   };
-}
-
-/** Resuelve tenant/branch desde el perfil del usuario autenticado. El servidor
- *  ya conoce el tenant por el JWT; aquí solo derivamos los valores que van como
- *  headers, en vez de configurarlos a mano por sede. */
-function resolveContext(profile) {
-  const derivedTenantId = profile?.tenant?.id;
-  if (!derivedTenantId) {
-    throw new Error(
-      'login sin tenant en el perfil (¿usuario sin tenant o platform-admin?)',
-    );
-  }
-  tenantId = derivedTenantId;
-
-  const branches = Array.isArray(profile.branches) ? profile.branches : [];
-  const activeBranches = branches.filter((b) => b?.isActive !== false);
-  const usable = activeBranches.length > 0 ? activeBranches : branches;
-
-  if (ENV_BRANCH_ID) {
-    // Override explícito: validar que el usuario tenga acceso a esa sede.
-    const match = usable.find((b) => b.id === ENV_BRANCH_ID);
-    if (!match) {
-      throw new Error(
-        `BRANCH_ID=${ENV_BRANCH_ID} no está entre las sedes del usuario ` +
-          `(${usable.map((b) => b.id).join(', ') || 'ninguna'}).`,
-      );
-    }
-    branchId = match.id;
-  } else if (usable.length === 1) {
-    branchId = usable[0].id; // sede única → autoselección
-  } else if (usable.length === 0) {
-    throw new Error('el usuario no tiene ninguna sede asignada.');
-  } else {
-    throw new Error(
-      'el usuario atiende varias sedes: define BRANCH_ID en .env para indicar ' +
-        `cuál sirve esta impresora. Opciones: ${usable
-          .map((b) => `${b.id} (${b.name})`)
-          .join(', ')}.`,
-    );
-  }
 }
 
 async function login() {
@@ -173,8 +142,7 @@ async function login() {
   const data = await res.json();
   accessToken = data.access_token ?? data.accessToken;
   if (!accessToken) throw new Error('login sin access_token');
-  resolveContext(data.profile);
-  log(`sesión iniciada (tenant ${tenantId} / branch ${branchId})`);
+  log('sesión iniciada');
 }
 
 /** Llama la API reintentando login una vez ante 401 (token expirado). */
@@ -204,8 +172,9 @@ function sendToPrinter(ip, port, bytes) {
     socket.once('error', (e) => done(e));
     socket.connect(port, ip, () => {
       socket.write(bytes, () => {
-        // Pequeño respiro para que la impresora drene antes de cerrar.
-        setTimeout(() => done(null), 250);
+        // Dar tiempo a la impresora para procesar buffers largos antes de cerrar.
+        socket.end();
+        setTimeout(() => done(null), TCP_DRAIN_WAIT_MS);
       });
     });
   });
@@ -248,6 +217,151 @@ function probePrinter(ip, port) {
   });
 }
 
+/** Consulta estado ESC/POS en impresoras que soportan respuesta bidireccional.
+ *  Si la impresora no responde estado, devolvemos null y usamos solo TCP. */
+function readPrinterPaperStatus(ip, port) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(status);
+    };
+    socket.setTimeout(1200);
+    socket.once('timeout', () => finish(null));
+    socket.once('error', () => finish(null));
+    socket.once('data', (chunk) => {
+      const value = chunk?.[0] ?? 0;
+      // DLE EOT 4: en ESC/POS común, bits 5/6 indican fin de papel.
+      finish({ paperOut: (value & 0x60) !== 0, raw: value });
+    });
+    socket.connect(port, ip, () => {
+      socket.write(Buffer.from([0x10, 0x04, 0x04]));
+    });
+  });
+}
+
+async function probePrinterReady(ip, port) {
+  const tcpOnline = await probePrinter(ip, port);
+  if (!tcpOnline) return { online: false, reason: 'tcp_offline' };
+  if (!STATUS_QUERY_ENABLED) return { online: true, reason: 'tcp_only_status_disabled' };
+  const paper = await readPrinterPaperStatus(ip, port);
+  if (paper?.paperOut) return { online: false, reason: `paper_out status=${paper.raw}` };
+  return { online: true, reason: paper ? `ready status=${paper.raw}` : 'tcp_only' };
+}
+
+// ─── Windows RAW printing ─────────────────────────────────────────────────────
+// Para impresoras USB instaladas en Windows mantenemos el driver normal del SO y
+// escribimos ESC/POS como trabajo RAW en la cola por nombre. No requiere Zadig.
+const RAW_PRINT_PS1 = [
+  'param(',
+  '  [Parameter(Mandatory=$true)][string]$PrinterName,',
+  '  [Parameter(Mandatory=$true)][string]$FilePath',
+  ')',
+  'Add-Type -TypeDefinition @"',
+  'using System;',
+  'using System.Runtime.InteropServices;',
+  'public class RawPrinterHelper {',
+  '  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]',
+  '  public class DOCINFOA {',
+  '    [MarshalAs(UnmanagedType.LPStr)] public string pDocName;',
+  '    [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;',
+  '    [MarshalAs(UnmanagedType.LPStr)] public string pDataType;',
+  '  }',
+  '  [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", SetLastError=true, CharSet=CharSet.Ansi, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);',
+  '  [DllImport("winspool.Drv", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool ClosePrinter(IntPtr hPrinter);',
+  '  [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", SetLastError=true, CharSet=CharSet.Ansi, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool StartDocPrinter(IntPtr hPrinter, Int32 level, [In] DOCINFOA di);',
+  '  [DllImport("winspool.Drv", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool EndDocPrinter(IntPtr hPrinter);',
+  '  [DllImport("winspool.Drv", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool StartPagePrinter(IntPtr hPrinter);',
+  '  [DllImport("winspool.Drv", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool EndPagePrinter(IntPtr hPrinter);',
+  '  [DllImport("winspool.Drv", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]',
+  '  public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, Int32 dwCount, out Int32 dwWritten);',
+  '  public static bool SendBytesToPrinter(string printerName, byte[] bytes) {',
+  '    IntPtr hPrinter;',
+  '    DOCINFOA di = new DOCINFOA();',
+  '    di.pDocName = "Lynko ESC/POS";',
+  '    di.pDataType = "RAW";',
+  '    if (!OpenPrinter(printerName.Normalize(), out hPrinter, IntPtr.Zero)) return false;',
+  '    try {',
+  '      if (!StartDocPrinter(hPrinter, 1, di)) return false;',
+  '      if (!StartPagePrinter(hPrinter)) return false;',
+  '      IntPtr pBytes = Marshal.AllocCoTaskMem(bytes.Length);',
+  '      try {',
+  '        Marshal.Copy(bytes, 0, pBytes, bytes.Length);',
+  '        int written = 0;',
+  '        bool ok = WritePrinter(hPrinter, pBytes, bytes.Length, out written);',
+  '        return ok && written == bytes.Length;',
+  '      } finally {',
+  '        Marshal.FreeCoTaskMem(pBytes);',
+  '        EndPagePrinter(hPrinter);',
+  '        EndDocPrinter(hPrinter);',
+  '      }',
+  '    } finally {',
+  '      ClosePrinter(hPrinter);',
+  '    }',
+  '  }',
+  '}',
+  '"@',
+  '$bytes = [System.IO.File]::ReadAllBytes($FilePath)',
+  '$ok = [RawPrinterHelper]::SendBytesToPrinter($PrinterName, $bytes)',
+  "if (-not $ok) { throw \"No se pudo imprimir RAW en '$PrinterName'\" }",
+].join('\r\n');
+
+function ensureWindowsRawPrintScript() {
+  if (!fs.existsSync(RAW_PRINT_SCRIPT) || fs.readFileSync(RAW_PRINT_SCRIPT, 'utf8') !== RAW_PRINT_PS1) {
+    fs.writeFileSync(RAW_PRINT_SCRIPT, RAW_PRINT_PS1, 'utf8');
+  }
+}
+
+async function sendToWindowsPrinter(printerName, bytes) {
+  if (process.platform !== 'win32') {
+    throw new Error('La conexión AGENT requiere Windows para imprimir por cola USB local');
+  }
+  ensureWindowsRawPrintScript();
+  const tmpFile = path.join(os.tmpdir(), `lynko-print-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
+  fs.writeFileSync(tmpFile, bytes);
+  try {
+    await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RAW_PRINT_SCRIPT, '-PrinterName', printerName, '-FilePath', tmpFile],
+      { windowsHide: true, timeout: 20000 },
+    );
+  } finally {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+  }
+}
+
+async function windowsPrinterExists(printerName) {
+  if (process.platform !== 'win32' || !printerName) return false;
+  try {
+    await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        '$name=$args[0]; if (Get-Printer -Name $name -ErrorAction SilentlyContinue) { exit 0 } else { exit 2 }',
+        printerName,
+      ],
+      { windowsHide: true, timeout: 8000 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Ciclo de jobs ────────────────────────────────────────────────────────────
 async function drainJobs() {
   const res = await api('/restaurant/print-jobs/pending');
@@ -258,26 +372,54 @@ async function drainJobs() {
   const { jobs = [] } = await res.json();
   for (const job of jobs) {
     const printer = job.printer;
-    // El agente solo maneja impresoras de red. USB lo imprime el navegador.
-    if (!printer || printer.connection !== 'NETWORK') continue;
-    if (!printer.ipAddress) {
-      await failJob(job.id, 'Impresora LAN sin ipAddress configurada');
+    if (!printer || (printer.connection !== 'NETWORK' && printer.connection !== 'AGENT')) continue;
+    if (isStaleJob(job)) {
+      const createdAt = job.createdAt ?? job.document?.createdAt ?? 'fecha desconocida';
+      const ageMin = Math.round((Date.now() - (parseJobCreatedAt(job) ?? Date.now())) / 60000);
+      await failJob(job.id, `Job descartado por antigüedad (${ageMin} min, creado ${createdAt})`);
+      log(`DESCARTADO job viejo ${job.id} → ${printer.name} (${ageMin} min, creado ${createdAt})`);
       continue;
     }
-    const port = printer.port ?? 9100;
     try {
-      const bytes = renderToEscPos(job.document, printer.paperWidth ?? 80, {
-        disableCut: PRINT_DISABLE_CUT,
-      });
-      const attempts = await sendWithRetry(printer.ipAddress, port, bytes);
+      const isDiagnosticTest = String(job.document?.id ?? '').startsWith('TEST-');
+      const bytes = isDiagnosticTest
+        ? renderPlainTextTest()
+        : renderToEscPos(job.document, printer.paperWidth ?? 80);
+      if (printer.connection === 'NETWORK') {
+        if (!printer.ipAddress) {
+          await failJob(job.id, 'Impresora LAN sin ipAddress configurada');
+          continue;
+        }
+        const port = printer.port ?? 9100;
+        const ready = await probePrinterReady(printer.ipAddress, port);
+        if (!ready.online) {
+          await markPrinterOnline(printer.id, false);
+          await failJob(job.id, `Impresora no lista: ${ready.reason}`);
+          log(`NO LISTA job ${job.id} → ${printer.name} (${printer.ipAddress}:${port}) ${ready.reason}`);
+          continue;
+        }
+        const attempts = await sendWithRetry(printer.ipAddress, port, bytes);
+        await ackJob(job.id);
+        await markPrinterOnline(printer.id, true);
+        log(
+          `impreso job ${job.id} → ${printer.name} (${printer.ipAddress}:${port})` +
+            (isDiagnosticTest ? ' [RAW TEST]' : '') +
+            (attempts > 1 ? ` [tras ${attempts} intentos]` : ''),
+        );
+        continue;
+      }
+      if (!printer.address) {
+        await failJob(job.id, 'Impresora Windows/USB sin nombre de impresora configurado');
+        continue;
+      }
+      await sendToWindowsPrinter(printer.address, bytes);
       await ackJob(job.id);
-      log(
-        `impreso job ${job.id} → ${printer.name} (${printer.ipAddress}:${port})` +
-          (attempts > 1 ? ` [tras ${attempts} intentos]` : ''),
-      );
+      await markPrinterOnline(printer.id, true);
+      log(`impreso job ${job.id} → ${printer.name} (Windows: ${printer.address})`);
     } catch (e) {
       await failJob(job.id, String(e?.message ?? e));
-      log(`FALLO job ${job.id} → ${printer.ipAddress}:${port} tras ${SEND_RETRIES} intentos: ${e?.message ?? e}`);
+      const target = printer.connection === 'AGENT' ? printer.address : `${printer.ipAddress}:${printer.port ?? 9100}`;
+      log(`FALLO job ${job.id} → ${target}: ${e?.message ?? e}`);
     }
   }
 }
@@ -291,24 +433,34 @@ async function failJob(id, error) {
     body: JSON.stringify({ error }),
   });
 }
+async function markPrinterOnline(id, online) {
+  const res = await api(`/restaurant/printers/${id}/heartbeat`, {
+    method: 'POST',
+    body: JSON.stringify({ online }),
+  });
+  if (!res.ok) {
+    log(`heartbeat update error printer=${id} online=${online}: ${res.status} ${await res.text()}`);
+  }
+}
 
-// ─── Heartbeat de impresoras LAN ──────────────────────────────────────────────
+// ─── Heartbeat de impresoras del agente ───────────────────────────────────────
 async function heartbeat() {
   const res = await api('/restaurant/printers');
   if (!res.ok) return;
   const { printers = [] } = await res.json();
   for (const p of printers) {
-    if (p.connection !== 'NETWORK' || !p.isActive || !p.ipAddress) continue;
-    const online = await probePrinter(p.ipAddress, p.port ?? 9100);
-    const hb = await api(`/restaurant/printers/${p.id}/heartbeat`, {
-      method: 'POST',
-      body: JSON.stringify({ online }),
-    });
-    if (!hb.ok) {
-      log(`heartbeat error ${hb.status} → ${p.name} (${p.ipAddress}:${p.port ?? 9100})`);
+    if (!p.isActive) continue;
+    let online = false;
+    if (p.connection === 'NETWORK' && p.ipAddress) {
+      const status = await probePrinterReady(p.ipAddress, p.port ?? 9100);
+      online = status.online;
+      if (!online) log(`printer offline ${p.name} (${p.ipAddress}:${p.port ?? 9100}) ${status.reason}`);
+    } else if (p.connection === 'AGENT' && p.address) {
+      online = await windowsPrinterExists(p.address);
     } else {
-      log(`heartbeat ${online ? 'online' : 'offline'} → ${p.name} (${p.ipAddress}:${p.port ?? 9100})`);
+      continue;
     }
+    await markPrinterOnline(p.id, online);
   }
 }
 
@@ -325,8 +477,8 @@ async function loop(fn, everyMs, label) {
 }
 
 async function main() {
-  log(`Lynko Print Agent → ${API_URL}`);
-  await login(); // deriva tenant/branch del perfil
+  log(`Lynko Print Agent → ${API_URL} (tenant ${TENANT_ID} / branch ${BRANCH_ID})`);
+  await login();
   // Dos bucles independientes: jobs (rápido) y heartbeat (lento).
   loop(drainJobs, POLL_MS, 'jobs');
   loop(heartbeat, HEARTBEAT_MS, 'heartbeat');
