@@ -75,6 +75,13 @@ const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 20000);
 const TCP_TIMEOUT_MS = Number(process.env.TCP_TIMEOUT_MS ?? 4000);
 const TCP_DRAIN_WAIT_MS = Number(process.env.TCP_DRAIN_WAIT_MS ?? 1200);
 const STATUS_QUERY_ENABLED = String(process.env.STATUS_QUERY_ENABLED ?? 'false').toLowerCase() === 'true';
+// Sondeo TCP ANTES de imprimir. Por defecto DESACTIVADO: abrir+cerrar una conexión
+// extra justo antes de cada comanda descuadra el buzzer de algunos clones ESC/POS
+// (pita sin parar de la 2ª impresión en adelante). Sin sondeo, el agente hace una
+// sola conexión limpia por trabajo, igual que el driver de Windows. Si el envío
+// falla, el reintento/So catch ya marca la impresora offline. Ponlo en 'true' solo
+// si necesitas el chequeo previo de alcanzabilidad.
+const PREPRINT_PROBE = String(process.env.PREPRINT_PROBE ?? 'false').toLowerCase() === 'true';
 // Reintentos controlados ante fallos TCP transitorios (impresora ocupada, calentando,
 // blip de red) antes de marcar el job como FAILED en el backend.
 const SEND_RETRIES = Number(process.env.SEND_RETRIES ?? 3);
@@ -156,25 +163,32 @@ async function api(path, init = {}, retry = true) {
 }
 
 // ─── TCP a la impresora ───────────────────────────────────────────────────────
-/** Abre TCP a ip:port, envía bytes y resuelve al drenar. Rechaza en error/timeout. */
+/** Abre TCP a ip:port, envía bytes y resuelve al drenar. Rechaza en error/timeout.
+ *  Cierre limpio (FIN) como el driver de Windows: tras escribir, hace `end()` y
+ *  espera a que la impresora cierre su lado; solo si tarda de más fuerza el cierre.
+ *  Nunca corta en seco (RST), que descuadra el buzzer de algunos clones. */
 function sendToPrinter(ip, port, bytes) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
     let settled = false;
+    let drainTimer = null;
     const done = (err) => {
       if (settled) return;
       settled = true;
+      if (drainTimer) clearTimeout(drainTimer);
       socket.destroy();
       err ? reject(err) : resolve();
     };
     socket.setTimeout(TCP_TIMEOUT_MS);
     socket.once('timeout', () => done(new Error('TCP timeout')));
     socket.once('error', (e) => done(e));
+    // La impresora cierra su lado tras procesar → cierre grácil sin RST.
+    socket.once('close', () => done(null));
     socket.connect(port, ip, () => {
       socket.write(bytes, () => {
-        // Dar tiempo a la impresora para procesar buffers largos antes de cerrar.
-        socket.end();
-        setTimeout(() => done(null), TCP_DRAIN_WAIT_MS);
+        socket.end(); // envía FIN; esperamos el 'close' de la impresora.
+        // Red de seguridad: si la impresora no cierra, resolvemos igual tras drenar.
+        drainTimer = setTimeout(() => done(null), TCP_DRAIN_WAIT_MS);
       });
     });
   });
@@ -391,12 +405,16 @@ async function drainJobs() {
           continue;
         }
         const port = printer.port ?? 9100;
-        const ready = await probePrinterReady(printer.ipAddress, port);
-        if (!ready.online) {
-          await markPrinterOnline(printer.id, false);
-          await failJob(job.id, `Impresora no lista: ${ready.reason}`);
-          log(`NO LISTA job ${job.id} → ${printer.name} (${printer.ipAddress}:${port}) ${ready.reason}`);
-          continue;
+        // Sondeo previo opcional (por defecto OFF): la conexión extra descuadra el
+        // buzzer de algunos clones. Sin él, imprimimos directo — una sola conexión.
+        if (PREPRINT_PROBE) {
+          const ready = await probePrinterReady(printer.ipAddress, port);
+          if (!ready.online) {
+            await markPrinterOnline(printer.id, false);
+            await failJob(job.id, `Impresora no lista: ${ready.reason}`);
+            log(`NO LISTA job ${job.id} → ${printer.name} (${printer.ipAddress}:${port}) ${ready.reason}`);
+            continue;
+          }
         }
         const attempts = await sendWithRetry(printer.ipAddress, port, bytes);
         await ackJob(job.id);
