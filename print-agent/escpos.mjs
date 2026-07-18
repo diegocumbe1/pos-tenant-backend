@@ -190,8 +190,12 @@ export function renderToEscPos(doc, paperWidth = 80) {
   buf.push(ESC, 0x32); // interlineado default
   buf.push(ESC, 0x33, 0x18); // interlineado 24 dots, común en clones
   buf.push(ESC, 0x74, 0x00); // codepage PC437, fallback seguro para texto ASCII
-  for (const block of doc.blocks ?? []) appendBlock(buf, block, cols);
-  buf.push(CR, LF, CR, LF); // avance final
+  const blocks = doc.blocks ?? [];
+  for (const block of blocks) appendBlock(buf, block, cols);
+  // Avance final SOLO si el documento no terminó en corte. Alimentar tras cortar
+  // empuja papel nuevo sobre el sensor (al medio) y deja el "recordatorio de pedido"
+  // pitando aunque retiren la comanda; el bloque `cut` ya alimenta antes de cortar.
+  if (blocks[blocks.length - 1]?.kind !== 'cut') buf.push(CR, LF, CR, LF);
   return buf.toBuffer();
 }
 
