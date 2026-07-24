@@ -16,6 +16,7 @@ import { AddItemsDto } from './dto/add-items.dto';
 import { CloseOrderDto } from './dto/close-order.dto';
 import { RegisterPaymentDto } from './dto/payment.dto';
 import { VoidOrderDto } from './dto/void-order.dto';
+import { CancelKitchenTicketDto } from './dto/cancel-kitchen-ticket.dto';
 import {
   KITCHEN_TICKET_UPDATED,
   KitchenTicketUpdatedEvent,
@@ -608,6 +609,205 @@ export class OrdersService {
       });
 
     return ticket;
+  }
+
+  // Cancela un envío a cocina NO entregado: quita de la orden los ítems de ese
+  // envío (no se cobran), restaura el stock que se había consumido, anula el
+  // ticket y cancela su comanda en cola. Permite manejar errores/cambios sin
+  // tener que anular la orden completa.
+  async cancelKitchenTicket(
+    ctx: TenantContext,
+    ticketId: string,
+    dto: CancelKitchenTicketDto,
+  ) {
+    const ticket = await this.prisma.kitchenTicket.findFirst({
+      where: { id: ticketId, tenantId: ctx.tenantId },
+      include: { items: true },
+    });
+    if (!ticket)
+      throw new NotFoundException(`Kitchen ticket ${ticketId} not found`);
+    if (ticket.status === 'SERVED') {
+      throw new UnprocessableEntityException(
+        'No se puede cancelar un envío ya entregado a la mesa',
+      );
+    }
+
+    const order = await this.assertOpenOrder(ticket.orderId, ctx.tenantId);
+
+    // Recetas de los productos del envío, para restaurar stock.
+    const productIds = [...new Set(ticket.items.map((i) => i.productId))];
+    const recipeLines = await this.prisma.recipeLine.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        productId: { in: productIds },
+      },
+      include: { ingredient: true },
+    });
+    const linesByProduct = new Map<string, typeof recipeLines>();
+    for (const line of recipeLines) {
+      const arr = linesByProduct.get(line.productId);
+      if (arr) arr.push(line);
+      else linesByProduct.set(line.productId, [line]);
+    }
+
+    // Reversa EXACTA del consumo de `sendToKitchen`, pero sumando al stock.
+    const stockBalances = new Map<string, number>();
+    const ingredientById = new Map<
+      string,
+      (typeof recipeLines)[number]['ingredient']
+    >();
+    const movements: Prisma.StockMovementCreateManyInput[] = [];
+    for (const ti of ticket.items) {
+      for (const line of linesByProduct.get(ti.productId) ?? []) {
+        ingredientById.set(line.ingredientId, line.ingredient);
+        const usableRatio = 1 - line.ingredient.technicalWastePercentage / 100;
+        if (usableRatio <= 0) continue;
+        const netRequiredInRecipeUnit = convertUnitQuantity(
+          line.quantity * ti.qty,
+          line.unit,
+          line.ingredient.recipeUnit,
+          line.ingredient,
+        );
+        const grossRequiredInPurchaseUnit = convertUnitQuantity(
+          netRequiredInRecipeUnit / usableRatio,
+          line.ingredient.recipeUnit,
+          line.ingredient.purchaseUnit,
+          line.ingredient,
+        );
+        const previousStock =
+          stockBalances.get(line.ingredientId) ?? line.ingredient.currentStock;
+        const newStock = previousStock + grossRequiredInPurchaseUnit;
+        stockBalances.set(line.ingredientId, newStock);
+        movements.push({
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          ingredientId: line.ingredientId,
+          type: 'CANCELLATION_RETURN',
+          quantity: grossRequiredInPurchaseUnit,
+          previousStock,
+          newStock,
+          orderId: ticket.orderId,
+          notes: `Reversa por envío cancelado (${ti.name})`,
+          createdBy: ctx.userId,
+          createdByName: dto.byUserName ?? ctx.name,
+        });
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1) Quitar de la orden los ítems del envío (no se cobran). Llavea por
+      //    lineKey; cae a productId por compatibilidad.
+      for (const ti of ticket.items) {
+        const orderItem =
+          order.items.find((o) => o.lineKey === ti.lineKey) ??
+          order.items.find((o) => o.productId === ti.productId);
+        if (!orderItem) continue;
+        const newQty = orderItem.qty - ti.qty;
+        const newSentQty = Math.max(0, orderItem.sentQty - ti.qty);
+        if (newQty <= 0) {
+          await tx.orderItem.delete({ where: { id: orderItem.id } });
+        } else {
+          await tx.orderItem.update({
+            where: { id: orderItem.id },
+            data: { qty: newQty, sentQty: newSentQty },
+          });
+        }
+      }
+
+      // 2) Restaurar stock.
+      if (movements.length > 0) {
+        await tx.stockMovement.createMany({ data: movements });
+      }
+      for (const [ingredientId, newStock] of stockBalances) {
+        const ingredient = ingredientById.get(ingredientId)!;
+        const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
+        const netUsableQuantity =
+          convertUnitQuantity(
+            newStock,
+            ingredient.purchaseUnit,
+            ingredient.recipeUnit,
+            ingredient,
+          ) * usableRatio;
+        await tx.ingredient.update({
+          where: { id: ingredientId },
+          data: {
+            currentStock: newStock,
+            grossStockQuantity: newStock,
+            netUsableQuantity,
+            netUnitCost:
+              netUsableQuantity > 0
+                ? ingredient.totalPurchaseCost / netUsableQuantity
+                : 0,
+          },
+        });
+      }
+
+      // 3) Anular el ticket (sus ítems caen por cascade).
+      await tx.kitchenTicket.delete({ where: { id: ticket.id } });
+
+      // 4) Cancelar la comanda de ese envío si sigue EN COLA (documentId
+      //    `KITCHEN-<ticketId>`), para que el agente no la imprima.
+      await tx.printJob.updateMany({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          documentId: `KITCHEN-${ticket.id}`,
+          status: 'QUEUED',
+        },
+        data: { status: 'FAILED', lastError: 'Envío cancelado' },
+      });
+
+      // 5) Bitácora: un ITEM_REMOVED por ítem del envío.
+      await this.orderEvents.recordMany(
+        ticket.items.map((ti) => ({
+          tenantId: ctx.tenantId,
+          orderId: ticket.orderId,
+          type: OrderEventType.ITEM_REMOVED,
+          metadata: {
+            productId: ti.productId,
+            name: ti.name,
+            previousQty: ti.qty,
+            newQty: 0,
+            deltaQty: -ti.qty,
+            reason: dto.reason ?? 'Envío cancelado',
+            ticketId: ticket.id,
+            byUserName: dto.byUserName ?? ctx.name ?? null,
+          },
+        })),
+        tx,
+      );
+    }, ORDER_TX_OPTIONS);
+
+    this.events.emit(TABLE_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      tableId: order.tableId,
+      reason: 'kitchen-ticket-cancelled',
+    } satisfies TableUpdatedEvent);
+
+    this.events.emit(KITCHEN_TICKET_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      ticket: {
+        id: ticket.id,
+        orderId: ticket.orderId,
+        tableId: order.tableId,
+        status: 'CANCELLED',
+        priority: ticket.priority,
+        sentAt: ticket.sentAt.getTime(),
+        readyAt: ticket.readyAt?.getTime() ?? null,
+        servedAt: ticket.servedAt?.getTime() ?? null,
+        items: ticket.items.map((i) => ({
+          id: i.id,
+          productId: i.productId,
+          name: i.name,
+          qty: i.qty,
+        })),
+      },
+    } satisfies KitchenTicketUpdatedEvent);
+
+    return this.findOne(ctx, ticket.orderId);
   }
 
   async requestPayment(ctx: TenantContext, id: string, dto: RegisterPaymentDto) {

@@ -198,9 +198,11 @@ export class FinanceService {
     const grossTotal = entries.reduce((a, e) => a + e.monthlyGrossCOP, 0);
     const netTotal = entries.reduce((a, e) => a + e.monthlyNetCOP, 0);
 
-    const monthStart = new Date(`${periodMonth}-01T00:00:00Z`);
-    const monthEnd = new Date(monthStart);
-    monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+    // Límites del mes en hora Colombia (con TZ=America/Bogota el constructor local
+    // arranca a medianoche Bogotá; new Date(y, m, 1) normaliza el cambio de año).
+    const [pmYear, pmMonth] = periodMonth.split('-').map(Number);
+    const monthStart = new Date(pmYear, pmMonth - 1, 1, 0, 0, 0, 0);
+    const monthEnd = new Date(pmYear, pmMonth, 1, 0, 0, 0, 0);
 
     return {
       periodMonth,
@@ -222,9 +224,11 @@ export class FinanceService {
       },
     });
 
-    const monthStart = new Date(`${periodMonth}-01T00:00:00Z`);
-    const monthEnd = new Date(monthStart);
-    monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+    // Límites del mes en hora Colombia (con TZ=America/Bogota el constructor local
+    // arranca a medianoche Bogotá; new Date(y, m, 1) normaliza el cambio de año).
+    const [pmYear, pmMonth] = periodMonth.split('-').map(Number);
+    const monthStart = new Date(pmYear, pmMonth - 1, 1, 0, 0, 0, 0);
+    const monthEnd = new Date(pmYear, pmMonth, 1, 0, 0, 0, 0);
 
     const [splitAgg, expenseAgg] = await Promise.all([
       this.prisma.paymentSplit.aggregate({

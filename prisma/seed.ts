@@ -58,6 +58,12 @@ const PERMISSIONS: Array<{
     description: 'Eliminar ítems',
   },
   {
+    code: 'restaurant:orders:cancel-item',
+    resource: 'orders',
+    action: 'cancel-item',
+    description: 'Cancelar envío no entregado / eliminar producto de la orden',
+  },
+  {
     code: 'restaurant:orders:close',
     resource: 'orders',
     action: 'close',

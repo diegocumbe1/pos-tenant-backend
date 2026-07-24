@@ -37,6 +37,7 @@ lerna-debug.log*
 
 # dotenv environment variable files
 .env
+.env.old
 .env.development.local
 .env.test.local
 .env.production.local
@@ -59,5 +60,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # WhatsApp (whatsapp-web.js LocalAuth sessions)
 .wa-sessions/
+
+# Respaldos de base de datos (nunca commitear dumps con datos reales)
+backups/
+*.dump
 .agents/skills/
 .claude

@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
+import { dayStartCO, dayEndCO } from '../../../common/date.util';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { computeTimings } from './sales-timings';
 import { CreateClaimDto } from './dto/create-claim.dto';
@@ -166,8 +167,8 @@ export class SalesService {
       ...(from || to
         ? {
             closedAt: {
-              ...(from ? { gte: new Date(from) } : {}),
-              ...(to ? { lte: new Date(to) } : {}),
+              ...(from ? { gte: dayStartCO(from) } : {}),
+              ...(to ? { lte: dayEndCO(to) } : {}),
             },
           }
         : {}),

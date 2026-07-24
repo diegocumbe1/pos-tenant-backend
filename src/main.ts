@@ -1,3 +1,9 @@
+// Fija la zona horaria del proceso a Colombia (America/Bogota) para que todos los
+// cálculos de fecha/hora (setHours/getDay/getHours, cortes de día/semana/mes) operen
+// en hora local Colombia y no en la del host (UTC en la nube). Debe ir ANTES de
+// cualquier import que instancie fechas. Si el host ya define TZ, se respeta.
+process.env.TZ = process.env.TZ ?? 'America/Bogota';
+
 import { ValidationPipe } from '@nestjs/common';
 import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';

@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
+import { dayStartCO, dayEndCO } from '../../../common/date.util';
 import { PrintingDocumentService } from '../printing/printing-document.service';
 import {
   CloseCashSessionDto,
@@ -127,8 +128,8 @@ export class CashSessionsService {
         ...(from || to
           ? {
               openedAt: {
-                ...(from ? { gte: new Date(from) } : {}),
-                ...(to ? { lte: new Date(to) } : {}),
+                ...(from ? { gte: dayStartCO(from) } : {}),
+                ...(to ? { lte: dayEndCO(to) } : {}),
               },
             }
           : {}),

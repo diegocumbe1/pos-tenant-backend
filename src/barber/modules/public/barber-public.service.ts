@@ -380,9 +380,9 @@ export class BarberPublicService {
     if (!year || !month || !day) {
       throw new BadRequestException('Invalid date');
     }
-    return new Date(
-      Date.UTC(year, month - 1, day, 0, minutesFromMidnight, 0, 0),
-    );
+    // Constructor local: con TZ=America/Bogota el proceso interpreta esto como
+    // hora Colombia (un slot "08:00" es 08:00 Bogotá, no 08:00 UTC).
+    return new Date(year, month - 1, day, 0, minutesFromMidnight, 0, 0);
   }
 
   private toProfileDto(settings: BrochureSettings) {
