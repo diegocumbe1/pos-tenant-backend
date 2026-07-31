@@ -174,6 +174,21 @@ export class WhatsAppSessionManager
     const headless = (process.env.WA_PUPPETEER_HEADLESS ?? 'true') !== 'false';
     const clientId = safeClientId(tenantId, branchId);
     const client = new Client({
+      // WhatsApp publica versiones nuevas de WhatsApp Web que rompen la
+      // inyección de whatsapp-web.js (síntoma: "Execution context was
+      // destroyed" en initialize()). Por defecto la librería no fija ninguna
+      // —su webVersion default no está en el cache local— y acaba usando la
+      // última en vivo. Fijamos una versión conocida buena, servida desde el
+      // archivo remoto para que funcione igual en local y en prod sin depender
+      // de .wwebjs_cache. Si WhatsApp la retira (expiran ~2 meses), basta con
+      // mover WA_WEB_VERSION a otra sin redeploy de código.
+      webVersion: process.env.WA_WEB_VERSION ?? '2.3000.1043890899-alpha',
+      webVersionCache: {
+        type: 'remote',
+        remotePath:
+          process.env.WA_WEB_VERSION_PATH ??
+          'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
+      },
       // Sesión persistida en DB (sobrevive redeploys, igual en local/prod).
       authStrategy: new RemoteAuth({
         clientId,
@@ -310,6 +325,9 @@ export class WhatsAppSessionManager
         state.status = 'error';
         state.lastError = (err as Error).message;
         this.emit(tenantId, branchId, state);
+        // Sin esto el Chromium queda vivo: se fuga ~400 MB por intento fallido
+        // y el perfil sigue bloqueado, así que el reintento también falla.
+        void this.destroyClient(key, state, { remove: false });
       });
     });
 
