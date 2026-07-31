@@ -61,6 +61,11 @@ export class UpdateSubscriptionDto {
   @IsISO8601()
   currentPeriodEnd?: string;
 
+  @ApiPropertyOptional({ example: '2026-12-31T00:00:00.000Z' })
+  @IsOptional()
+  @IsISO8601()
+  nextPaymentDueAt?: string;
+
   @ApiPropertyOptional({ example: 129000 })
   @IsOptional()
   @IsInt()
@@ -72,6 +77,41 @@ export class UpdateSubscriptionDto {
   @IsInt()
   @Min(0)
   priceUSD?: number;
+
+  // Términos comerciales: lista vs pactado. El descuento se deriva (lista − pactado).
+  @ApiPropertyOptional({ example: 130000, description: 'Precio de lista COP' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  listPriceCOP?: number;
+
+  @ApiPropertyOptional({ example: 33, description: 'Precio de lista USD' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  listPriceUSD?: number;
+
+  @ApiPropertyOptional({ example: 92000, description: 'Precio pactado COP' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  agreedPriceCOP?: number;
+
+  @ApiPropertyOptional({ example: 23, description: 'Precio pactado USD' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  agreedPriceUSD?: number;
+
+  @ApiPropertyOptional({ example: 'Cliente fundador' })
+  @IsOptional()
+  @IsString()
+  discountReason?: string;
+
+  @ApiPropertyOptional({ example: 'platform-admin' })
+  @IsOptional()
+  @IsString()
+  discountApprovedBy?: string;
 }
 
 export class SubscriptionActionDto {
@@ -88,12 +128,51 @@ export class SetUserStatusDto {
 }
 
 const CURRENCIES = ['COP', 'USD'] as const;
+const PAYMENT_KINDS = ['payment', 'bonus', 'credit'] as const;
 
 export class CreatePaymentDto {
-  @ApiProperty({ example: 129000, description: 'Monto entero' })
+  @ApiProperty({ example: 129000, description: 'Monto neto recibido' })
   @IsInt()
   @Min(0)
   amount!: number;
+
+  @ApiPropertyOptional({
+    enum: PAYMENT_KINDS,
+    default: 'payment',
+    description:
+      "'payment' = plata que entró · 'bonus' = mes de cortesía · 'credit' = nota crédito. bonus/credit NO suman a ingresos.",
+  })
+  @IsOptional()
+  @IsIn(PAYMENT_KINDS)
+  kind?: (typeof PAYMENT_KINDS)[number];
+
+  @ApiPropertyOptional({
+    example: 130000,
+    description: 'Precio de lista del plan al momento del cobro',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  officialPrice?: number;
+
+  @ApiPropertyOptional({
+    example: 38000,
+    description: 'Descuento/bono aplicado sobre el precio de lista',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountApplied?: number;
+
+  @ApiPropertyOptional({ example: 'Cliente fundador' })
+  @IsOptional()
+  @IsString()
+  discountReason?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  receiptUrl?: string;
 
   @ApiPropertyOptional({ enum: CURRENCIES, default: 'COP' })
   @IsOptional()
@@ -263,6 +342,9 @@ const PLATFORM_EXPENSE_CATEGORIES = [
   'other',
 ] as const;
 
+const EXPENSE_KINDS = ['one_time', 'recurring'] as const;
+const RECURRENCES = ['weekly', 'monthly', 'quarterly', 'yearly'] as const;
+
 export class CreatePlatformExpenseDto {
   @ApiProperty({ enum: PLATFORM_EXPENSE_CATEGORIES })
   @IsIn(PLATFORM_EXPENSE_CATEGORIES)
@@ -272,6 +354,11 @@ export class CreatePlatformExpenseDto {
   @IsString()
   @IsNotEmpty()
   concept!: string;
+
+  @ApiPropertyOptional({ example: 'Vercel' })
+  @IsOptional()
+  @IsString()
+  vendor?: string;
 
   @ApiProperty({ example: 95000, description: 'Monto entero' })
   @IsInt()
@@ -283,9 +370,27 @@ export class CreatePlatformExpenseDto {
   @IsIn(CURRENCIES)
   currency?: (typeof CURRENCIES)[number];
 
-  @ApiProperty({ example: '2026-06-09T00:00:00.000Z' })
+  @ApiPropertyOptional({ enum: EXPENSE_KINDS, default: 'one_time' })
+  @IsOptional()
+  @IsIn(EXPENSE_KINDS)
+  kind?: (typeof EXPENSE_KINDS)[number];
+
+  @ApiProperty({
+    example: '2026-06-09T00:00:00.000Z',
+    description: 'Fecha de caja: en qué periodo suma el gasto',
+  })
   @IsISO8601()
   incurredAt!: string;
+
+  @ApiPropertyOptional({ description: 'Inicio del periodo que cubre el gasto' })
+  @IsOptional()
+  @IsISO8601()
+  periodStart?: string;
+
+  @ApiPropertyOptional({ description: 'Fin del periodo que cubre el gasto' })
+  @IsOptional()
+  @IsISO8601()
+  periodEnd?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -305,6 +410,11 @@ export class UpdatePlatformExpenseDto {
   @IsNotEmpty()
   concept?: string;
 
+  @ApiPropertyOptional({ example: 'Vercel' })
+  @IsOptional()
+  @IsString()
+  vendor?: string;
+
   @ApiPropertyOptional({ example: 95000 })
   @IsOptional()
   @IsInt()
@@ -316,10 +426,147 @@ export class UpdatePlatformExpenseDto {
   @IsIn(CURRENCIES)
   currency?: (typeof CURRENCIES)[number];
 
+  @ApiPropertyOptional({ enum: EXPENSE_KINDS })
+  @IsOptional()
+  @IsIn(EXPENSE_KINDS)
+  kind?: (typeof EXPENSE_KINDS)[number];
+
   @ApiPropertyOptional({ example: '2026-06-09T00:00:00.000Z' })
   @IsOptional()
   @IsISO8601()
   incurredAt?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  periodStart?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  periodEnd?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+// ─── Gastos recurrentes (compromisos) ────────────────────────────────────────
+
+export class CreateRecurringExpenseDto {
+  @ApiProperty({ enum: PLATFORM_EXPENSE_CATEGORIES })
+  @IsIn(PLATFORM_EXPENSE_CATEGORIES)
+  category!: (typeof PLATFORM_EXPENSE_CATEGORIES)[number];
+
+  @ApiProperty({ example: 'Dominio lynko.com' })
+  @IsString()
+  @IsNotEmpty()
+  concept!: string;
+
+  @ApiPropertyOptional({ example: 'Namecheap' })
+  @IsOptional()
+  @IsString()
+  vendor?: string;
+
+  @ApiProperty({ example: 52000 })
+  @IsInt()
+  @Min(0)
+  amount!: number;
+
+  @ApiPropertyOptional({ enum: CURRENCIES, default: 'COP' })
+  @IsOptional()
+  @IsIn(CURRENCIES)
+  currency?: (typeof CURRENCIES)[number];
+
+  @ApiProperty({ enum: RECURRENCES, default: 'monthly' })
+  @IsIn(RECURRENCES)
+  recurrence!: (typeof RECURRENCES)[number];
+
+  @ApiProperty({ example: '2026-03-12T00:00:00.000Z' })
+  @IsISO8601()
+  startsAt!: string;
+
+  @ApiPropertyOptional({ description: 'null/omitido = indefinido' })
+  @IsOptional()
+  @IsISO8601()
+  endsAt?: string;
+
+  @ApiPropertyOptional({
+    default: true,
+    description: 'Generar automáticamente los cobros vencidos',
+  })
+  @IsOptional()
+  @IsBoolean()
+  autoGenerate?: boolean;
+
+  @ApiPropertyOptional({
+    default: true,
+    description:
+      'Si true, genera de una el cobro de startsAt (ya se pagó al contratar)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  chargeOnCreate?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class UpdateRecurringExpenseDto {
+  @ApiPropertyOptional({ enum: PLATFORM_EXPENSE_CATEGORIES })
+  @IsOptional()
+  @IsIn(PLATFORM_EXPENSE_CATEGORIES)
+  category?: (typeof PLATFORM_EXPENSE_CATEGORIES)[number];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  concept?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  vendor?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  amount?: number;
+
+  @ApiPropertyOptional({ enum: CURRENCIES })
+  @IsOptional()
+  @IsIn(CURRENCIES)
+  currency?: (typeof CURRENCIES)[number];
+
+  @ApiPropertyOptional({ enum: RECURRENCES })
+  @IsOptional()
+  @IsIn(RECURRENCES)
+  recurrence?: (typeof RECURRENCES)[number];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  endsAt?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  nextChargeAt?: string;
+
+  @ApiPropertyOptional({ description: 'false = dar de baja el compromiso' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  autoGenerate?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()

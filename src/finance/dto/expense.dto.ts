@@ -1,6 +1,8 @@
 import { PartialType } from '@nestjs/mapped-types';
+import { ExpenseFrequency } from '@prisma/client';
 import {
-  IsIn,
+  IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsPositive,
@@ -9,16 +11,10 @@ import {
   Min,
 } from 'class-validator';
 
-export const EXPENSE_CATEGORIES = [
-  'rent',
-  'utilities',
-  'supplies',
-  'marketing',
-  'other',
-] as const;
-
 export class CreateExpenseDto {
-  @IsIn(EXPENSE_CATEGORIES as unknown as string[])
+  /** Categoría de egreso (el vocabulario lo define el frontend). */
+  @IsString()
+  @MaxLength(40)
   category!: string;
 
   @IsString()
@@ -33,6 +29,21 @@ export class CreateExpenseDto {
   @IsInt()
   @IsPositive()
   incurredAt!: number;
+
+  /** Recurrencia (fijo/recurrente). Default ONE_TIME / no recurrente. */
+  @IsOptional()
+  @IsEnum(ExpenseFrequency)
+  frequency?: ExpenseFrequency;
+
+  @IsOptional()
+  @IsBoolean()
+  isRecurring?: boolean;
+
+  /** Próxima fecha de causación (epoch ms) para recurrentes. */
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  dueDate?: number;
 
   @IsOptional()
   @IsString()

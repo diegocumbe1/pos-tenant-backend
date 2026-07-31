@@ -43,7 +43,9 @@ export class WhatsAppWebJsProvider implements IMessagingProvider {
         `El numero ${phone} no esta registrado en WhatsApp`,
       );
     }
+    // whatsapp-web.js a veces resuelve `undefined` aunque el mensaje SÍ se envió
+    // (falla al construir el Message de respuesta). No debe romper el envío.
     const message = await client.sendMessage(numberId._serialized, body);
-    return { id: message.id?._serialized ?? 'unknown' };
+    return { id: message?.id?._serialized ?? 'sent' };
   }
 }

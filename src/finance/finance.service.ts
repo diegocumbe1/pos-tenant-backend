@@ -4,7 +4,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { PayFrequency, Prisma } from '@prisma/client';
+import { ExpenseFrequency, PayFrequency, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
@@ -50,13 +50,32 @@ export class FinanceService {
       _sum: { amountCOP: true },
     });
 
-    const revenue = splits.reduce((acc, s) => acc + s.totalCOP, 0);
+    // Ingreso de la vertical barber: citas completadas × precio del servicio.
+    // Read-only y agnóstico: un tenant de restaurante no tiene citas → 0.
+    const barberAppointments = await this.prisma.barberAppointment.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        status: { in: ['completed', 'COMPLETED', 'Completed'] },
+        scheduledAt: { gte: range.from, lte: range.to },
+      },
+      include: { service: { select: { id: true, name: true, priceCOP: true } } },
+    });
+    const barberRevenue = barberAppointments.reduce(
+      (acc, a) => acc + (a.service?.priceCOP ?? 0),
+      0,
+    );
+
+    const revenue =
+      splits.reduce((acc, s) => acc + s.totalCOP, 0) + barberRevenue;
     const expensesTotal = expenses._sum.amountCOP ?? 0;
     const profit = revenue - expensesTotal;
     const profitMarginPct =
       revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0;
 
-    const ordersCount = new Set(splits.map((s) => s.orderId)).size;
+    // "Órdenes" = tickets de restaurante + citas completadas de barber.
+    const ordersCount =
+      new Set(splits.map((s) => s.orderId)).size + barberAppointments.length;
     const averageOrderValue =
       ordersCount > 0 ? Math.round(revenue / ordersCount) : 0;
 
@@ -72,6 +91,18 @@ export class FinanceService {
         entry.quantity += item.qty;
         productMap.set(item.productId, entry);
       }
+    }
+    // Servicios de barber como "productos" en el top de ingresos.
+    for (const appt of barberAppointments) {
+      if (!appt.service) continue;
+      const entry = productMap.get(appt.service.id) ?? {
+        name: appt.service.name,
+        revenue: 0,
+        quantity: 0,
+      };
+      entry.revenue += appt.service.priceCOP;
+      entry.quantity += 1;
+      productMap.set(appt.service.id, entry);
     }
     const topProductsByRevenue = [...productMap.entries()]
       .map(([id, v]) => ({ id, ...v }))
@@ -108,6 +139,51 @@ export class FinanceService {
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 5);
 
+    // Desglose diario (hora Colombia) — restaurante (splits) + barber (citas).
+    // Alimenta el chart "Ventas diarias" y el pacing de metas.
+    const dayFmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Bogota',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const dayAgg = new Map<
+      string,
+      { revenue: number; orderIds: Set<string>; items: number }
+    >();
+    const bumpDay = (
+      date: Date,
+      amount: number,
+      orderId: string,
+      items: number,
+    ) => {
+      const key = dayFmt.format(date);
+      const entry = dayAgg.get(key) ?? {
+        revenue: 0,
+        orderIds: new Set<string>(),
+        items: 0,
+      };
+      entry.revenue += amount;
+      entry.orderIds.add(orderId);
+      entry.items += items;
+      dayAgg.set(key, entry);
+    };
+    for (const split of splits) {
+      const itemQty = split.items.reduce((a, i) => a + i.qty, 0);
+      bumpDay(split.paidAt, split.totalCOP, split.orderId, itemQty);
+    }
+    for (const appt of barberAppointments) {
+      bumpDay(appt.scheduledAt, appt.service?.priceCOP ?? 0, appt.id, 1);
+    }
+    const revenueByDay = [...dayAgg.entries()]
+      .map(([date, v]) => ({
+        date,
+        revenue: v.revenue,
+        orders: v.orderIds.size,
+        items: v.items,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
     return {
       revenue,
       expenses: expensesTotal,
@@ -117,6 +193,7 @@ export class FinanceService {
       averageOrderValue,
       topProductsByRevenue,
       topWaitersByRevenue,
+      revenueByDay,
       period: range.label,
       dateFrom: range.from.toISOString(),
       dateTo: range.to.toISOString(),
@@ -147,14 +224,7 @@ export class FinanceService {
         category,
         amountCOP: amount,
       })),
-      expenses: rows.map((e) => ({
-        id: e.id,
-        category: e.category,
-        concept: e.concept,
-        amountCOP: e.amountCOP,
-        incurredAt: e.incurredAt.getTime(),
-        note: e.note,
-      })),
+      expenses: rows.map((e) => this.toExpenseDto(e)),
       period: range.label,
       dateFrom: range.from.toISOString(),
       dateTo: range.to.toISOString(),
@@ -217,58 +287,183 @@ export class FinanceService {
   async goals(ctx: TenantContext, query: PeriodQueryDto) {
     const { periodMonth } = this.resolvePayrollMonth(query);
     const goals = await this.prisma.financeGoal.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        periodMonth,
-      },
+      where: { tenantId: ctx.tenantId, branchId: ctx.branchId, periodMonth },
     });
 
-    // Límites del mes en hora Colombia (con TZ=America/Bogota el constructor local
-    // arranca a medianoche Bogotá; new Date(y, m, 1) normaliza el cambio de año).
-    const [pmYear, pmMonth] = periodMonth.split('-').map(Number);
-    const monthStart = new Date(pmYear, pmMonth - 1, 1, 0, 0, 0, 0);
-    const monthEnd = new Date(pmYear, pmMonth, 1, 0, 0, 0, 0);
+    // Horarios del negocio → días operativos (barber). Restaurante/sin datos = todos.
+    const settings = await this.prisma.barberSettings
+      .findUnique({
+        where: { branchId: ctx.branchId },
+        select: { businessHours: true },
+      })
+      .catch(() => null);
+    const hours =
+      (settings?.businessHours as Record<string, unknown> | null) ?? null;
 
-    const [splitAgg, expenseAgg] = await Promise.all([
-      this.prisma.paymentSplit.aggregate({
-        where: {
-          tenantId: ctx.tenantId,
-          order: { branchId: ctx.branchId },
-          paidAt: { gte: monthStart, lt: monthEnd },
-        },
-        _sum: { totalCOP: true },
-      }),
-      this.prisma.expense.aggregate({
-        where: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          incurredAt: { gte: monthStart, lt: monthEnd },
-        },
-        _sum: { amountCOP: true },
-      }),
-    ]);
+    const enriched = await Promise.all(
+      goals.map(async (g) => {
+        const { from, to } = this.goalRange(g, periodMonth);
+        const revenue = await this.revenueInRange(ctx, from, to);
+        const actualCOP =
+          g.metric === 'revenue'
+            ? revenue
+            : revenue - (await this.expensesInRange(ctx, from, to));
 
-    const revenue = splitAgg._sum.totalCOP ?? 0;
-    const expensesTotal = expenseAgg._sum.amountCOP ?? 0;
-    const profit = revenue - expensesTotal;
-
-    return {
-      periodMonth,
-      goals: goals.map((g) => {
-        const actualCOP = g.metric === 'revenue' ? revenue : profit;
+        const { total, elapsed } = this.countOperatingDays(from, to, hours);
+        const timeProgressPct =
+          total > 0 ? Math.round((elapsed / total) * 1000) / 10 : 0;
+        const expectedToDateCOP =
+          total > 0 ? Math.round(g.targetCOP * (elapsed / total)) : 0;
         const progressPct =
           g.targetCOP > 0
             ? Math.round((actualCOP / g.targetCOP) * 1000) / 10
             : 0;
+        const remainingDays = Math.max(0, total - elapsed);
+        const remainingTarget = Math.max(0, g.targetCOP - actualCOP);
+        const dailyRequiredCOP =
+          remainingDays > 0 ? Math.round(remainingTarget / remainingDays) : 0;
+
+        // Estado: sobrado / al día / desfasado (vs esperado a la fecha).
+        let paceStatus: 'AHEAD' | 'ON_TRACK' | 'BEHIND';
+        if (expectedToDateCOP <= 0) {
+          paceStatus = actualCOP > 0 ? 'AHEAD' : 'ON_TRACK';
+        } else if (actualCOP >= expectedToDateCOP * 1.05) {
+          paceStatus = 'AHEAD';
+        } else if (actualCOP >= expectedToDateCOP * 0.9) {
+          paceStatus = 'ON_TRACK';
+        } else {
+          paceStatus = 'BEHIND';
+        }
+
         return {
           id: g.id,
           metric: g.metric,
           targetCOP: g.targetCOP,
+          periodType: g.periodType,
+          periodStart: from.getTime(),
+          periodEnd: to.getTime(),
           actualCOP,
+          expectedToDateCOP,
           progressPct,
+          timeProgressPct,
+          dailyRequiredCOP,
+          operatingDaysElapsed: elapsed,
+          operatingDaysTotal: total,
+          paceStatus,
         };
       }),
+    );
+
+    return { periodMonth, goals: enriched };
+  }
+
+  // Rango [from, to) de una meta: usa el rango explícito o deriva del mes ancla.
+  private goalRange(
+    g: { periodStart: Date | null; periodEnd: Date | null; periodMonth: string },
+    fallbackMonth: string,
+  ): { from: Date; to: Date } {
+    if (g.periodStart && g.periodEnd) {
+      return { from: g.periodStart, to: g.periodEnd };
+    }
+    const [y, m] = (g.periodMonth || fallbackMonth).split('-').map(Number);
+    return {
+      from: new Date(y, m - 1, 1, 0, 0, 0, 0),
+      to: new Date(y, m, 1, 0, 0, 0, 0),
+    };
+  }
+
+  // Cuenta días operativos totales y transcurridos (hasta hoy) en [from, to).
+  // hours = businessHours { monday: [{start,end}], ... }; lista vacía = cerrado.
+  private countOperatingDays(
+    from: Date,
+    to: Date,
+    hours: Record<string, unknown> | null,
+  ): { total: number; elapsed: number } {
+    const WEEK = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const isOpen = (d: Date): boolean => {
+      if (!hours) return true;
+      const v = hours[WEEK[d.getDay()]];
+      if (v === undefined) return true;
+      return Array.isArray(v) ? v.length > 0 : !!v;
+    };
+    const now = new Date();
+    let total = 0;
+    let elapsed = 0;
+    const cur = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    while (cur < to) {
+      if (isOpen(cur)) {
+        total += 1;
+        if (cur <= now) elapsed += 1;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return { total, elapsed };
+  }
+
+  // Ingreso en un rango: splits (restaurante) + citas completadas (barber).
+  private async revenueInRange(
+    ctx: TenantContext,
+    from: Date,
+    to: Date,
+  ): Promise<number> {
+    const [splitAgg, appts] = await Promise.all([
+      this.prisma.paymentSplit.aggregate({
+        where: {
+          tenantId: ctx.tenantId,
+          order: { branchId: ctx.branchId },
+          paidAt: { gte: from, lt: to },
+        },
+        _sum: { totalCOP: true },
+      }),
+      this.prisma.barberAppointment.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          status: { in: ['completed', 'COMPLETED', 'Completed'] },
+          scheduledAt: { gte: from, lt: to },
+        },
+        include: { service: { select: { priceCOP: true } } },
+      }),
+    ]);
+    const barber = appts.reduce((a, x) => a + (x.service?.priceCOP ?? 0), 0);
+    return (splitAgg._sum.totalCOP ?? 0) + barber;
+  }
+
+  private async expensesInRange(
+    ctx: TenantContext,
+    from: Date,
+    to: Date,
+  ): Promise<number> {
+    const agg = await this.prisma.expense.aggregate({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        incurredAt: { gte: from, lt: to },
+      },
+      _sum: { amountCOP: true },
+    });
+    return agg._sum.amountCOP ?? 0;
+  }
+
+  // Resuelve periodType + rango al crear/editar una meta.
+  private resolveGoalPeriod(dto: CreateFinanceGoalDto): {
+    periodType: string;
+    periodStart: Date;
+    periodEnd: Date;
+  } {
+    const periodType = dto.periodType ?? 'MONTHLY';
+    if (dto.periodStart && dto.periodEnd) {
+      return {
+        periodType,
+        periodStart: new Date(dto.periodStart),
+        periodEnd: new Date(dto.periodEnd),
+      };
+    }
+    const [y, m] = dto.periodMonth.split('-').map(Number);
+    return {
+      periodType,
+      periodStart: new Date(y, m - 1, 1, 0, 0, 0, 0),
+      periodEnd: new Date(y, m, 1, 0, 0, 0, 0),
     };
   }
 
@@ -283,6 +478,9 @@ export class FinanceService {
         concept: dto.concept,
         amountCOP: dto.amountCOP,
         incurredAt: new Date(dto.incurredAt),
+        frequency: dto.frequency ?? ExpenseFrequency.ONE_TIME,
+        isRecurring: dto.isRecurring ?? false,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
         note: dto.note ?? null,
       },
     });
@@ -299,6 +497,9 @@ export class FinanceService {
         amountCOP: dto.amountCOP,
         incurredAt:
           dto.incurredAt !== undefined ? new Date(dto.incurredAt) : undefined,
+        frequency: dto.frequency,
+        isRecurring: dto.isRecurring,
+        dueDate: dto.dueDate !== undefined ? (dto.dueDate ? new Date(dto.dueDate) : null) : undefined,
         note: dto.note,
       },
     });
@@ -382,6 +583,7 @@ export class FinanceService {
 
   async createGoal(ctx: TenantContext, dto: CreateFinanceGoalDto) {
     try {
+      const { periodType, periodStart, periodEnd } = this.resolveGoalPeriod(dto);
       const goal = await this.prisma.financeGoal.create({
         data: {
           tenantId: ctx.tenantId,
@@ -389,6 +591,9 @@ export class FinanceService {
           periodMonth: dto.periodMonth,
           metric: dto.metric,
           targetCOP: dto.targetCOP,
+          periodType,
+          periodStart,
+          periodEnd,
         },
       });
       return this.toGoalDto(goal);
@@ -403,12 +608,23 @@ export class FinanceService {
   async updateGoal(ctx: TenantContext, id: string, dto: UpdateFinanceGoalDto) {
     await this.assertGoal(ctx, id);
     try {
+      const period =
+        dto.periodMonth !== undefined
+          ? this.resolveGoalPeriod(dto as CreateFinanceGoalDto)
+          : null;
       const goal = await this.prisma.financeGoal.update({
         where: { id },
         data: {
           periodMonth: dto.periodMonth,
           metric: dto.metric,
           targetCOP: dto.targetCOP,
+          ...(period
+            ? {
+                periodType: period.periodType,
+                periodStart: period.periodStart,
+                periodEnd: period.periodEnd,
+              }
+            : {}),
         },
       });
       return this.toGoalDto(goal);
@@ -468,6 +684,9 @@ export class FinanceService {
     concept: string;
     amountCOP: number;
     incurredAt: Date;
+    frequency: ExpenseFrequency;
+    isRecurring: boolean;
+    dueDate: Date | null;
     note: string | null;
   }) {
     return {
@@ -476,6 +695,9 @@ export class FinanceService {
       concept: e.concept,
       amountCOP: e.amountCOP,
       incurredAt: e.incurredAt.getTime(),
+      frequency: e.frequency,
+      isRecurring: e.isRecurring,
+      dueDate: e.dueDate ? e.dueDate.getTime() : null,
       note: e.note,
     };
   }
@@ -517,12 +739,18 @@ export class FinanceService {
     periodMonth: string;
     metric: string;
     targetCOP: number;
+    periodType: string;
+    periodStart: Date | null;
+    periodEnd: Date | null;
   }) {
     return {
       id: g.id,
       periodMonth: g.periodMonth,
       metric: g.metric,
       targetCOP: g.targetCOP,
+      periodType: g.periodType,
+      periodStart: g.periodStart ? g.periodStart.getTime() : null,
+      periodEnd: g.periodEnd ? g.periodEnd.getTime() : null,
     };
   }
 

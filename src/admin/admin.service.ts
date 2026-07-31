@@ -77,6 +77,22 @@ export class AdminService {
       await tx.branch.create({
         data: { id: branchId, tenantId, name: dto.defaultBranchName },
       });
+      // Todo tenant nace con suscripción (TRIALING, 1 mes) para que el
+      // backoffice pueda gestionarla desde el primer día.
+      const periodEnd = new Date();
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+      await tx.subscription.create({
+        data: {
+          tenantId,
+          plan: dto.plan ?? 'BASIC',
+          status: 'TRIALING',
+          billingCycle: 'monthly',
+          currentPeriodStart: new Date(),
+          currentPeriodEnd: periodEnd,
+          trialEndsAt: periodEnd,
+          provider: 'manual',
+        },
+      });
       return tenant;
     });
 

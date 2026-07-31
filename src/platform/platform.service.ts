@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePlatformExpenseDto,
   CreatePaymentDto,
+  CreateRecurringExpenseDto,
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
   SetTenantStatusDto,
@@ -16,6 +17,7 @@ import {
   UpdatePlanDto,
   UpdatePlatformExpenseDto,
   UpdatePlatformFinanceGoalDto,
+  UpdateRecurringExpenseDto,
   UpdateSubscriptionDto,
   UpsertBillingContactDto,
   UpsertPlatformFinanceGoalDto,
@@ -57,6 +59,18 @@ const ACTION_MAP: Record<
 
 // Roles del BE → UserRole del FE (el FE usa ADMINISTRATIVE en vez de ADMIN).
 const ROLE_CODE_MAP: Record<string, string> = { ADMIN: 'ADMINISTRATIVE' };
+
+// Días de gracia tras el vencimiento antes de cortar el acceso.
+const GRACE_DAYS = 5;
+
+// Cuántos meses representa cada ciclo, para mensualizar compromisos recurrentes
+// y calcular el burn rate mensual de la plataforma.
+const RECURRENCE_MONTHS: Record<string, number> = {
+  weekly: 1 / 4.345,
+  monthly: 1,
+  quarterly: 3,
+  yearly: 12,
+};
 
 const VALID_FEATURE_KEYS = new Set(Object.keys(PLAN_FEATURES.BASIC));
 
@@ -516,11 +530,20 @@ export class PlatformService {
   // ─── Suscripción ──────────────────────────────────────────────────────────────
 
   async getSubscription(tenantId: string) {
-    await this.loadTenant(tenantId);
+    const tenant = await this.loadTenant(tenantId);
     const sub = await this.prisma.subscription.findUnique({
       where: { tenantId },
     });
-    return sub ? this.toSubscriptionDto(sub) : null;
+    if (sub) return this.toSubscriptionDto(sub);
+
+    // Backfill: los tenants creados por signup/admin antes de esta corrección no
+    // tenían fila de suscripción, así que el backoffice los mostraba "sin
+    // suscripción" aunque ya hubieran pagado. La creamos aquí (derivada del
+    // último pago si existe) para que la vista sea consistente con Pagos.
+    const created = await this.prisma.$transaction((tx) =>
+      this.ensureSubscription(tx, tenantId, tenant.plan),
+    );
+    return this.toSubscriptionDto(created);
   }
 
   async updateSubscription(
@@ -536,6 +559,10 @@ export class PlatformService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const sub = await this.ensureSubscription(tx, tenantId, tenant.plan);
+      // El precio vigente (priceCOP/priceUSD) es siempre el pactado: si llega
+      // agreedPrice manda ese; si no, el alias legacy priceCOP.
+      const agreedCOP = dto.agreedPriceCOP ?? dto.priceCOP;
+      const agreedUSD = dto.agreedPriceUSD ?? dto.priceUSD;
       const s = await tx.subscription.update({
         where: { tenantId },
         data: {
@@ -544,8 +571,22 @@ export class PlatformService {
           currentPeriodEnd: dto.currentPeriodEnd
             ? new Date(dto.currentPeriodEnd)
             : undefined,
-          priceCOP: dto.priceCOP,
-          priceUSD: dto.priceUSD,
+          nextPaymentDueAt: dto.nextPaymentDueAt
+            ? new Date(dto.nextPaymentDueAt)
+            : dto.currentPeriodEnd
+              ? new Date(dto.currentPeriodEnd)
+              : undefined,
+          graceEndsAt: dto.currentPeriodEnd
+            ? this.addDays(new Date(dto.currentPeriodEnd), GRACE_DAYS)
+            : undefined,
+          priceCOP: agreedCOP,
+          priceUSD: agreedUSD,
+          listPriceCOP: dto.listPriceCOP,
+          listPriceUSD: dto.listPriceUSD,
+          agreedPriceCOP: agreedCOP,
+          agreedPriceUSD: agreedUSD,
+          discountReason: dto.discountReason,
+          discountApprovedBy: dto.discountApprovedBy,
         },
       });
       void sub;
@@ -639,31 +680,70 @@ export class PlatformService {
     const periodEnd = new Date(dto.periodEnd);
     const extend = dto.extendPeriod ?? true;
 
+    const kind = dto.kind ?? 'payment';
+    // Un bono/cortesía no es plata que entró: se registra para dejar rastro del
+    // periodo regalado y del motivo, pero NO suma a ingresos ni a la utilidad.
+    const countsAsRevenue = kind === 'payment';
+    const currency = dto.currency ?? 'COP';
+
     const payment = await this.prisma.$transaction(async (tx) => {
+      // Un pago siempre debe quedar colgado de una suscripción: si el tenant no
+      // tenía (signup no la creaba), la creamos antes de registrar el cobro.
+      const subscription = await this.ensureSubscription(
+        tx,
+        tenantId,
+        tenant.plan,
+      );
+
+      // Snapshot comercial: precio de lista al momento del cobro y cuánto se
+      // dejó de cobrar. Si no vienen en el DTO se derivan de la suscripción.
+      const listPrice =
+        dto.officialPrice ??
+        (currency === 'USD'
+          ? (subscription.listPriceUSD ?? subscription.priceUSD)
+          : (subscription.listPriceCOP ?? subscription.priceCOP)) ??
+        undefined;
+      const officialPrice = listPrice ?? dto.amount;
+      const discountApplied =
+        dto.discountApplied ?? Math.max(0, officialPrice - dto.amount);
+
       const created = await tx.subscriptionPayment.create({
         data: {
           tenantId,
+          subscriptionId: subscription.id,
           plan: tenant.plan,
+          kind,
+          countsAsRevenue,
           amount: dto.amount,
-          currency: dto.currency ?? 'COP',
+          officialPrice,
+          discountApplied,
+          discountReason:
+            dto.discountReason ?? subscription.discountReason ?? undefined,
+          currency,
           billingCycle:
-            dto.billingCycle ?? tenant.subscription?.billingCycle ?? 'monthly',
+            dto.billingCycle ?? subscription.billingCycle ?? 'monthly',
           periodStart: new Date(dto.periodStart),
           periodEnd,
           paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
           method: dto.method ?? 'manual',
           reference: dto.reference,
+          receiptUrl: dto.receiptUrl,
           note: dto.note,
+          extendsPeriod: extend,
           createdByUserId: actorUserId,
         },
       });
 
       // Pago registrado → opcionalmente extiende el periodo y reactiva la cuenta.
-      if (extend && tenant.subscription) {
+      // Aplica también a bonos: un mes de cortesía corre el vencimiento igual.
+      if (extend) {
         await tx.subscription.update({
           where: { tenantId },
           data: {
+            currentPeriodStart: new Date(dto.periodStart),
             currentPeriodEnd: periodEnd,
+            nextPaymentDueAt: periodEnd,
+            graceEndsAt: this.addDays(periodEnd, GRACE_DAYS),
             status: 'ACTIVE',
             canceledAt: null,
           },
@@ -865,7 +945,10 @@ export class PlatformService {
           select: { billingCycle: true, priceCOP: true, priceUSD: true },
         }),
         this.prisma.subscriptionPayment.aggregate({
-          where: this.monthRange(this.currentMonth()),
+          where: {
+            ...this.monthRange(this.currentMonth()),
+            countsAsRevenue: true,
+          },
           _count: true,
           _sum: { amount: true },
         }),
@@ -906,32 +989,72 @@ export class PlatformService {
 
   async getPlatformFinanceDashboard(query: PlatformFinanceQueryDto) {
     const range = this.resolvePlatformFinanceRange(query);
-    const [paymentGroups, expenseGroups, expensesByCategory, goals, mrr] =
-      await Promise.all([
-        this.prisma.subscriptionPayment.groupBy({
-          by: ['currency'],
-          where: { paidAt: { gte: range.from, lt: range.to } },
-          _count: true,
-          _sum: { amount: true },
-        }),
-        this.prisma.platformExpense.groupBy({
-          by: ['currency'],
-          where: { incurredAt: { gte: range.from, lt: range.to } },
-          _count: true,
-          _sum: { amount: true },
-        }),
-        this.prisma.platformExpense.groupBy({
-          by: ['category', 'currency'],
-          where: { incurredAt: { gte: range.from, lt: range.to } },
-          _sum: { amount: true },
-          orderBy: [{ category: 'asc' }, { currency: 'asc' }],
-        }),
-        this.prisma.platformFinanceGoal.findMany({
-          where: { periodMonth: range.periodMonth },
-          orderBy: { metric: 'asc' },
-        }),
-        this.calculateMrr(),
-      ]);
+    // Antes de calcular nada, materializamos los cobros recurrentes vencidos:
+    // así "cuánto llevo gastado" incluye la infra/dominios ya cobrados.
+    await this.generateDueRecurringExpenses();
+
+    const inRange = { gte: range.from, lt: range.to };
+    // BASE CAJA: un pago suma completo en su paidAt. Solo kind='payment'
+    // (countsAsRevenue) es ingreso; bonos y notas crédito quedan por fuera.
+    const revenueWhere = {
+      paidAt: inRange,
+      countsAsRevenue: true,
+    } satisfies Prisma.SubscriptionPaymentWhereInput;
+
+    const [
+      paymentGroups,
+      discountGroups,
+      bonusGroups,
+      expenseGroups,
+      expensesByCategory,
+      expensesByKind,
+      goals,
+      mrr,
+      lifetime,
+      commitments,
+    ] = await Promise.all([
+      this.prisma.subscriptionPayment.groupBy({
+        by: ['currency'],
+        where: revenueWhere,
+        _count: true,
+        _sum: { amount: true },
+      }),
+      this.prisma.subscriptionPayment.groupBy({
+        by: ['currency'],
+        where: revenueWhere,
+        _sum: { discountApplied: true },
+      }),
+      this.prisma.subscriptionPayment.groupBy({
+        by: ['currency'],
+        where: { paidAt: inRange, countsAsRevenue: false },
+        _count: true,
+        _sum: { discountApplied: true },
+      }),
+      this.prisma.platformExpense.groupBy({
+        by: ['currency'],
+        where: { incurredAt: inRange },
+        _count: true,
+        _sum: { amount: true },
+      }),
+      this.prisma.platformExpense.groupBy({
+        by: ['category', 'currency'],
+        where: { incurredAt: inRange },
+        _sum: { amount: true },
+        orderBy: [{ category: 'asc' }, { currency: 'asc' }],
+      }),
+      this.prisma.platformExpense.groupBy({
+        by: ['kind', 'currency'],
+        where: { incurredAt: inRange },
+        _sum: { amount: true },
+      }),
+      this.prisma.platformFinanceGoal.findMany({
+        where: { periodMonth: range.periodMonth },
+        orderBy: { metric: 'asc' },
+      }),
+      this.calculateMrr(),
+      this.calculateLifetimeTotals(),
+      this.summarizeCommitments(),
+    ]);
 
     const revenue = this.moneyTotals(paymentGroups);
     const expenses = this.moneyTotals(expenseGroups);
@@ -946,12 +1069,39 @@ export class PlatformService {
       activeTenants,
     });
 
+    // Ingreso potencial (precio de lista) vs real: la diferencia es lo que se
+    // dejó de cobrar por descuentos pactados. No es gasto — no toca la utilidad.
+    const discounts = this.sumByCurrency(
+      discountGroups.map((row) => ({
+        currency: row.currency,
+        value: row._sum.discountApplied ?? 0,
+      })),
+    );
+    // Se deriva de la invariante neto + descuento = lista, en vez de sumar
+    // officialPrice: los pagos anteriores a este módulo lo tienen en null y
+    // sumarlos daría un bruto de 0 con ingreso real positivo.
+    const grossRevenue = {
+      COP: revenue.COP + discounts.COP,
+      USD: revenue.USD + discounts.USD,
+    };
+    const bonuses = this.sumByCurrency(
+      bonusGroups.map((row) => ({
+        currency: row.currency,
+        value: row._sum.discountApplied ?? 0,
+      })),
+    );
+
     return {
       period: range.period,
       periodMonth: range.periodMonth,
       dateFrom: range.from.toISOString(),
       dateTo: range.to.toISOString(),
+      basis: 'cash' as const,
       revenue,
+      grossRevenue,
+      discounts,
+      bonuses,
+      bonusCount: bonusGroups.reduce((acc, row) => acc + row._count, 0),
       expenses,
       profit: {
         COP: revenue.COP - expenses.COP,
@@ -965,12 +1115,448 @@ export class PlatformService {
         amount: row._sum.amount ?? 0,
         currency: row.currency,
       })),
+      expensesByKind: expensesByKind.map((row) => ({
+        kind: row.kind,
+        amount: row._sum.amount ?? 0,
+        currency: row.currency,
+      })),
+      lifetime,
+      commitments,
       goals: goals.map((goal) =>
         this.toPlatformFinanceGoalDto(
           goal,
           actuals[goal.metric as PlatformGoalMetric] ?? 0,
         ),
       ),
+    };
+  }
+
+  /**
+   * Acumulado histórico de Lynko desde el día uno: todo lo que entró (pagos
+   * reales) contra todo lo que salió (gastos ya incurridos). Es el número de
+   * "cuánto llevo invertido y cuánto llevo facturando".
+   */
+  private async calculateLifetimeTotals() {
+    const [payments, expenses, discounts, firstPayment, firstExpense] =
+      await Promise.all([
+        this.prisma.subscriptionPayment.groupBy({
+          by: ['currency'],
+          where: { countsAsRevenue: true },
+          _count: true,
+          _sum: { amount: true },
+        }),
+        this.prisma.platformExpense.groupBy({
+          by: ['currency'],
+          _count: true,
+          _sum: { amount: true },
+        }),
+        this.prisma.subscriptionPayment.groupBy({
+          by: ['currency'],
+          _sum: { discountApplied: true },
+        }),
+        this.prisma.subscriptionPayment.findFirst({
+          orderBy: { paidAt: 'asc' },
+          select: { paidAt: true },
+        }),
+        this.prisma.platformExpense.findFirst({
+          orderBy: { incurredAt: 'asc' },
+          select: { incurredAt: true },
+        }),
+      ]);
+
+    const revenue = this.moneyTotals(payments);
+    const expenseTotals = this.moneyTotals(expenses);
+    const starts = [firstPayment?.paidAt, firstExpense?.incurredAt].filter(
+      (d): d is Date => !!d,
+    );
+
+    return {
+      revenue,
+      expenses: expenseTotals,
+      profit: {
+        COP: revenue.COP - expenseTotals.COP,
+        USD: revenue.USD - expenseTotals.USD,
+      },
+      discounts: this.sumByCurrency(
+        discounts.map((row) => ({
+          currency: row.currency,
+          value: row._sum.discountApplied ?? 0,
+        })),
+      ),
+      paymentsCount: payments.reduce((acc, row) => acc + row._count, 0),
+      expensesCount: expenses.reduce((acc, row) => acc + row._count, 0),
+      since: starts.length
+        ? new Date(Math.min(...starts.map((d) => d.getTime()))).toISOString()
+        : null,
+    };
+  }
+
+  /**
+   * Costo fijo comprometido: qué gastos recurrentes están vigentes, cuánto
+   * suman al mes (burn rate) y cuál es el próximo cobro que viene.
+   */
+  private async summarizeCommitments() {
+    const active = await this.prisma.platformRecurringExpense.findMany({
+      where: { isActive: true },
+      orderBy: { nextChargeAt: 'asc' },
+    });
+
+    const monthly: Record<'COP' | 'USD', number> = { COP: 0, USD: 0 };
+    for (const item of active) {
+      const months = RECURRENCE_MONTHS[item.recurrence] ?? 1;
+      const perMonth = Math.round(item.amount / months);
+      if (item.currency === 'USD') monthly.USD += perMonth;
+      else monthly.COP += perMonth;
+    }
+
+    return {
+      activeCount: active.length,
+      monthlyBurn: monthly,
+      // Costo anualizado del compromiso vigente.
+      yearlyBurn: { COP: monthly.COP * 12, USD: monthly.USD * 12 },
+      upcoming: active.slice(0, 5).map((item) => ({
+        id: item.id,
+        concept: item.concept,
+        vendor: item.vendor ?? undefined,
+        category: item.category,
+        amount: item.amount,
+        currency: item.currency,
+        recurrence: item.recurrence,
+        nextChargeAt: item.nextChargeAt.toISOString(),
+        endsAt: item.endsAt?.toISOString(),
+      })),
+    };
+  }
+
+  private sumByCurrency(rows: Array<{ currency: string; value: number }>) {
+    const totals: Record<'COP' | 'USD', number> = { COP: 0, USD: 0 };
+    for (const row of rows) {
+      if (row.currency === 'USD') totals.USD += row.value;
+      else totals.COP += row.value;
+    }
+    return totals;
+  }
+
+  /** Día calendario en hora Colombia (el proceso corre con TZ=America/Bogota). */
+  private calendarDayCO(date: Date): string {
+    const y = date.getFullYear();
+    const m = `${date.getMonth() + 1}`.padStart(2, '0');
+    const d = `${date.getDate()}`.padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  /**
+   * Libro de ingresos: cada pago con su fecha, tenant, plan, precio de lista,
+   * descuento y neto, más el agregado por día. Es el detalle que respalda el KPI
+   * de ingresos del dashboard (base caja: cuenta por paidAt).
+   */
+  async listPlatformIncome(query: PlatformFinanceQueryDto) {
+    const range = this.resolvePlatformFinanceRange(query);
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      where: { paidAt: { gte: range.from, lt: range.to } },
+      include: { tenant: { select: { name: true } } },
+      orderBy: { paidAt: 'desc' },
+    });
+
+    const byDayMap = new Map<
+      string,
+      { day: string; COP: number; USD: number; count: number }
+    >();
+    for (const p of payments) {
+      if (!p.countsAsRevenue) continue;
+      const day = this.calendarDayCO(p.paidAt);
+      const bucket = byDayMap.get(day) ?? { day, COP: 0, USD: 0, count: 0 };
+      if (p.currency === 'USD') bucket.USD += p.amount;
+      else bucket.COP += p.amount;
+      bucket.count += 1;
+      byDayMap.set(day, bucket);
+    }
+
+    const counted = payments.filter((p) => p.countsAsRevenue);
+    const net = this.sumByCurrency(
+      counted.map((p) => ({ currency: p.currency, value: p.amount })),
+    );
+    // Mismo criterio que el dashboard: lista = neto + descuento, para no
+    // depender de officialPrice (null en los pagos previos a este módulo).
+    const gross = this.sumByCurrency(
+      counted.map((p) => ({
+        currency: p.currency,
+        value: p.officialPrice ?? p.amount + p.discountApplied,
+      })),
+    );
+    const discounts = this.sumByCurrency(
+      counted.map((p) => ({ currency: p.currency, value: p.discountApplied })),
+    );
+    const bonuses = this.sumByCurrency(
+      payments
+        .filter((p) => !p.countsAsRevenue)
+        .map((p) => ({ currency: p.currency, value: p.discountApplied })),
+    );
+
+    return {
+      period: range.period,
+      dateFrom: range.from.toISOString(),
+      dateTo: range.to.toISOString(),
+      basis: 'cash' as const,
+      totals: {
+        gross,
+        discounts,
+        net,
+        bonuses,
+        count: counted.length,
+      },
+      byDay: [...byDayMap.values()].sort((a, b) => a.day.localeCompare(b.day)),
+      entries: payments.map((p) => ({
+        ...this.toPaymentDto(p),
+        tenantName: p.tenant.name,
+      })),
+    };
+  }
+
+  // ─── Gastos recurrentes (compromisos) ────────────────────────────────────────
+
+  async listRecurringExpenses(includeInactive = false) {
+    await this.generateDueRecurringExpenses();
+    const items = await this.prisma.platformRecurringExpense.findMany({
+      where: includeInactive ? {} : { isActive: true },
+      orderBy: [{ isActive: 'desc' }, { nextChargeAt: 'asc' }],
+      include: {
+        _count: { select: { charges: true } },
+        charges: { select: { amount: true, currency: true } },
+      },
+    });
+    return { items: items.map((item) => this.toRecurringExpenseDto(item)) };
+  }
+
+  async createRecurringExpense(
+    dto: CreateRecurringExpenseDto,
+    actorUserId: string,
+  ) {
+    const startsAt = new Date(dto.startsAt);
+    const endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
+    if (endsAt && endsAt <= startsAt) {
+      throw new BadRequestException('endsAt debe ser posterior a startsAt');
+    }
+
+    const created = await this.prisma.platformRecurringExpense.create({
+      data: {
+        category: dto.category,
+        concept: dto.concept,
+        vendor: dto.vendor,
+        amount: dto.amount,
+        currency: dto.currency ?? 'COP',
+        recurrence: dto.recurrence,
+        startsAt,
+        endsAt,
+        nextChargeAt: startsAt,
+        isActive: true,
+        autoGenerate: dto.autoGenerate ?? true,
+        note: dto.note,
+        createdByUserId: actorUserId,
+      },
+    });
+
+    await this.audit(
+      actorUserId,
+      'platform.finance.recurring.create',
+      'platform_recurring_expense',
+      created.id,
+      null,
+      this.toRecurringExpenseDto(created),
+    );
+
+    // Contratar suele implicar pagar el primer ciclo de una.
+    if (dto.chargeOnCreate !== false) {
+      await this.generateDueRecurringExpenses(created.id);
+    }
+    return this.getRecurringExpense(created.id);
+  }
+
+  async updateRecurringExpense(
+    id: string,
+    dto: UpdateRecurringExpenseDto,
+    actorUserId: string,
+  ) {
+    const current = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+    });
+    if (!current) {
+      throw new NotFoundException(`Recurring expense ${id} not found`);
+    }
+
+    const updated = await this.prisma.platformRecurringExpense.update({
+      where: { id },
+      data: {
+        category: dto.category,
+        concept: dto.concept,
+        vendor: dto.vendor,
+        amount: dto.amount,
+        currency: dto.currency,
+        recurrence: dto.recurrence,
+        endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
+        nextChargeAt: dto.nextChargeAt ? new Date(dto.nextChargeAt) : undefined,
+        isActive: dto.isActive,
+        autoGenerate: dto.autoGenerate,
+        note: dto.note,
+      },
+    });
+
+    await this.audit(
+      actorUserId,
+      'platform.finance.recurring.update',
+      'platform_recurring_expense',
+      id,
+      this.toRecurringExpenseDto(current),
+      this.toRecurringExpenseDto(updated),
+    );
+    return this.getRecurringExpense(id);
+  }
+
+  /**
+   * Dar de baja un compromiso. Los cobros ya generados NO se borran: son plata
+   * que efectivamente salió y deben seguir en el histórico.
+   */
+  async deleteRecurringExpense(id: string, actorUserId: string) {
+    const current = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+    });
+    if (!current) {
+      throw new NotFoundException(`Recurring expense ${id} not found`);
+    }
+
+    await this.prisma.platformRecurringExpense.update({
+      where: { id },
+      data: { isActive: false, autoGenerate: false },
+    });
+    await this.audit(
+      actorUserId,
+      'platform.finance.recurring.cancel',
+      'platform_recurring_expense',
+      id,
+      this.toRecurringExpenseDto(current),
+      { isActive: false },
+    );
+    return { id, isActive: false };
+  }
+
+  private async getRecurringExpense(id: string) {
+    const item = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+      include: {
+        _count: { select: { charges: true } },
+        charges: { select: { amount: true, currency: true } },
+      },
+    });
+    if (!item) throw new NotFoundException(`Recurring expense ${id} not found`);
+    return this.toRecurringExpenseDto(item);
+  }
+
+  /**
+   * Materializa como PlatformExpense todos los cobros vencidos de los
+   * compromisos activos (nextChargeAt <= hoy), avanzando el ciclo hasta
+   * ponerse al día. Idempotente: solo genera lo que aún no existe.
+   */
+  async generateDueRecurringExpenses(onlyId?: string) {
+    const now = new Date();
+    const due = await this.prisma.platformRecurringExpense.findMany({
+      where: {
+        ...(onlyId ? { id: onlyId } : { autoGenerate: true }),
+        isActive: true,
+        nextChargeAt: { lte: now },
+      },
+    });
+    if (due.length === 0) return { generated: 0 };
+
+    let generated = 0;
+    for (const item of due) {
+      let cursor = item.nextChargeAt;
+      let lastCharge = item.lastChargeAt;
+      // Tope de seguridad: nunca más de 120 ciclos por corrida (evita un bucle
+      // infinito si alguien deja un startsAt muy viejo con recurrencia semanal).
+      for (let i = 0; i < 120 && cursor <= now; i += 1) {
+        if (item.endsAt && cursor > item.endsAt) break;
+
+        const periodEnd = this.advanceRecurrence(cursor, item.recurrence);
+        const chargeDate = cursor;
+        const already = await this.prisma.platformExpense.count({
+          where: { recurringExpenseId: item.id, incurredAt: chargeDate },
+        });
+        if (already === 0) {
+          await this.prisma.platformExpense.create({
+            data: {
+              category: item.category,
+              concept: item.concept,
+              vendor: item.vendor,
+              amount: item.amount,
+              currency: item.currency,
+              kind: 'recurring',
+              incurredAt: chargeDate,
+              periodStart: chargeDate,
+              periodEnd,
+              note: item.note,
+              recurringExpenseId: item.id,
+              createdByUserId: item.createdByUserId,
+            },
+          });
+          generated += 1;
+        }
+        lastCharge = chargeDate;
+        cursor = periodEnd;
+      }
+
+      const finished = item.endsAt ? cursor > item.endsAt : false;
+      await this.prisma.platformRecurringExpense.update({
+        where: { id: item.id },
+        data: {
+          nextChargeAt: cursor,
+          lastChargeAt: lastCharge,
+          isActive: !finished,
+        },
+      });
+    }
+
+    return { generated };
+  }
+
+  private toRecurringExpenseDto(
+    item: Prisma.PlatformRecurringExpenseGetPayload<{
+      include?: {
+        _count?: { select: { charges: true } };
+        charges?: { select: { amount: true; currency: true } };
+      };
+    }> & {
+      _count?: { charges: number };
+      charges?: Array<{ amount: number; currency: string }>;
+    },
+  ) {
+    const months = RECURRENCE_MONTHS[item.recurrence] ?? 1;
+    const paidToDate = (item.charges ?? []).reduce(
+      (acc, charge) => acc + charge.amount,
+      0,
+    );
+    return {
+      id: item.id,
+      category: item.category,
+      concept: item.concept,
+      vendor: item.vendor ?? undefined,
+      amount: item.amount,
+      currency: item.currency,
+      recurrence: item.recurrence,
+      /** Costo mensualizado, para comparar compromisos de distinto ciclo. */
+      monthlyAmount: Math.round(item.amount / months),
+      startsAt: item.startsAt.toISOString(),
+      endsAt: item.endsAt?.toISOString(),
+      nextChargeAt: item.nextChargeAt.toISOString(),
+      lastChargeAt: item.lastChargeAt?.toISOString(),
+      isActive: item.isActive,
+      autoGenerate: item.autoGenerate,
+      chargesCount: item._count?.charges ?? 0,
+      /** Plata realmente desembolsada por este compromiso hasta hoy. */
+      paidToDate,
+      note: item.note ?? undefined,
+      createdByUserId: item.createdByUserId,
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
     };
   }
 
@@ -996,9 +1582,13 @@ export class PlatformService {
       data: {
         category: dto.category,
         concept: dto.concept,
+        vendor: dto.vendor,
         amount: dto.amount,
         currency: dto.currency ?? 'COP',
+        kind: dto.kind ?? 'one_time',
         incurredAt: new Date(dto.incurredAt),
+        periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
+        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
         note: dto.note,
         createdByUserId: actorUserId,
       },
@@ -1031,9 +1621,13 @@ export class PlatformService {
       data: {
         category: dto.category,
         concept: dto.concept,
+        vendor: dto.vendor,
         amount: dto.amount,
         currency: dto.currency,
+        kind: dto.kind,
         incurredAt: dto.incurredAt ? new Date(dto.incurredAt) : undefined,
+        periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
+        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
         note: dto.note,
       },
     });
@@ -1334,6 +1928,40 @@ export class PlatformService {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   }
 
+  private addDays(date: Date, days: number): Date {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  /** Descuento = lista − pactado. undefined si no hay precio de lista. */
+  private discountBetween(
+    listPrice: number | null | undefined,
+    agreedPrice: number | null | undefined,
+  ): number | undefined {
+    if (listPrice == null) return undefined;
+    return Math.max(0, listPrice - (agreedPrice ?? listPrice));
+  }
+
+  /** Avanza una fecha un ciclo de recurrencia. */
+  private advanceRecurrence(date: Date, recurrence: string): Date {
+    const next = new Date(date);
+    switch (recurrence) {
+      case 'weekly':
+        next.setDate(next.getDate() + 7);
+        break;
+      case 'quarterly':
+        next.setMonth(next.getMonth() + 3);
+        break;
+      case 'yearly':
+        next.setFullYear(next.getFullYear() + 1);
+        break;
+      default:
+        next.setMonth(next.getMonth() + 1);
+    }
+    return next;
+  }
+
   private moneyTotals(
     groups: Array<{ currency: string; _sum: { amount: number | null } }>,
   ) {
@@ -1385,7 +2013,8 @@ export class PlatformService {
     const [payments, expenses, activeTenants, mrr] = await Promise.all([
       this.prisma.subscriptionPayment.groupBy({
         by: ['currency'],
-        where: { paidAt: { gte: start, lt: end } },
+        // Solo plata real: los bonos/cortesías no mueven la meta de ingresos.
+        where: { paidAt: { gte: start, lt: end }, countsAsRevenue: true },
         _count: true,
         _sum: { amount: true },
       }),
@@ -1413,19 +2042,36 @@ export class PlatformService {
   private toPaymentDto(
     p: Prisma.SubscriptionPaymentGetPayload<Record<string, never>>,
   ) {
+    const isUSD = p.currency === 'USD';
     return {
       id: p.id,
       tenantId: p.tenantId,
+      subscriptionId: p.subscriptionId ?? undefined,
       plan: p.plan,
+      kind: p.kind,
+      countsAsRevenue: p.countsAsRevenue,
       amount: p.amount,
       currency: p.currency,
+      // El FE lee los montos por moneda (amountCOP/USD, officialPrice…), así que
+      // proyectamos el par según la moneda del pago.
+      amountCOP: isUSD ? undefined : p.amount,
+      amountUSD: isUSD ? p.amount : undefined,
+      officialPriceCOP: isUSD ? undefined : (p.officialPrice ?? undefined),
+      officialPriceUSD: isUSD ? (p.officialPrice ?? undefined) : undefined,
+      discountAppliedCOP: isUSD ? undefined : p.discountApplied,
+      discountAppliedUSD: isUSD ? p.discountApplied : undefined,
+      netAmountCOP: isUSD ? undefined : p.amount,
+      netAmountUSD: isUSD ? p.amount : undefined,
+      discountReason: p.discountReason ?? undefined,
       billingCycle: p.billingCycle,
       periodStart: p.periodStart.toISOString(),
       periodEnd: p.periodEnd.toISOString(),
       paidAt: p.paidAt.toISOString(),
       method: p.method,
       reference: p.reference ?? undefined,
+      receiptUrl: p.receiptUrl ?? undefined,
       note: p.note ?? undefined,
+      extendsPeriod: p.extendsPeriod,
       createdByUserId: p.createdByUserId,
       createdAt: p.createdAt.toISOString(),
     };
@@ -1438,9 +2084,14 @@ export class PlatformService {
       id: expense.id,
       category: expense.category,
       concept: expense.concept,
+      vendor: expense.vendor ?? undefined,
       amount: expense.amount,
       currency: expense.currency,
+      kind: expense.kind,
       incurredAt: expense.incurredAt.toISOString(),
+      periodStart: expense.periodStart?.toISOString(),
+      periodEnd: expense.periodEnd?.toISOString(),
+      recurringExpenseId: expense.recurringExpenseId ?? undefined,
       note: expense.note ?? undefined,
       createdByUserId: expense.createdByUserId,
       createdAt: expense.createdAt.toISOString(),
@@ -1476,9 +2127,13 @@ export class PlatformService {
   }
 
   /**
-   * Garantiza que el tenant tenga una suscripción; la crea (TRIALING/manual) si no
-   * existe. Permite que el backoffice gestione la suscripción de cualquier tenant
+   * Garantiza que el tenant tenga una suscripción; la crea (manual) si no existe.
+   * Permite que el backoffice gestione la suscripción de cualquier tenant
    * (incluidos los creados por signup que nunca tuvieron una).
+   *
+   * Si el tenant ya tiene pagos registrados, la reconstruye desde el último pago
+   * (plan, ciclo, periodo, monto → ACTIVE) en vez de inventar un trial: de lo
+   * contrario un tenant que ya pagó aparecería "sin suscripción" o en prueba.
    */
   private async ensureSubscription(
     tx: Prisma.TransactionClient,
@@ -1487,17 +2142,32 @@ export class PlatformService {
   ) {
     const existing = await tx.subscription.findUnique({ where: { tenantId } });
     if (existing) return existing;
+
+    const lastPayment = await tx.subscriptionPayment.findFirst({
+      where: { tenantId },
+      orderBy: { periodEnd: 'desc' },
+    });
+
     const now = new Date();
-    const end = new Date(now);
-    end.setMonth(end.getMonth() + 1);
+    const fallbackEnd = new Date(now);
+    fallbackEnd.setMonth(fallbackEnd.getMonth() + 1);
+
     return tx.subscription.create({
       data: {
         tenantId,
-        plan,
-        status: 'TRIALING',
-        billingCycle: 'monthly',
-        currentPeriodStart: now,
-        currentPeriodEnd: end,
+        plan: lastPayment?.plan ?? plan,
+        status: lastPayment ? 'ACTIVE' : 'TRIALING',
+        billingCycle: lastPayment?.billingCycle ?? 'monthly',
+        currentPeriodStart: lastPayment?.periodStart ?? now,
+        currentPeriodEnd: lastPayment?.periodEnd ?? fallbackEnd,
+        priceCOP:
+          lastPayment && lastPayment.currency === 'COP'
+            ? lastPayment.amount
+            : undefined,
+        priceUSD:
+          lastPayment && lastPayment.currency === 'USD'
+            ? lastPayment.amount
+            : undefined,
         provider: 'manual',
       },
     });
@@ -1559,10 +2229,33 @@ export class PlatformService {
       billingCycle: sub.billingCycle,
       currentPeriodStart: sub.currentPeriodStart.toISOString(),
       currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
+      // Si nunca se fijaron explícitamente, el vencimiento del periodo es la
+      // fecha de pago y la gracia son GRACE_DAYS más.
+      nextPaymentDueAt: (
+        sub.nextPaymentDueAt ?? sub.currentPeriodEnd
+      ).toISOString(),
+      graceEndsAt: (
+        sub.graceEndsAt ?? this.addDays(sub.currentPeriodEnd, GRACE_DAYS)
+      ).toISOString(),
       trialEndsAt: sub.trialEndsAt?.toISOString(),
       canceledAt: sub.canceledAt?.toISOString(),
       priceCOP: sub.priceCOP ?? undefined,
       priceUSD: sub.priceUSD ?? undefined,
+      listPriceCOP: sub.listPriceCOP ?? undefined,
+      listPriceUSD: sub.listPriceUSD ?? undefined,
+      agreedPriceCOP: sub.agreedPriceCOP ?? sub.priceCOP ?? undefined,
+      agreedPriceUSD: sub.agreedPriceUSD ?? sub.priceUSD ?? undefined,
+      // El descuento es derivado: lista − pactado. Nunca se guarda desalineado.
+      discountCOP: this.discountBetween(
+        sub.listPriceCOP,
+        sub.agreedPriceCOP ?? sub.priceCOP,
+      ),
+      discountUSD: this.discountBetween(
+        sub.listPriceUSD,
+        sub.agreedPriceUSD ?? sub.priceUSD,
+      ),
+      discountReason: sub.discountReason ?? undefined,
+      discountApprovedBy: sub.discountApprovedBy ?? undefined,
       provider: sub.provider,
       createdAt: sub.createdAt.toISOString(),
       updatedAt: sub.updatedAt.toISOString(),

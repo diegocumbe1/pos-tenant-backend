@@ -1,9 +1,17 @@
-import { ConflictException, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Client, LocalAuth } from 'whatsapp-web.js';
+import { Client, RemoteAuth } from 'whatsapp-web.js';
 import * as QRCode from 'qrcode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { PrismaService } from '../prisma/prisma.service';
+import { PrismaRemoteAuthStore } from './prisma-remote-auth.store';
 
 export type SessionStatus =
   | 'idle'
@@ -30,7 +38,9 @@ const safeClientId = (tenantId: string, branchId: string) =>
   `${tenantId}_${branchId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 @Injectable()
-export class WhatsAppSessionManager implements OnModuleDestroy {
+export class WhatsAppSessionManager
+  implements OnModuleDestroy, OnApplicationBootstrap
+{
   private readonly logger = new Logger(WhatsAppSessionManager.name);
   private readonly sessions = new Map<string, SessionState>();
   private readonly dataPath = process.env.WA_SESSION_DIR
@@ -39,8 +49,43 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
   private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
   private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 1);
+  // Respaldo periódico de la sesión a DB (RemoteAuth). Mínimo permitido: 60s.
+  private readonly backupSyncIntervalMs = Math.max(
+    60000,
+    Number(process.env.WA_BACKUP_SYNC_MS ?? 1800000),
+  );
 
-  constructor(private readonly events: EventEmitter2) {}
+  constructor(
+    private readonly events: EventEmitter2,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  // Reconecta al arrancar las sesiones ya guardadas en DB (sin QR). Así WhatsApp
+  // sigue conectado tras redeploys/reinicios, en cualquier ambiente.
+  async onApplicationBootstrap() {
+    try {
+      const saved = await this.prisma.whatsappSession.findMany({
+        where: { data: { not: null } },
+        select: { tenantId: true, branchId: true },
+        orderBy: { updatedAt: 'desc' },
+        take: this.maxActiveSessions,
+      });
+      for (const s of saved) {
+        this.logger.log(
+          `Restaurando sesión WhatsApp guardada: ${s.tenantId}/${s.branchId}`,
+        );
+        await this.pair(s.tenantId, s.branchId).catch((err) =>
+          this.logger.warn(
+            `No se pudo restaurar ${s.tenantId}/${s.branchId}: ${(err as Error).message}`,
+          ),
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Restore-on-boot de WhatsApp falló: ${(err as Error).message}`,
+      );
+    }
+  }
 
   async onModuleDestroy() {
     for (const [key, state] of this.sessions) {
@@ -127,10 +172,19 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     fs.mkdirSync(this.dataPath, { recursive: true });
 
     const headless = (process.env.WA_PUPPETEER_HEADLESS ?? 'true') !== 'false';
+    const clientId = safeClientId(tenantId, branchId);
     const client = new Client({
-      authStrategy: new LocalAuth({
-        clientId: safeClientId(tenantId, branchId),
+      // Sesión persistida en DB (sobrevive redeploys, igual en local/prod).
+      authStrategy: new RemoteAuth({
+        clientId,
         dataPath: this.dataPath,
+        backupSyncIntervalMs: this.backupSyncIntervalMs,
+        store: new PrismaRemoteAuthStore(
+          this.prisma,
+          clientId,
+          tenantId,
+          branchId,
+        ),
       }),
       puppeteer: {
         headless,
@@ -203,6 +257,19 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       state.status = 'ready';
       state.phoneNumber = client.info?.wid?.user;
       this.emit(tenantId, branchId, state);
+      // Guarda el número (best-effort; la fila la crea el primer backup del store).
+      if (state.phoneNumber) {
+        this.prisma.whatsappSession
+          .updateMany({
+            where: { clientId },
+            data: { phoneNumber: state.phoneNumber },
+          })
+          .catch(() => undefined);
+      }
+    });
+
+    client.on('remote_session_saved', () => {
+      this.logger.debug(`WhatsApp session persisted to DB for ${key}`);
     });
 
     client.on('auth_failure', (msg) => {
@@ -215,8 +282,25 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     client.on('disconnected', (reason) => {
       this.clearTimeouts(state);
       state.status = 'disconnected';
-      state.lastError = reason;
+      state.lastError = String(reason);
       this.emit(tenantId, branchId, state);
+
+      // Si el usuario desvinculó el dispositivo DESDE EL CELULAR (logout/unpaired),
+      // la sesión murió: se limpia la persistencia en DB para no intentar
+      // reconectarla al arrancar y para que la UI pida un QR nuevo.
+      const terminal = ['LOGOUT', 'UNPAIRED', 'UNPAIRED_IDLE', 'CONFLICT'];
+      const isTerminal = terminal.includes(String(reason).toUpperCase());
+      void this.destroyClient(key, state, { remove: true }).then(() => {
+        if (isTerminal) {
+          this.prisma.whatsappSession
+            .delete({ where: { clientId } })
+            .catch(() => undefined);
+          for (const dir of this.localSessionDirs(clientId)) {
+            if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+          }
+          this.events.emit('wa.status', { tenantId, branchId, status: 'idle' });
+        }
+      });
     });
 
     setImmediate(() => {
@@ -239,15 +323,27 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       await this.destroyClient(key, state, { logout: true });
     }
 
-    const sessionDir = this.getSessionDir(tenantId, branchId);
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
+    // Borra la sesión persistida en DB (idempotente) + carpetas temporales locales.
+    const clientId = safeClientId(tenantId, branchId);
+    await this.prisma.whatsappSession
+      .delete({ where: { clientId } })
+      .catch(() => undefined);
+    for (const dir of this.localSessionDirs(clientId)) {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
     }
     this.events.emit('wa.status', { tenantId, branchId, status: 'idle' });
   }
 
+  // Carpetas de trabajo locales de RemoteAuth (efímeras; la fuente real es la DB).
+  private localSessionDirs(clientId: string): string[] {
+    return [
+      path.join(this.dataPath, `RemoteAuth-${clientId}`),
+      path.join(this.dataPath, `wwebjs_temp_session_${clientId}`),
+    ];
+  }
+
   private getSessionDir(tenantId: string, branchId: string) {
-    return path.join(this.dataPath, `session-${safeClientId(tenantId, branchId)}`);
+    return path.join(this.dataPath, `RemoteAuth-${safeClientId(tenantId, branchId)}`);
   }
 
   private emit(tenantId: string, branchId: string, state: SessionState) {

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -53,5 +54,12 @@ export class BarberCustomersController {
     @Body() dto: UpdateBarberCustomerDto,
   ) {
     return this.customersService.updateCustomer(ctx, id, dto);
+  }
+
+  // Borrado en cascada (cliente + sus citas). Control del dueño del tenant.
+  @Delete(':id')
+  @RequirePermissions('barber:customers:write')
+  remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.customersService.deleteCustomer(ctx, id);
   }
 }

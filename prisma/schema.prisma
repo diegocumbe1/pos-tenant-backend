@@ -12,26 +12,26 @@ datasource db {
 // ─── Multi-tenancy Core ───────────────────────────────────────────────────────
 
 model Tenant {
-  id               String            @id
-  name             String
-  documentId       String?
-  plan             String            @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
-  verticalId       String?
-  vertical         BusinessVertical? @relation(fields: [verticalId], references: [id])
-  planId           String?
-  planRef          SubscriptionPlan? @relation(fields: [planId], references: [id])
+  id                   String                @id
+  name                 String
+  documentId           String?
+  plan                 String                @default("BASIC") // "BASIC" | "PRO" | "PREMIUM"
+  verticalId           String?
+  vertical             BusinessVertical?     @relation(fields: [verticalId], references: [id])
+  planId               String?
+  planRef              SubscriptionPlan?     @relation(fields: [planId], references: [id])
   // Estado operativo de la cuenta (controla el acceso a la app del tenant).
-  status           TenantStatus      @default(ACTIVE)
+  status               TenantStatus          @default(ACTIVE)
   // Overrides de features por tenant (espeja Tenant.featureOverrides del FE).
   // Pisan el default del plan. null = sin overrides (hereda del plan).
-  featureOverrides Json?
+  featureOverrides     Json?
   // Suscripción comercial vigente (entidad propia).
-  subscription     Subscription?
+  subscription         Subscription?
   subscriptionPayments SubscriptionPayment[]
   billingContacts      BillingContact[]
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  deletedAt        DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  deletedAt            DateTime?
 
   users                User[]
   branches             Branch[]
@@ -120,16 +120,16 @@ model VerticalPlan {
 }
 
 model Branch {
-  id        String   @id
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  name      String
-  address   String?
-  phone     String?
+  id          String   @id
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  address     String?
+  phone       String?
   // Datos de pago del negocio (cuenta bancaria, Nequi/Daviplata, QR) que salen
   // en el POS al cobrar y en el recibo. JSON con forma BranchPaymentInfo (FE).
   paymentInfo Json?
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   products             Product[]
   categories           ProductCategory[]
@@ -539,19 +539,19 @@ model BarberAppointment {
 // ─── Users & RBAC ────────────────────────────────────────────────────────────
 
 model User {
-  id            String    @id // mapea a auth.users.id de Supabase (UUID)
-  tenantId      String? // NULL solo para ROOT
-  tenant        Tenant?   @relation(fields: [tenantId], references: [id])
-  email         String    @unique
-  name          String
-  roleId        String
-  role          Role      @relation(fields: [roleId], references: [id])
+  id              String    @id // mapea a auth.users.id de Supabase (UUID)
+  tenantId        String? // NULL solo para ROOT
+  tenant          Tenant?   @relation(fields: [tenantId], references: [id])
+  email           String    @unique
+  name            String
+  roleId          String
+  role            Role      @relation(fields: [roleId], references: [id])
   // Identidad de plataforma (super-admin de Lynko). NO es un rol de tenant.
-  isPlatformAdmin Boolean @default(false)
-  isActive      Boolean   @default(true)
-  invitedAt     DateTime?
-  passwordSetAt DateTime?
-  createdAt     DateTime  @default(now())
+  isPlatformAdmin Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  invitedAt       DateTime?
+  passwordSetAt   DateTime?
+  createdAt       DateTime  @default(now())
 
   orders               Order[]                  @relation("waiters")
   userBranches         UserBranch[]
@@ -851,11 +851,11 @@ model MenuPublicConfig {
 // ─── Áreas ────────────────────────────────────────────────────────────────────
 
 model Area {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
   branchId  String
-  branch    Branch   @relation(fields: [branchId], references: [id])
+  branch    Branch    @relation(fields: [branchId], references: [id])
   name      String
   emoji     String?
   createdAt DateTime  @default(now())
@@ -873,13 +873,13 @@ model Area {
 // ─── Mesas ────────────────────────────────────────────────────────────────────
 
 model RestaurantTable {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
   branchId  String
-  branch    Branch   @relation(fields: [branchId], references: [id])
+  branch    Branch    @relation(fields: [branchId], references: [id])
   areaId    String?
-  area      Area?    @relation(fields: [areaId], references: [id])
+  area      Area?     @relation(fields: [areaId], references: [id])
   code      String
   seats     Int
   shape     String    @default("SQUARE") // "SQUARE" | "RECTANGLE" | "ROUND"
@@ -1082,10 +1082,14 @@ model Expense {
   tenant     Tenant   @relation(fields: [tenantId], references: [id])
   branchId   String
   branch     Branch   @relation(fields: [branchId], references: [id])
-  category   String // "rent" | "utilities" | "supplies" | "marketing" | "other"
+  category   String // categoría de egreso (payroll, rent, platform, utilities, supplies, ...)
   concept    String
   amountCOP  Int
   incurredAt DateTime
+  // Recurrencia: distingue gastos fijos/recurrentes de gastos únicos.
+  frequency   ExpenseFrequency @default(ONE_TIME)
+  isRecurring Boolean          @default(false)
+  dueDate     DateTime? // próxima fecha de causación para recurrentes
   note       String?
   createdAt  DateTime @default(now())
 
@@ -1097,18 +1101,18 @@ model Expense {
 }
 
 model Payroll {
-  id          String    @id @default(cuid())
-  tenantId    String
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  branchId    String
-  branch      Branch    @relation(fields: [branchId], references: [id])
+  id            String       @id @default(cuid())
+  tenantId      String
+  tenant        Tenant       @relation(fields: [tenantId], references: [id])
+  branchId      String
+  branch        Branch       @relation(fields: [branchId], references: [id])
   userId        String?
   staffName     String
   role          String
-  periodMonth   String       // "YYYY-MM"
+  periodMonth   String // "YYYY-MM"
   payFrequency  PayFrequency @default(MONTHLY)
-  grossCOP      Int          // bruto por período de pago (base + bonos)
-  netCOP        Int          // neto por período de pago
+  grossCOP      Int // bruto por período de pago (base + bonos)
+  netCOP        Int // neto por período de pago
   bonusesCOP    Int          @default(0)
   deductionsCOP Int          @default(0)
   paidAt        DateTime?
@@ -1121,9 +1125,39 @@ model Payroll {
 }
 
 enum PayFrequency {
+  DAILY // diario
   WEEKLY // semanal
   BIWEEKLY // quincenal
   MONTHLY // mensual
+}
+
+enum ContractType {
+  FIXED // valor fijo por período
+  FIXED_PLUS_BONUS // fijo + bonificaciones
+  HOURLY // por horas
+  COMMISSION // por comisión (barber)
+}
+
+enum LedgerEntryType {
+  PAYMENT // pago realizado
+  ADVANCE // adelanto
+  LOAN // préstamo
+  BONUS // incentivo / abono
+  DEDUCTION // descuento
+}
+
+enum PaymentMethod {
+  CASH // efectivo
+  TRANSFER // transferencia a cuenta registrada
+}
+
+enum ExpenseFrequency {
+  ONE_TIME // único
+  DAILY
+  WEEKLY
+  BIWEEKLY // quincenal
+  MONTHLY
+  ANNUAL
 }
 
 model FinanceGoal {
@@ -1132,9 +1166,13 @@ model FinanceGoal {
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
   branchId    String
   branch      Branch   @relation(fields: [branchId], references: [id])
-  periodMonth String // "YYYY-MM"
+  periodMonth String // "YYYY-MM" (ancla del período; para semanal/quincenal es el mes de inicio)
   metric      String // "revenue" | "profit"
   targetCOP   Int
+  // Tipo de período y rango explícito (para pacing semanal/quincenal/mensual).
+  periodType  String    @default("MONTHLY") // "MONTHLY" | "WEEKLY" | "BIWEEKLY"
+  periodStart DateTime?
+  periodEnd   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -1519,13 +1557,27 @@ model Subscription {
   billingCycle       BillingCycle       @default(monthly)
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime
+  nextPaymentDueAt   DateTime?
+  graceEndsAt        DateTime? // nextPaymentDueAt + ventana de gracia
   trialEndsAt        DateTime?
   canceledAt         DateTime?
+  // priceCOP/priceUSD = precio VIGENTE (el que se cobra). Se mantienen como
+  // fuente legacy y siempre reflejan agreedPrice*.
   priceCOP           Int?
   priceUSD           Int?
+  // Términos comerciales: precio de lista vs precio pactado. El descuento es la
+  // diferencia y NO es un gasto — es ingreso que se deja de percibir (§finanzas).
+  listPriceCOP       Int?
+  listPriceUSD       Int?
+  agreedPriceCOP     Int?
+  agreedPriceUSD     Int?
+  discountReason     String? // 'cliente fundador', 'bono 2 meses', …
+  discountApprovedBy String?
   provider           String             @default("manual") // 'manual' | 'stripe' | 'mercadopago'
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
+
+  payments SubscriptionPayment[]
 
   @@index([status])
   @@map("subscriptions")
@@ -1535,24 +1587,42 @@ model Subscription {
 // Un pago cubre un periodo [periodStart, periodEnd]; si periodEnd es futuro y
 // abarca varios ciclos, es un PAGO ANTICIPADO. Ver §3.6.
 model SubscriptionPayment {
-  id              String       @id @default(cuid())
-  tenantId        String
-  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  plan            String // plan vigente al momento del pago
-  amount          Int // monto entero
+  id             String        @id @default(cuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  plan           String // plan vigente al momento del pago
+  // kind distingue plata que entró de cortesías que no entraron:
+  //   'payment' → cobro real            (countsAsRevenue = true)
+  //   'bonus'   → mes regalado/cortesía (countsAsRevenue = false, amount 0)
+  //   'credit'  → nota crédito/ajuste   (countsAsRevenue = false)
+  kind            String       @default("payment")
+  countsAsRevenue Boolean      @default(true)
+  // amount = plata efectivamente recibida (neto). officialPrice = precio de lista
+  // del plan al momento del cobro; discountApplied = lo que se dejó de cobrar.
+  // Invariante: officialPrice - discountApplied = amount.
+  amount          Int
+  officialPrice   Int?
+  discountApplied Int          @default(0)
+  discountReason  String?
   currency        String       @default("COP") // 'COP' | 'USD'
   billingCycle    BillingCycle @default(monthly)
   periodStart     DateTime
   periodEnd       DateTime
-  paidAt          DateTime     @default(now())
+  paidAt          DateTime     @default(now()) // fecha de caja: define en qué periodo suma
   method          String       @default("manual") // 'cash' | 'transfer' | 'card' | 'manual' | …
   reference       String?
+  receiptUrl      String?
   note            String?
+  extendsPeriod   Boolean      @default(true)
   createdByUserId String // platform admin que registró el pago
   createdAt       DateTime     @default(now())
 
   @@index([tenantId, paidAt])
   @@index([paidAt])
+  @@index([subscriptionId])
+  @@index([countsAsRevenue, paidAt])
   @@map("subscription_payments")
 }
 
@@ -1579,14 +1649,29 @@ model BillingContact {
 // Finanzas internas de la plataforma Lynko (NO tenant-scoped).
 // Se usan en el backoffice super-admin para organizar gastos propios,
 // metas comerciales y seguimiento financiero cross-tenant.
+// Un PlatformExpense es SIEMPRE una salida de plata real en una fecha
+// (incurredAt). Los gastos recurrentes se declaran una vez en
+// PlatformRecurringExpense y generan aquí un registro por cada cobro, para que
+// el acumulado histórico sea plata realmente gastada y no una proyección.
 model PlatformExpense {
-  id              String   @id @default(cuid())
-  category        String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
-  concept         String
-  amount          Int
-  currency        String   @default("COP") // 'COP' | 'USD'
-  incurredAt      DateTime
-  note            String?
+  id       String  @id @default(cuid())
+  category String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
+  concept  String
+  vendor   String? // 'Vercel', 'Namecheap', 'Meta Ads', …
+  amount   Int
+  currency String  @default("COP") // 'COP' | 'USD'
+  // 'one_time' = compra puntual · 'recurring' = cobro de un contrato recurrente
+  kind     String  @default("one_time")
+  // Periodo que cubre el gasto (dominio anual: 1 año). Solo informativo: el
+  // gasto suma completo en incurredAt (base caja), no se prorratea.
+  periodStart DateTime?
+  periodEnd   DateTime?
+  incurredAt  DateTime
+  note        String?
+
+  recurringExpenseId String?
+  recurringExpense   PlatformRecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: SetNull)
+
   createdByUserId String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -1595,7 +1680,41 @@ model PlatformExpense {
   @@index([incurredAt, currency])
   @@index([category, currency, incurredAt])
   @@index([category])
+  @@index([recurringExpenseId])
   @@map("platform_expenses")
+}
+
+// Compromiso de gasto recurrente (infra, dominio, herramientas, ads).
+// Define QUÉ se paga, CADA CUÁNTO y HASTA CUÁNDO; cada cobro efectivo se
+// materializa como PlatformExpense vía generateDueRecurringExpenses().
+model PlatformRecurringExpense {
+  id         String  @id @default(cuid())
+  category   String
+  concept    String
+  vendor     String?
+  amount     Int
+  currency   String  @default("COP")
+  // 'monthly' | 'quarterly' | 'yearly' | 'weekly'
+  recurrence String  @default("monthly")
+
+  startsAt     DateTime
+  endsAt       DateTime? // null = indefinido (hasta que se cancele)
+  nextChargeAt DateTime // próxima fecha de cobro pendiente de generar
+  lastChargeAt DateTime?
+  isActive     Boolean   @default(true)
+  // true = al abrir el backoffice se generan los cobros vencidos automáticamente
+  autoGenerate Boolean   @default(true)
+
+  note            String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  charges PlatformExpense[]
+
+  @@index([isActive, nextChargeAt])
+  @@index([category])
+  @@map("platform_recurring_expenses")
 }
 
 model PlatformFinanceGoal {
@@ -1627,4 +1746,86 @@ model PlatformAuditLog {
   @@index([targetType, targetId])
   @@index([createdAt])
   @@map("platform_audit_logs")
+}
+
+// ─── Compensación de staff / Nómina (agnóstico de vertical) ───────────────────
+// staffId apunta a User.id (restaurante) o BarberStaff.id (barber) según `source`.
+// Sin FK dura porque referencia dos tablas; se valida en el service.
+
+model StaffCompensation {
+  id                     String       @id @default(cuid())
+  tenantId               String
+  branchId               String?
+  staffId                String
+  source                 String // 'tenant_user' | 'specialist'
+  contractType           ContractType
+  payFrequency           PayFrequency
+  baseAmount             Int          @default(0) // COP por período
+  defaultBonuses         Int? // FIXED_PLUS_BONUS
+  hourlyRate             Int? // HOURLY
+  expectedHoursPerPeriod Int? // HOURLY
+  commissionPercent      Int? // COMMISSION (0-100)
+  notes                  String?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  @@unique([tenantId, staffId])
+  @@index([tenantId, branchId])
+  @@map("staff_compensations")
+}
+
+model RoleCompensationTemplate {
+  id                     String       @id @default(cuid())
+  tenantId               String
+  role                   String // 'OWNER' | ... | 'SPECIALIST' | custom
+  contractType           ContractType
+  payFrequency           PayFrequency
+  baseAmount             Int          @default(0)
+  defaultBonuses         Int?
+  hourlyRate             Int?
+  expectedHoursPerPeriod Int?
+  commissionPercent      Int?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+
+  @@unique([tenantId, role])
+  @@map("role_compensation_templates")
+}
+
+// Sesión de WhatsApp (whatsapp-web.js RemoteAuth) persistida en DB.
+// `data` = zip de credenciales de la sesión. Sobrevive redeploys y funciona
+// igual en local/prod (no depende del filesystem del contenedor).
+model WhatsappSession {
+  clientId  String   @id // safeClientId(tenantId, branchId)
+  tenantId  String
+  branchId  String
+  data      Bytes? // archivo de sesión comprimido (RemoteAuth)
+  phoneNumber String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, branchId])
+  @@map("whatsapp_sessions")
+}
+
+model StaffLedgerEntry {
+  id        String          @id @default(cuid())
+  tenantId  String
+  branchId  String?
+  staffId   String
+  staffName String // snapshot para histórico
+  type      LedgerEntryType
+  amount    Int // COP
+  period    String // "YYYY-MM"
+  // Solo aplica a PAYMENT/ADVANCE/LOAN (salida de dinero).
+  method       PaymentMethod?
+  accountLabel String? // cuenta usada en TRANSFER (ej. "Bancolombia ***1234", "Nequi 300...")
+  // Rango que cubre este pago (opcional): "de qué fecha a qué fecha".
+  coversFrom   DateTime?
+  coversTo     DateTime?
+  note      String?
+  date      DateTime        @default(now())
+
+  @@index([tenantId, staffId, period])
+  @@map("staff_ledger_entries")
 }

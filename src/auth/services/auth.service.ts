@@ -225,6 +225,25 @@ export class AuthService {
         data: { id: branchId, tenantId, name: branchName },
       });
 
+      // Todo tenant nace con suscripción (TRIALING, 1 mes): sin ella el
+      // backoffice mostraba la cuenta como "sin suscripción registrada" aunque
+      // ya tuviera pagos.
+      const periodEnd = new Date();
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+      await tx.subscription.create({
+        data: {
+          tenantId,
+          plan: selectedPlan.code,
+          status: 'TRIALING',
+          billingCycle: 'monthly',
+          currentPeriodStart: new Date(),
+          currentPeriodEnd: periodEnd,
+          trialEndsAt: periodEnd,
+          priceCOP: selectedPlan.priceCOP || undefined,
+          provider: 'manual',
+        },
+      });
+
       await tx.menuPublicConfig.create({
         data: {
           tenantId,

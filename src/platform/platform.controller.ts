@@ -23,6 +23,7 @@ import { PlatformActor } from './decorators/platform-actor.decorator';
 import {
   CreatePlatformExpenseDto,
   CreatePaymentDto,
+  CreateRecurringExpenseDto,
   PlatformFinanceMonthQueryDto,
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
@@ -33,6 +34,7 @@ import {
   UpdatePlatformExpenseDto,
   UpdatePlanDto,
   UpdatePlatformFinanceGoalDto,
+  UpdateRecurringExpenseDto,
   UpdateSubscriptionDto,
   UpsertBillingContactDto,
   UpsertPlatformFinanceGoalDto,
@@ -79,10 +81,70 @@ export class PlatformController {
     return this.platform.getPlatformFinanceDashboard(query);
   }
 
+  @Get('finance/income')
+  @ApiOperation({
+    summary:
+      'Income ledger: every payment by date (cash basis) + daily series + gross/discount/net totals',
+  })
+  listPlatformIncome(@Query() query: PlatformFinanceQueryDto) {
+    return this.platform.listPlatformIncome(query);
+  }
+
   @Get('finance/expenses')
   @ApiOperation({ summary: 'List platform internal expenses' })
   listPlatformExpenses(@Query() query: PlatformFinanceQueryDto) {
     return this.platform.listPlatformExpenses(query);
+  }
+
+  // ─── Gastos recurrentes (compromisos) ────────────────────────────────────────
+
+  @Get('finance/recurring-expenses')
+  @ApiOperation({
+    summary: 'List recurring expense commitments (infra, domains, ads…)',
+  })
+  @ApiQuery({ name: 'includeInactive', required: false, example: false })
+  listRecurringExpenses(@Query('includeInactive') includeInactive?: string) {
+    return this.platform.listRecurringExpenses(includeInactive === 'true');
+  }
+
+  @Post('finance/recurring-expenses')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a recurring expense commitment' })
+  createRecurringExpense(
+    @Body() dto: CreateRecurringExpenseDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.createRecurringExpense(dto, actor.id);
+  }
+
+  @Patch('finance/recurring-expenses/:id')
+  @ApiOperation({ summary: 'Update a recurring expense commitment' })
+  updateRecurringExpense(
+    @Param('id') id: string,
+    @Body() dto: UpdateRecurringExpenseDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.updateRecurringExpense(id, dto, actor.id);
+  }
+
+  @Delete('finance/recurring-expenses/:id')
+  @ApiOperation({
+    summary: 'Cancel a commitment (keeps the charges already paid)',
+  })
+  deleteRecurringExpense(
+    @Param('id') id: string,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.deleteRecurringExpense(id, actor.id);
+  }
+
+  @Post('finance/recurring-expenses/run')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Materialize all due recurring charges as expenses',
+  })
+  runRecurringExpenses() {
+    return this.platform.generateDueRecurringExpenses();
   }
 
   @Post('finance/expenses')
