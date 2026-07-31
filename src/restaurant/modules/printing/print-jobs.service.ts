@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -27,6 +28,22 @@ const TARGET_BY_DOC: Record<PrintDocumentType, PrinterTarget> = {
 
 const DEFAULT_CANCEL_REASON = 'CANCELLED_BY_USER';
 
+/**
+ * Un job pendiente caduca a los 15 min: una comanda de cocina vieja no debe
+ * imprimirse nunca (y sin esta ventana el agente reenvía la misma cola muerta
+ * en cada poll, que fue lo que disparó el egress de Supabase).
+ */
+const PENDING_TTL_MS = Number(process.env.PRINT_JOB_TTL_MS ?? 15 * 60_000);
+/** Retención del histórico (ACK/FAILED) antes de purgarse. */
+const HISTORY_RETENTION_DAYS = Number(
+  process.env.PRINT_JOB_RETENTION_DAYS ?? 30,
+);
+/** Máximo de jobs devueltos por poll: cota dura al tamaño de la respuesta. */
+const PENDING_PAGE_SIZE = 50;
+/** Frecuencia máxima del mantenimiento best-effort disparado por el polling. */
+const MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+const EXPIRED_REASON = 'EXPIRED_TTL';
+
 export interface EnqueueParams {
   tenantId: string;
   branchId: string;
@@ -38,6 +55,9 @@ export interface EnqueueParams {
 
 @Injectable()
 export class PrintJobsService {
+  private readonly logger = new Logger(PrintJobsService.name);
+  private lastMaintenanceAt = 0;
+
   constructor(private readonly prisma: PrismaService) {}
 
   // ─── Lecturas ────────────────────────────────────────────────────────────
@@ -69,14 +89,21 @@ export class PrintJobsService {
   /**
    * Jobs encolados para el agente local. Incluye los datos de la impresora
    * (conexión, ip, puerto, papel) para que el agente sepa a dónde abrir el TCP.
+   *
+   * Solo devuelve los encolados dentro de la ventana `PENDING_TTL_MS`: lo más
+   * viejo se considera caducado y nunca se imprime. Aprovecha el poll para
+   * lanzar el mantenimiento (caducar + purgar) sin depender de un cron.
    */
   async findPending(ctx: TenantContext) {
+    void this.runMaintenance();
     const jobs = await this.prisma.printJob.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         status: PrintJobStatus.QUEUED,
+        createdAt: { gte: new Date(Date.now() - PENDING_TTL_MS) },
       },
+      take: PENDING_PAGE_SIZE,
       include: {
         printer: {
           select: {
@@ -108,6 +135,48 @@ export class PrintJobsService {
           : undefined,
       })),
     };
+  }
+
+  /**
+   * Mantenimiento best-effort disparado por el propio polling (así no hace
+   * falta `@nestjs/schedule` ni un worker aparte): marca como FAILED los
+   * pendientes caducados y borra el histórico más viejo que la retención.
+   * Corre como mucho una vez cada `MAINTENANCE_INTERVAL_MS` por instancia y
+   * nunca rompe la petición del agente si falla.
+   */
+  private async runMaintenance() {
+    const now = Date.now();
+    if (now - this.lastMaintenanceAt < MAINTENANCE_INTERVAL_MS) return;
+    this.lastMaintenanceAt = now;
+
+    try {
+      const expired = await this.prisma.printJob.updateMany({
+        where: {
+          status: PrintJobStatus.QUEUED,
+          createdAt: { lt: new Date(now - PENDING_TTL_MS) },
+        },
+        data: { status: PrintJobStatus.FAILED, lastError: EXPIRED_REASON },
+      });
+
+      const purged = await this.prisma.printJob.deleteMany({
+        where: {
+          status: { in: [PrintJobStatus.ACK, PrintJobStatus.FAILED] },
+          createdAt: {
+            lt: new Date(now - HISTORY_RETENTION_DAYS * 24 * 60 * 60_000),
+          },
+        },
+      });
+
+      if (expired.count || purged.count) {
+        this.logger.log(
+          `Mantenimiento print jobs: ${expired.count} caducados, ${purged.count} purgados`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Mantenimiento de print jobs falló: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ─── Transiciones de estado (agente local) ───────────────────────────────
