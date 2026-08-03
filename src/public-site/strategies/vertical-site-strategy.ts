@@ -147,6 +147,14 @@ export interface VerticalSiteStrategy {
     branchId: string;
   }): Promise<PublicCatalogCategory[]>;
 
+  /**
+   * Section types this vertical never renders, aunque existan como filas en la
+   * base. Los sitios creados con semillas anteriores conservan secciones que ya
+   * no aplican (una tienda con "Servicios"), y filtrarlas aquí las quita del
+   * payload público y del editor sin necesidad de migrar datos.
+   */
+  unsupportedSectionTypes(): Set<string>;
+
   /** Slugs that may not be used as a public-site slug for this vertical. */
   reservedSlugs(): Set<string>;
 

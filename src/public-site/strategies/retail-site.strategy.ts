@@ -167,6 +167,11 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
       }));
   }
 
+  /** Una tienda no agenda: ni servicios ni CTA de reserva. */
+  unsupportedSectionTypes(): Set<string> {
+    return new Set(['services', 'booking_cta']);
+  }
+
   reservedSlugs(): Set<string> {
     return RESERVED_RETAIL_SLUGS;
   }

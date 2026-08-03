@@ -8,7 +8,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicSiteService } from '../public-site/barber-public-site.service';
+import { PublicSiteService } from '../../../public-site/admin/public-site.service';
 import { BarberPublicService } from './barber-public.service';
 import {
   CreatePublicAppointmentDto,

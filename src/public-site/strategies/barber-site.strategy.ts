@@ -175,6 +175,11 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
     return Promise.resolve([]);
   }
 
+  /** Barbería no vende catálogo de productos. */
+  unsupportedSectionTypes(): Set<string> {
+    return new Set(['catalog']);
+  }
+
   reservedSlugs(): Set<string> {
     return RESERVED_BOOKING_SLUGS;
   }

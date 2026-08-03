@@ -28,6 +28,15 @@ export class VerticalSiteStrategyResolver {
     return Boolean(code) && this.byCode.has(code as string);
   }
 
+  /**
+   * Tipos de sección que la vertical no renderiza. Lookup síncrono por código
+   * para poder filtrar al armar el payload, sin resolver el tenant otra vez.
+   */
+  unsupportedSectionTypes(code?: string | null): Set<string> {
+    const strategy = code ? this.byCode.get(code) : undefined;
+    return strategy?.unsupportedSectionTypes() ?? new Set<string>();
+  }
+
   /** Resolve the strategy for a tenant, throwing if its vertical is unsupported. */
   async resolveForTenant(tenantId: string): Promise<VerticalSiteStrategy> {
     const tenant = await this.prisma.tenant.findUnique({
