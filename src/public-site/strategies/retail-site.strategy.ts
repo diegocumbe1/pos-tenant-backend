@@ -49,16 +49,14 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
           width: 'full',
           density: 'immersive',
           title: seed.tenant.name,
-          subtitle: 'Celulares, accesorios y servicio técnico.',
+          // Copy neutral: cada tienda lo edita. No asumir un rubro (antes decía
+          // "Celulares, accesorios y servicio técnico", que solo aplica a una).
+          subtitle: 'Conoce nuestro catálogo y pide por WhatsApp.',
           ctaLabel: 'Pedir por WhatsApp',
           ctaAction: 'open_whatsapp',
         },
-        {
-          type: 'services',
-          sortOrder: 20,
-          title: 'Servicios',
-          subtitle: 'Lo que hacemos por ti.',
-        },
+        // Sin sección de servicios: una tienda no agenda servicios, vende
+        // productos agrupados por categoría. Eso lo cubre `catalog`.
         {
           type: 'catalog',
           sortOrder: 30,
@@ -147,11 +145,26 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
             priceCOP: true,
             emoji: true,
             imageUrls: true,
+            stock: true,
+            trackStock: true,
           },
         },
       },
     });
-    return categories.filter((category) => category.products.length > 0);
+
+    return categories
+      .filter((category) => category.products.length > 0)
+      .map((category) => ({
+        ...category,
+        products: category.products.map(
+          ({ trackStock, stock, ...product }) => ({
+            ...product,
+            // Sin control de stock (servicios) → siempre disponible.
+            stock: trackStock ? stock : null,
+            inStock: trackStock ? stock > 0 : true,
+          }),
+        ),
+      }));
   }
 
   reservedSlugs(): Set<string> {

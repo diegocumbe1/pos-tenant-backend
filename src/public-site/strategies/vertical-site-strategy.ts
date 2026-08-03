@@ -93,6 +93,13 @@ export type PublicCatalogCategory = {
     priceCOP: number;
     emoji: string | null;
     imageUrls: string[];
+    /**
+     * Disponibilidad publicada. `stock` es null cuando el ítem no controla
+     * existencias (servicios): siempre se puede pedir. Nunca se expone costo
+     * ni margen — el sitio es público.
+     */
+    stock: number | null;
+    inStock: boolean;
   }>;
 };
 

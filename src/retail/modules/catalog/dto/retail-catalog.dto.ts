@@ -3,9 +3,11 @@ import {
   IsArray,
   IsBoolean,
   IsInt,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -85,6 +87,32 @@ export class CreateRetailProductDto {
   @IsInt()
   @Min(0)
   priceCOP!: number;
+
+  @ApiPropertyOptional({
+    example: 35,
+    description: '% de ganancia sobre el precio con el que se sugirió priceCOP',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(99)
+  saleMarginPct?: number;
+
+  @ApiPropertyOptional({
+    example: 32000,
+    description: 'Piso de negociación. Solo lo edita el admin.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  minPriceCOP?: number;
+
+  @ApiPropertyOptional({ example: 50, description: '% de ganancia mínima' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(99)
+  minMarginPct?: number;
 
   @ApiPropertyOptional({ example: '🛡️' })
   @IsOptional()

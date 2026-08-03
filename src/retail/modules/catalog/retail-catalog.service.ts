@@ -187,6 +187,9 @@ export class RetailCatalogService {
             description: dto.description,
             costCOP: dto.costCOP ?? 0,
             priceCOP: dto.priceCOP,
+            saleMarginPct: dto.saleMarginPct,
+            minPriceCOP: dto.minPriceCOP,
+            minMarginPct: dto.minMarginPct,
             emoji: dto.emoji,
             imageUrls: dto.imageUrls ?? [],
             trackStock: dto.trackStock ?? true,
@@ -262,6 +265,9 @@ export class RetailCatalogService {
           description: dto.description,
           costCOP: dto.costCOP,
           priceCOP: dto.priceCOP,
+          saleMarginPct: dto.saleMarginPct,
+          minPriceCOP: dto.minPriceCOP,
+          minMarginPct: dto.minMarginPct,
           emoji: dto.emoji,
           imageUrls: dto.imageUrls,
           trackStock: dto.trackStock,
@@ -319,10 +325,19 @@ export class RetailCatalogService {
       costCOP: product.costCOP,
       priceCOP: product.priceCOP,
       marginCOP: margin,
+      // Margen real derivado del precio guardado (no del % sugerido): si el
+      // admin escribió un precio a mano, manda ese.
       marginPct:
         product.priceCOP > 0
           ? Math.round((margin / product.priceCOP) * 1000) / 10
           : 0,
+      saleMarginPct: product.saleMarginPct,
+      minPriceCOP: product.minPriceCOP,
+      minMarginPct: product.minMarginPct,
+      minMarginCOP:
+        product.minPriceCOP !== null
+          ? product.minPriceCOP - product.costCOP
+          : null,
       emoji: product.emoji,
       imageUrls: product.imageUrls,
       primaryImageUrl: product.imageUrls[0] ?? null,

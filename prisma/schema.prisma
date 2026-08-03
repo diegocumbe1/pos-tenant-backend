@@ -1890,9 +1890,16 @@ model RetailProduct {
   brand       String?
   name        String
   description String?
-  // Costo de compra y precio de venta. El margen se calcula, nunca se guarda.
+  // Costo de compra y precio de venta. El precio escrito es la fuente de verdad;
+  // los % se guardan para poder recalcular y para el piso de negociación.
   costCOP     Int            @default(0)
   priceCOP    Int
+  // % de ganancia sobre el precio con el que se sugirió `priceCOP`.
+  saleMarginPct Float?
+  // Piso de negociación: por debajo de este precio la venta pierde margen
+  // aceptable. Solo lo ve/edita el admin, nunca el cajero.
+  minPriceCOP   Int?
+  minMarginPct  Float?
   emoji       String?
   imageUrls   String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.

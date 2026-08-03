@@ -8,7 +8,16 @@
  */
 export function corsOrigins(): string[] | true {
   const list = process.env.CORS_ORIGINS?.split(',')
-    .map((o) => o.trim())
+    // Se limpian comillas y slash final: pegar el valor entrecomillado en el
+    // panel del hosting deja `"https://dominio.com` como origen y CORS falla
+    // en silencio (sin Access-Control-Allow-Origin, "Failed to fetch" en el
+    // navegador). Normalizar aquí evita depender de cómo se pegó la env.
+    .map((o) =>
+      o
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/\/+$/, ''),
+    )
     .filter(Boolean);
   return list && list.length > 0 ? list : true;
 }
