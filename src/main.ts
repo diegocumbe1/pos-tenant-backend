@@ -9,6 +9,7 @@ import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as bodyParser from 'body-parser';
 import { AppModule } from './app.module';
+import { corsOrigins } from './common/cors-origins';
 import { PrismaExceptionFilter } from './prisma/prisma-exception.filter';
 
 async function bootstrap() {
@@ -18,11 +19,8 @@ async function bootstrap() {
 
   // CORS: en prod se restringe vía CORS_ORIGINS (lista separada por comas,
   // p.ej. "https://uselynko.com"). Sin la env → refleja cualquier origen (dev).
-  const corsOrigins = process.env.CORS_ORIGINS?.split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
   app.enableCors({
-    origin: corsOrigins && corsOrigins.length > 0 ? corsOrigins : true,
+    origin: corsOrigins(),
     credentials: true,
     maxAge: Number(process.env.CORS_MAX_AGE_SECONDS ?? 86400),
     exposedHeaders: [

@@ -8,7 +8,11 @@ import { VerticalSiteStrategyResolver } from './strategies/vertical-site-strateg
  * shared PublicSiteService uses to stay vertical-agnostic.
  */
 @Module({
-  providers: [BarberSiteStrategy, RetailSiteStrategy, VerticalSiteStrategyResolver],
+  providers: [
+    BarberSiteStrategy,
+    RetailSiteStrategy,
+    VerticalSiteStrategyResolver,
+  ],
   exports: [VerticalSiteStrategyResolver],
 })
 export class PublicSiteStrategiesModule {}

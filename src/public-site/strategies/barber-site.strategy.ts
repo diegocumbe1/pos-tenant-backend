@@ -2,9 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../prisma/prisma.service';
-import { RESERVED_BOOKING_SLUGS, slugify } from '../../barber/shared/barber-slug';
+import {
+  RESERVED_BOOKING_SLUGS,
+  slugify,
+} from '../../barber/shared/barber-slug';
 import { resolvePublicBookingCopy } from '../../barber/shared/public-booking-copy';
 import {
+  PublicCatalogCategory,
   PublishableSite,
   SiteSeed,
   SiteSeedContext,
@@ -166,11 +170,19 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
     return missing;
   }
 
+  /** Barbería no vende catálogo de productos: su oferta son servicios agendables. */
+  buildPublicCatalog(): Promise<PublicCatalogCategory[]> {
+    return Promise.resolve([]);
+  }
+
   reservedSlugs(): Set<string> {
     return RESERVED_BOOKING_SLUGS;
   }
 
-  async extraSlugConflict(slug: string, ownerBranchId?: string): Promise<boolean> {
+  async extraSlugConflict(
+    slug: string,
+    ownerBranchId?: string,
+  ): Promise<boolean> {
     const settings = await this.prisma.barberSettings.findUnique({
       where: { bookingSlug: slug },
       select: { branchId: true },

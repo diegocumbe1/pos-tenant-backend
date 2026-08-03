@@ -59,27 +59,52 @@ export class FinanceService {
         status: { in: ['completed', 'COMPLETED', 'Completed'] },
         scheduledAt: { gte: range.from, lte: range.to },
       },
-      include: { service: { select: { id: true, name: true, priceCOP: true } } },
+      include: {
+        service: { select: { id: true, name: true, priceCOP: true } },
+      },
     });
     const barberRevenue = barberAppointments.reduce(
       (acc, a) => acc + (a.service?.priceCOP ?? 0),
       0,
     );
 
+    // Ingreso de la vertical retail: ventas de mostrador completadas.
+    // Mismo criterio agnóstico: un tenant sin tienda no tiene ventas → 0.
+    const retailSales = await this.prisma.retailSale.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        status: 'COMPLETED',
+        soldAt: { gte: range.from, lte: range.to },
+      },
+      include: { items: true },
+    });
+    const retailRevenue = retailSales.reduce(
+      (acc, sale) => acc + sale.totalCOP,
+      0,
+    );
+
     const revenue =
-      splits.reduce((acc, s) => acc + s.totalCOP, 0) + barberRevenue;
+      splits.reduce((acc, s) => acc + s.totalCOP, 0) +
+      barberRevenue +
+      retailRevenue;
     const expensesTotal = expenses._sum.amountCOP ?? 0;
     const profit = revenue - expensesTotal;
     const profitMarginPct =
       revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0;
 
-    // "Órdenes" = tickets de restaurante + citas completadas de barber.
+    // "Órdenes" = tickets de restaurante + citas de barber + ventas de tienda.
     const ordersCount =
-      new Set(splits.map((s) => s.orderId)).size + barberAppointments.length;
+      new Set(splits.map((s) => s.orderId)).size +
+      barberAppointments.length +
+      retailSales.length;
     const averageOrderValue =
       ordersCount > 0 ? Math.round(revenue / ordersCount) : 0;
 
-    const productMap = new Map<string, { name: string; revenue: number; quantity: number }>();
+    const productMap = new Map<
+      string,
+      { name: string; revenue: number; quantity: number }
+    >();
     for (const split of splits) {
       for (const item of split.items) {
         const entry = productMap.get(item.productId) ?? {
@@ -104,12 +129,28 @@ export class FinanceService {
       entry.quantity += 1;
       productMap.set(appt.service.id, entry);
     }
+    // Productos vendidos en tienda: el snapshot de la línea manda sobre el catálogo.
+    for (const sale of retailSales) {
+      for (const item of sale.items) {
+        const entry = productMap.get(item.productId) ?? {
+          name: item.name,
+          revenue: 0,
+          quantity: 0,
+        };
+        entry.revenue += item.totalCOP;
+        entry.quantity += item.quantity;
+        productMap.set(item.productId, entry);
+      }
+    }
     const topProductsByRevenue = [...productMap.entries()]
       .map(([id, v]) => ({ id, ...v }))
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 10);
 
-    const waiterAgg = new Map<string, { revenue: number; orderIds: Set<string> }>();
+    const waiterAgg = new Map<
+      string,
+      { revenue: number; orderIds: Set<string> }
+    >();
     for (const split of splits) {
       const waiterId = split.order.waiterId;
       if (!waiterId) continue;
@@ -175,6 +216,10 @@ export class FinanceService {
     for (const appt of barberAppointments) {
       bumpDay(appt.scheduledAt, appt.service?.priceCOP ?? 0, appt.id, 1);
     }
+    for (const sale of retailSales) {
+      const units = sale.items.reduce((a, i) => a + i.quantity, 0);
+      bumpDay(sale.soldAt, sale.totalCOP, sale.id, units);
+    }
     const revenueByDay = [...dayAgg.entries()]
       .map(([date, v]) => ({
         date,
@@ -215,7 +260,10 @@ export class FinanceService {
     let total = 0;
     for (const e of rows) {
       total += e.amountCOP;
-      byCategory.set(e.category, (byCategory.get(e.category) ?? 0) + e.amountCOP);
+      byCategory.set(
+        e.category,
+        (byCategory.get(e.category) ?? 0) + e.amountCOP,
+      );
     }
 
     return {
@@ -359,7 +407,11 @@ export class FinanceService {
 
   // Rango [from, to) de una meta: usa el rango explícito o deriva del mes ancla.
   private goalRange(
-    g: { periodStart: Date | null; periodEnd: Date | null; periodMonth: string },
+    g: {
+      periodStart: Date | null;
+      periodEnd: Date | null;
+      periodMonth: string;
+    },
     fallbackMonth: string,
   ): { from: Date; to: Date } {
     if (g.periodStart && g.periodEnd) {
@@ -379,7 +431,15 @@ export class FinanceService {
     to: Date,
     hours: Record<string, unknown> | null,
   ): { total: number; elapsed: number } {
-    const WEEK = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const WEEK = [
+      'sunday',
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'friday',
+      'saturday',
+    ];
     const isOpen = (d: Date): boolean => {
       if (!hours) return true;
       const v = hours[WEEK[d.getDay()]];
@@ -400,13 +460,14 @@ export class FinanceService {
     return { total, elapsed };
   }
 
-  // Ingreso en un rango: splits (restaurante) + citas completadas (barber).
+  // Ingreso en un rango: splits (restaurante) + citas completadas (barber)
+  // + ventas de mostrador (retail). Cada vertical aporta 0 si no aplica.
   private async revenueInRange(
     ctx: TenantContext,
     from: Date,
     to: Date,
   ): Promise<number> {
-    const [splitAgg, appts] = await Promise.all([
+    const [splitAgg, appts, retailAgg] = await Promise.all([
       this.prisma.paymentSplit.aggregate({
         where: {
           tenantId: ctx.tenantId,
@@ -424,9 +485,20 @@ export class FinanceService {
         },
         include: { service: { select: { priceCOP: true } } },
       }),
+      this.prisma.retailSale.aggregate({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          status: 'COMPLETED',
+          soldAt: { gte: from, lt: to },
+        },
+        _sum: { totalCOP: true },
+      }),
     ]);
     const barber = appts.reduce((a, x) => a + (x.service?.priceCOP ?? 0), 0);
-    return (splitAgg._sum.totalCOP ?? 0) + barber;
+    return (
+      (splitAgg._sum.totalCOP ?? 0) + barber + (retailAgg._sum.totalCOP ?? 0)
+    );
   }
 
   private async expensesInRange(
@@ -499,7 +571,12 @@ export class FinanceService {
           dto.incurredAt !== undefined ? new Date(dto.incurredAt) : undefined,
         frequency: dto.frequency,
         isRecurring: dto.isRecurring,
-        dueDate: dto.dueDate !== undefined ? (dto.dueDate ? new Date(dto.dueDate) : null) : undefined,
+        dueDate:
+          dto.dueDate !== undefined
+            ? dto.dueDate
+              ? new Date(dto.dueDate)
+              : null
+            : undefined,
         note: dto.note,
       },
     });
@@ -583,7 +660,8 @@ export class FinanceService {
 
   async createGoal(ctx: TenantContext, dto: CreateFinanceGoalDto) {
     try {
-      const { periodType, periodStart, periodEnd } = this.resolveGoalPeriod(dto);
+      const { periodType, periodStart, periodEnd } =
+        this.resolveGoalPeriod(dto);
       const goal = await this.prisma.financeGoal.create({
         data: {
           tenantId: ctx.tenantId,

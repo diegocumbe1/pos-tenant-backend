@@ -494,9 +494,31 @@ async function loop(fn, everyMs, label) {
   }
 }
 
+/** Login de arranque con reintentos. Un 401 sí es fatal: las credenciales están
+ *  mal y reintentar no lo arregla, alguien tiene que corregir el .env. Cualquier
+ *  fallo de red se reintenta indefinidamente con backoff, porque el agente corre
+ *  en el local del cliente sobre una conexión que pierde paquetes, y morirse al
+ *  arrancar deja la cocina sin imprimir hasta que vayan a reiniciarlo a mano. */
+async function loginWithRetry() {
+  const MAX_DELAY_MS = 30_000;
+  let delay = 1_000;
+  for (;;) {
+    try {
+      await login();
+      return;
+    } catch (e) {
+      const msg = e?.message ?? String(e);
+      if (msg.startsWith('login 401:')) throw e;
+      log(`login falló (${msg}); reintento en ${Math.round(delay / 1000)}s`);
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, MAX_DELAY_MS);
+    }
+  }
+}
+
 async function main() {
   log(`Lynko Print Agent → ${API_URL} (tenant ${TENANT_ID} / branch ${BRANCH_ID})`);
-  await login();
+  await loginWithRetry();
   // Dos bucles independientes: jobs (rápido) y heartbeat (lento).
   loop(drainJobs, POLL_MS, 'jobs');
   loop(heartbeat, HEARTBEAT_MS, 'heartbeat');

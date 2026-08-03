@@ -55,6 +55,11 @@ model Tenant {
   barberStaff          BarberStaff[]
   barberCustomers      BarberCustomer[]
   barberAppointments   BarberAppointment[]
+  retailCategories     RetailCategory[]
+  retailProducts       RetailProduct[]
+  retailStockMovements RetailStockMovement[]
+  retailCustomers      RetailCustomer[]
+  retailSales          RetailSale[]
   publicSites          PublicSite[]
   orderEvents          OrderEvent[]
   orderClaims          OrderClaim[]
@@ -148,6 +153,11 @@ model Branch {
   barberStaff          BarberStaff[]
   barberCustomers      BarberCustomer[]
   barberAppointments   BarberAppointment[]
+  retailCategories     RetailCategory[]
+  retailProducts       RetailProduct[]
+  retailStockMovements RetailStockMovement[]
+  retailCustomers      RetailCustomer[]
+  retailSales          RetailSale[]
   publicSites          PublicSite[]
   printers             Printer[]
   printJobs            PrintJob[]
@@ -1077,21 +1087,21 @@ model Reservation {
 // ─── Finance ──────────────────────────────────────────────────────────────────
 
 model Expense {
-  id         String   @id @default(cuid())
-  tenantId   String
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  branchId   String
-  branch     Branch   @relation(fields: [branchId], references: [id])
-  category   String // categoría de egreso (payroll, rent, platform, utilities, supplies, ...)
-  concept    String
-  amountCOP  Int
-  incurredAt DateTime
+  id          String           @id @default(cuid())
+  tenantId    String
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  branchId    String
+  branch      Branch           @relation(fields: [branchId], references: [id])
+  category    String // categoría de egreso (payroll, rent, platform, utilities, supplies, ...)
+  concept     String
+  amountCOP   Int
+  incurredAt  DateTime
   // Recurrencia: distingue gastos fijos/recurrentes de gastos únicos.
   frequency   ExpenseFrequency @default(ONE_TIME)
   isRecurring Boolean          @default(false)
   dueDate     DateTime? // próxima fecha de causación para recurrentes
-  note       String?
-  createdAt  DateTime @default(now())
+  note        String?
+  createdAt   DateTime         @default(now())
 
   @@index([tenantId])
   @@index([tenantId, branchId, incurredAt])
@@ -1161,11 +1171,11 @@ enum ExpenseFrequency {
 }
 
 model FinanceGoal {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
   branchId    String
-  branch      Branch   @relation(fields: [branchId], references: [id])
+  branch      Branch    @relation(fields: [branchId], references: [id])
   periodMonth String // "YYYY-MM" (ancla del período; para semanal/quincenal es el mes de inicio)
   metric      String // "revenue" | "profit"
   targetCOP   Int
@@ -1173,8 +1183,8 @@ model FinanceGoal {
   periodType  String    @default("MONTHLY") // "MONTHLY" | "WEEKLY" | "BIWEEKLY"
   periodStart DateTime?
   periodEnd   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@unique([branchId, periodMonth, metric])
   @@index([tenantId])
@@ -1587,37 +1597,37 @@ model Subscription {
 // Un pago cubre un periodo [periodStart, periodEnd]; si periodEnd es futuro y
 // abarca varios ciclos, es un PAGO ANTICIPADO. Ver §3.6.
 model SubscriptionPayment {
-  id             String        @id @default(cuid())
-  tenantId       String
-  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subscriptionId String?
-  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  plan           String // plan vigente al momento del pago
+  id              String        @id @default(cuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscriptionId  String?
+  subscription    Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  plan            String // plan vigente al momento del pago
   // kind distingue plata que entró de cortesías que no entraron:
   //   'payment' → cobro real            (countsAsRevenue = true)
   //   'bonus'   → mes regalado/cortesía (countsAsRevenue = false, amount 0)
   //   'credit'  → nota crédito/ajuste   (countsAsRevenue = false)
-  kind            String       @default("payment")
-  countsAsRevenue Boolean      @default(true)
+  kind            String        @default("payment")
+  countsAsRevenue Boolean       @default(true)
   // amount = plata efectivamente recibida (neto). officialPrice = precio de lista
   // del plan al momento del cobro; discountApplied = lo que se dejó de cobrar.
   // Invariante: officialPrice - discountApplied = amount.
   amount          Int
   officialPrice   Int?
-  discountApplied Int          @default(0)
+  discountApplied Int           @default(0)
   discountReason  String?
-  currency        String       @default("COP") // 'COP' | 'USD'
-  billingCycle    BillingCycle @default(monthly)
+  currency        String        @default("COP") // 'COP' | 'USD'
+  billingCycle    BillingCycle  @default(monthly)
   periodStart     DateTime
   periodEnd       DateTime
-  paidAt          DateTime     @default(now()) // fecha de caja: define en qué periodo suma
-  method          String       @default("manual") // 'cash' | 'transfer' | 'card' | 'manual' | …
+  paidAt          DateTime      @default(now()) // fecha de caja: define en qué periodo suma
+  method          String        @default("manual") // 'cash' | 'transfer' | 'card' | 'manual' | …
   reference       String?
   receiptUrl      String?
   note            String?
-  extendsPeriod   Boolean      @default(true)
+  extendsPeriod   Boolean       @default(true)
   createdByUserId String // platform admin que registró el pago
-  createdAt       DateTime     @default(now())
+  createdAt       DateTime      @default(now())
 
   @@index([tenantId, paidAt])
   @@index([paidAt])
@@ -1654,14 +1664,14 @@ model BillingContact {
 // PlatformRecurringExpense y generan aquí un registro por cada cobro, para que
 // el acumulado histórico sea plata realmente gastada y no una proyección.
 model PlatformExpense {
-  id       String  @id @default(cuid())
-  category String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
-  concept  String
-  vendor   String? // 'Vercel', 'Namecheap', 'Meta Ads', …
-  amount   Int
-  currency String  @default("COP") // 'COP' | 'USD'
+  id          String    @id @default(cuid())
+  category    String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
+  concept     String
+  vendor      String? // 'Vercel', 'Namecheap', 'Meta Ads', …
+  amount      Int
+  currency    String    @default("COP") // 'COP' | 'USD'
   // 'one_time' = compra puntual · 'recurring' = cobro de un contrato recurrente
-  kind     String  @default("one_time")
+  kind        String    @default("one_time")
   // Periodo que cubre el gasto (dominio anual: 1 año). Solo informativo: el
   // gasto suma completo en incurredAt (base caja), no se prorratea.
   periodStart DateTime?
@@ -1796,36 +1806,244 @@ model RoleCompensationTemplate {
 // `data` = zip de credenciales de la sesión. Sobrevive redeploys y funciona
 // igual en local/prod (no depende del filesystem del contenedor).
 model WhatsappSession {
-  clientId  String   @id // safeClientId(tenantId, branchId)
-  tenantId  String
-  branchId  String
-  data      Bytes? // archivo de sesión comprimido (RemoteAuth)
+  clientId    String   @id // safeClientId(tenantId, branchId)
+  tenantId    String
+  branchId    String
+  data        Bytes? // archivo de sesión comprimido (RemoteAuth)
   phoneNumber String?
-  updatedAt DateTime @updatedAt
-  createdAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
 
   @@unique([tenantId, branchId])
   @@map("whatsapp_sessions")
 }
 
 model StaffLedgerEntry {
-  id        String          @id @default(cuid())
-  tenantId  String
-  branchId  String?
-  staffId   String
-  staffName String // snapshot para histórico
-  type      LedgerEntryType
-  amount    Int // COP
-  period    String // "YYYY-MM"
+  id           String          @id @default(cuid())
+  tenantId     String
+  branchId     String?
+  staffId      String
+  staffName    String // snapshot para histórico
+  type         LedgerEntryType
+  amount       Int // COP
+  period       String // "YYYY-MM"
   // Solo aplica a PAYMENT/ADVANCE/LOAN (salida de dinero).
   method       PaymentMethod?
   accountLabel String? // cuenta usada en TRANSFER (ej. "Bancolombia ***1234", "Nequi 300...")
   // Rango que cubre este pago (opcional): "de qué fecha a qué fecha".
   coversFrom   DateTime?
   coversTo     DateTime?
-  note      String?
-  date      DateTime        @default(now())
+  note         String?
+  date         DateTime        @default(now())
 
   @@index([tenantId, staffId, period])
   @@map("staff_ledger_entries")
+}
+
+// ─── Retail ──────────────────────────────────────────────────────────────────
+//
+// [VERTICAL_RETAIL] Vertical independiente: no comparte tablas con restaurante
+// (Product/Order) ni con barbería (BarberService/BarberAppointment). El modelo
+// de negocio es distinto — stock por unidad, costo/margen por producto, venta de
+// mostrador sin mesas ni agenda — así que tiene sus propias entidades.
+//
+// Lo que SÍ reutiliza (transversal, no del restaurante): Tenant, Branch, User,
+// Role/Permission, Expense, Payroll, FinanceGoal, StaffCompensation, CashSession,
+// AuditLog, Notification*, PublicSite y el bucket de assets.
+//
+// Scope: todas las entidades son branch-scoped (una tienda tiene su propio stock
+// y su propia caja) con tenantId denormalizado para el filtro de aislamiento.
+
+model RetailCategory {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  branchId  String
+  branch    Branch    @relation(fields: [branchId], references: [id])
+  name      String
+  emoji     String?
+  sortOrder Int       @default(0)
+  // Visible en el sitio público. Apagarla oculta la categoría sin borrar productos.
+  isVisible Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  products RetailProduct[]
+
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId, branchId, deletedAt])
+  @@map("retail_categories")
+}
+
+model RetailProduct {
+  id          String         @id @default(cuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id])
+  branchId    String
+  branch      Branch         @relation(fields: [branchId], references: [id])
+  categoryId  String
+  category    RetailCategory @relation(fields: [categoryId], references: [id])
+  // Identificadores de retail: SKU interno y código de barras para el escáner.
+  sku         String?
+  barcode     String?
+  brand       String?
+  name        String
+  description String?
+  // Costo de compra y precio de venta. El margen se calcula, nunca se guarda.
+  costCOP     Int            @default(0)
+  priceCOP    Int
+  emoji       String?
+  imageUrls   String[]
+  // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
+  trackStock  Boolean        @default(true)
+  stock       Int            @default(0)
+  minStock    Int            @default(0)
+  // isActive = vendible en el POS. isPublished = visible en el sitio público.
+  isActive    Boolean        @default(true)
+  isPublished Boolean        @default(true)
+  sortOrder   Int            @default(0)
+  // Atributos libres del producto (color, modelo compatible, capacidad...).
+  attributes  Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  deletedAt   DateTime?
+
+  movements RetailStockMovement[]
+  saleItems RetailSaleItem[]
+
+  @@unique([tenantId, branchId, sku])
+  @@index([tenantId, branchId, deletedAt])
+  @@index([categoryId])
+  @@index([tenantId, barcode])
+  @@map("retail_products")
+}
+
+enum RetailStockMovementType {
+  INITIAL // carga inicial de inventario
+  PURCHASE // compra a proveedor
+  SALE // salida por venta
+  RETURN // devolución del cliente (reingresa)
+  ADJUSTMENT // ajuste manual de conteo
+  LOSS // pérdida, daño o robo
+}
+
+model RetailStockMovement {
+  id          String                  @id @default(cuid())
+  tenantId    String
+  tenant      Tenant                  @relation(fields: [tenantId], references: [id])
+  branchId    String
+  branch      Branch                  @relation(fields: [branchId], references: [id])
+  productId   String
+  product     RetailProduct           @relation(fields: [productId], references: [id])
+  type        RetailStockMovementType
+  // Firmado: positivo entra, negativo sale. Kardex auditable.
+  quantity    Int
+  stockAfter  Int
+  unitCostCOP Int?
+  reason      String?
+  // Referencia al origen (id de venta, número de factura de compra...).
+  reference   String?
+  userId      String?
+  createdAt   DateTime                @default(now())
+
+  @@index([tenantId, branchId, createdAt])
+  @@index([productId, createdAt])
+  @@map("retail_stock_movements")
+}
+
+model RetailCustomer {
+  id             String    @id @default(cuid())
+  tenantId       String
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  branchId       String
+  branch         Branch    @relation(fields: [branchId], references: [id])
+  name           String
+  phone          String?
+  email          String?
+  documentId     String?
+  notes          String?
+  // Agregados denormalizados para no recalcular el histórico en cada listado.
+  totalSpentCOP  Int       @default(0)
+  salesCount     Int       @default(0)
+  lastPurchaseAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  sales RetailSale[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId, branchId, deletedAt])
+  @@map("retail_customers")
+}
+
+enum RetailSaleStatus {
+  COMPLETED
+  VOIDED // anulada: revierte stock y deja de contar en finanzas
+}
+
+enum RetailPaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  MIXED
+  OTHER
+}
+
+model RetailSale {
+  id            String              @id @default(cuid())
+  tenantId      String
+  tenant        Tenant              @relation(fields: [tenantId], references: [id])
+  branchId      String
+  branch        Branch              @relation(fields: [branchId], references: [id])
+  // Consecutivo legible por tienda (RS-000001) para el recibo.
+  code          String
+  customerId    String?
+  customer      RetailCustomer?     @relation(fields: [customerId], references: [id])
+  // Vendedor y caja abierta en el momento del cobro (sin FK: CashSession es transversal).
+  userId        String?
+  cashSessionId String?
+  status        RetailSaleStatus    @default(COMPLETED)
+  subtotalCOP   Int
+  discountCOP   Int                 @default(0)
+  totalCOP      Int
+  // Costo de la mercancía vendida, congelado al momento de la venta → margen real.
+  costCOP       Int                 @default(0)
+  paymentMethod RetailPaymentMethod @default(CASH)
+  receivedCOP   Int?
+  changeCOP     Int?
+  note          String?
+  soldAt        DateTime            @default(now())
+  voidedAt      DateTime?
+  voidedReason  String?
+  createdAt     DateTime            @default(now())
+
+  items RetailSaleItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, branchId, soldAt])
+  @@index([tenantId, branchId, status, soldAt])
+  @@index([customerId])
+  @@map("retail_sales")
+}
+
+model RetailSaleItem {
+  id           String        @id @default(cuid())
+  saleId       String
+  sale         RetailSale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId    String
+  product      RetailProduct @relation(fields: [productId], references: [id])
+  // Snapshot: el recibo no debe cambiar si luego renombran o reprecian el producto.
+  name         String
+  sku          String?
+  quantity     Int
+  unitPriceCOP Int
+  unitCostCOP  Int           @default(0)
+  discountCOP  Int           @default(0)
+  totalCOP     Int
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("retail_sale_items")
 }

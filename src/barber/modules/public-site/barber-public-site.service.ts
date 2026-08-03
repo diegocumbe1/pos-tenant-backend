@@ -546,27 +546,12 @@ export class PublicSiteService {
       throw new NotFoundException(`Site ${slug} not found`);
     }
 
-    const branchScope = [{ branchId: site.branchId }, { branchId: null }];
-    const categories = await this.prisma.productCategory.findMany({
-      where: { tenantId: site.tenantId, OR: branchScope },
-      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      select: {
-        id: true,
-        name: true,
-        emoji: true,
-        products: {
-          where: { isAvailable: true, deletedAt: null, OR: branchScope },
-          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-          select: {
-            id: true,
-            name: true,
-            description: true,
-            priceCOP: true,
-            emoji: true,
-            imageUrls: true,
-          },
-        },
-      },
+    // Cada vertical lee su propio catálogo (retail → retail_products). El
+    // builder no conoce las tablas de ninguna vertical.
+    const strategy = await this.strategies.resolveForTenant(site.tenantId);
+    const categories = await strategy.buildPublicCatalog({
+      tenantId: site.tenantId,
+      branchId: site.branchId,
     });
 
     return {
@@ -575,14 +560,7 @@ export class PublicSiteService {
         phone: site.phone,
         whatsapp: site.whatsapp,
       },
-      categories: categories
-        .filter((category) => category.products.length > 0)
-        .map((category) => ({
-          id: category.id,
-          name: category.name,
-          emoji: category.emoji,
-          products: category.products,
-        })),
+      categories,
     };
   }
 

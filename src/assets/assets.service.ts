@@ -107,10 +107,12 @@ export class AssetsService {
     const normalizedType = this.normalizeCatalogItemType(itemType);
     await this.assertCatalogItem(ctx, normalizedType, itemId);
 
+    // Retail comparte el tratamiento de imagen de producto (thumbnail), no el
+    // de servicio: son fotos de mercancía, no de resultado de un servicio.
     const kind =
-      normalizedType === 'product'
-        ? PRODUCT_IMAGE_KIND
-        : BARBER_SERVICE_IMAGE_KIND;
+      normalizedType === 'barber-service'
+        ? BARBER_SERVICE_IMAGE_KIND
+        : PRODUCT_IMAGE_KIND;
 
     const uploadedImages = await Promise.all(
       files.map((file) =>
@@ -198,6 +200,13 @@ export class AssetsService {
   private normalizeCatalogItemType(itemType: string): CatalogItemType {
     if (itemType === 'product' || itemType === 'products') return 'product';
     if (
+      itemType === 'retail-product' ||
+      itemType === 'retail-products' ||
+      itemType === 'retail'
+    ) {
+      return 'retail-product';
+    }
+    if (
       itemType === 'service' ||
       itemType === 'services' ||
       itemType === 'barber-service' ||
@@ -206,7 +215,9 @@ export class AssetsService {
       return 'barber-service';
     }
 
-    throw new BadRequestException('itemType must be product or barber-service');
+    throw new BadRequestException(
+      'itemType must be product, retail-product or barber-service',
+    );
   }
 
   private async assertCatalogItem(
@@ -222,6 +233,22 @@ export class AssetsService {
       if (!product) throw new NotFoundException(`Product ${itemId} not found`);
       if (product.branchId && product.branchId !== ctx.branchId) {
         throw new ForbiddenException('Product does not belong to this branch');
+      }
+      return;
+    }
+
+    if (itemType === 'retail-product') {
+      const product = await this.prisma.retailProduct.findFirst({
+        where: {
+          id: itemId,
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!product) {
+        throw new NotFoundException(`Retail product ${itemId} not found`);
       }
       return;
     }
@@ -256,6 +283,23 @@ export class AssetsService {
       return updated.imageUrls;
     }
 
+    if (itemType === 'retail-product') {
+      const product = await this.prisma.retailProduct.findUniqueOrThrow({
+        where: { id: itemId },
+        select: { imageUrls: true },
+      });
+      const imageUrls =
+        mode === 'replace'
+          ? incomingUrls
+          : [...product.imageUrls, ...incomingUrls];
+      const updated = await this.prisma.retailProduct.update({
+        where: { id: itemId },
+        data: { imageUrls },
+        select: { imageUrls: true },
+      });
+      return updated.imageUrls;
+    }
+
     const service = await this.prisma.barberService.findUniqueOrThrow({
       where: { id: itemId },
       select: { imageUrls: true },
@@ -279,4 +323,4 @@ export class AssetsService {
   }
 }
 
-type CatalogItemType = 'product' | 'barber-service';
+type CatalogItemType = 'product' | 'barber-service' | 'retail-product';

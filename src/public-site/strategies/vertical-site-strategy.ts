@@ -72,8 +72,28 @@ export type PublishableSite = {
   whatsapp: string | null;
   ogImageUrl: string | null;
   tenant: { name: string };
-  sections: { type: string; isVisible: boolean; title: string | null; subtitle: string | null }[];
+  sections: {
+    type: string;
+    isVisible: boolean;
+    title: string | null;
+    subtitle: string | null;
+  }[];
   assets: { kind: string; isVisible: boolean }[];
+};
+
+/** A product group of the public catalog, as rendered by the site. */
+export type PublicCatalogCategory = {
+  id: string;
+  name: string;
+  emoji: string | null;
+  products: Array<{
+    id: string;
+    name: string;
+    description: string | null;
+    priceCOP: number;
+    emoji: string | null;
+    imageUrls: string[];
+  }>;
 };
 
 /**
@@ -96,7 +116,10 @@ export interface VerticalSiteStrategy {
   ): Promise<void>;
 
   /** Side-effects when publishing (e.g. flip a legacy "published" flag). */
-  syncOnPublish(tx: Prisma.TransactionClient, ctx: TenantContext): Promise<void>;
+  syncOnPublish(
+    tx: Prisma.TransactionClient,
+    ctx: TenantContext,
+  ): Promise<void>;
 
   /** Side-effects when unpublishing. */
   syncOnUnpublish(
@@ -106,6 +129,16 @@ export interface VerticalSiteStrategy {
 
   /** Return the list of missing requirements that block publishing. */
   collectMissing(site: PublishableSite): Promise<string[]>;
+
+  /**
+   * Live catalog rendered by the site's `catalog` section. Each vertical reads
+   * its own tables (retail → retail_products); verticals without a sellable
+   * catalog return an empty list.
+   */
+  buildPublicCatalog(site: {
+    tenantId: string;
+    branchId: string;
+  }): Promise<PublicCatalogCategory[]>;
 
   /** Slugs that may not be used as a public-site slug for this vertical. */
   reservedSlugs(): Set<string>;

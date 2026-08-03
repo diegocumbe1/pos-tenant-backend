@@ -274,6 +274,78 @@ const PERMISSIONS: Array<{
     description: 'Crear/editar citas de barbería',
   },
   {
+    code: 'retail:catalog:read',
+    resource: 'retail-catalog',
+    action: 'read',
+    description: 'Ver catálogo de la tienda',
+  },
+  {
+    code: 'retail:catalog:write',
+    resource: 'retail-catalog',
+    action: 'write',
+    description: 'Crear/editar productos y categorías de la tienda',
+  },
+  {
+    code: 'retail:catalog:delete',
+    resource: 'retail-catalog',
+    action: 'delete',
+    description: 'Eliminar productos y categorías de la tienda',
+  },
+  {
+    code: 'retail:inventory:read',
+    resource: 'retail-inventory',
+    action: 'read',
+    description: 'Ver stock y kardex de la tienda',
+  },
+  {
+    code: 'retail:inventory:write',
+    resource: 'retail-inventory',
+    action: 'write',
+    description: 'Registrar entradas, ajustes y pérdidas de stock',
+  },
+  {
+    code: 'retail:sales:read',
+    resource: 'retail-sales',
+    action: 'read',
+    description: 'Ver ventas de la tienda',
+  },
+  {
+    code: 'retail:sales:write',
+    resource: 'retail-sales',
+    action: 'write',
+    description: 'Registrar ventas en el POS de la tienda',
+  },
+  {
+    code: 'retail:sales:void',
+    resource: 'retail-sales',
+    action: 'void',
+    description: 'Anular ventas de la tienda',
+  },
+  {
+    code: 'retail:customers:read',
+    resource: 'retail-customers',
+    action: 'read',
+    description: 'Ver clientes de la tienda',
+  },
+  {
+    code: 'retail:customers:write',
+    resource: 'retail-customers',
+    action: 'write',
+    description: 'Crear/editar clientes de la tienda',
+  },
+  {
+    code: 'retail:settings:read',
+    resource: 'retail-settings',
+    action: 'read',
+    description: 'Ver configuración de la tienda',
+  },
+  {
+    code: 'retail:settings:write',
+    resource: 'retail-settings',
+    action: 'write',
+    description: 'Editar configuración y sitio público de la tienda',
+  },
+  {
     code: 'admin:tenants:manage',
     resource: 'tenants',
     action: 'manage',
@@ -296,10 +368,12 @@ const PERMISSIONS: Array<{
 const ALL_PERMS = PERMISSIONS.map((p) => p.code);
 const RESTAURANT_PERMS = ALL_PERMS.filter((c) => c.startsWith('restaurant:'));
 const BARBER_PERMS = ALL_PERMS.filter((c) => c.startsWith('barber:'));
+const RETAIL_PERMS = ALL_PERMS.filter((c) => c.startsWith('retail:'));
 
 const VERTICALS = [
   { id: 'vertical-restaurant', code: 'restaurant', name: 'Restaurante' },
   { id: 'vertical-barber', code: 'barber', name: 'Barberia' },
+  { id: 'vertical-retail', code: 'retail', name: 'Retail / Tienda' },
 ];
 
 const PLANS = [
@@ -334,6 +408,7 @@ const SYSTEM_ROLES: Array<{
     permissions: [
       ...RESTAURANT_PERMS,
       ...BARBER_PERMS,
+      ...RETAIL_PERMS,
       'admin:users:invite',
       'admin:roles:manage',
     ],
@@ -373,6 +448,10 @@ const SYSTEM_ROLES: Array<{
       'restaurant:cash:read',
       'restaurant:cash:manage',
       ...BARBER_PERMS,
+      // Retail: todo menos borrar catálogo y anular ventas (queda en el dueño).
+      ...RETAIL_PERMS.filter(
+        (c) => c !== 'retail:catalog:delete' && c !== 'retail:sales:void',
+      ),
       'admin:users:invite',
     ],
   },
@@ -380,6 +459,13 @@ const SYSTEM_ROLES: Array<{
     code: 'CASHIER',
     name: 'Cajero',
     permissions: [
+      // Retail: vende y atiende clientes, no administra catálogo ni stock.
+      'retail:catalog:read',
+      'retail:inventory:read',
+      'retail:sales:read',
+      'retail:sales:write',
+      'retail:customers:read',
+      'retail:customers:write',
       'restaurant:menu:read',
       'restaurant:tables:read',
       'restaurant:orders:read',
@@ -429,6 +515,13 @@ const SYSTEM_ROLES: Array<{
     code: 'ADMIN',
     name: 'Administrativo',
     permissions: [
+      // Retail: lectura de operación + configuración; no vende ni mueve stock.
+      'retail:catalog:read',
+      'retail:inventory:read',
+      'retail:sales:read',
+      'retail:customers:read',
+      'retail:settings:read',
+      'retail:settings:write',
       'restaurant:staff:read',
       'restaurant:staff:write',
       'restaurant:finance:read',

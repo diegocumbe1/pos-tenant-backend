@@ -198,16 +198,19 @@ async function main() {
     create: { id: BRANCH_ID, tenantId: TENANT_ID, name: 'JIMCELL', address: BUSINESS.address },
   });
 
-  // 4) Categories + products
+  // 4) Catálogo del vertical retail (retail_categories / retail_products).
+  //    NO usa Product/ProductCategory: esas son del modelo de restaurante.
   for (let c = 0; c < CATEGORIES.length; c += 1) {
     const category = CATEGORIES[c];
-    await prisma.productCategory.upsert({
+    await prisma.retailCategory.upsert({
       where: { tenantId_branchId_name: { tenantId: TENANT_ID, branchId: BRANCH_ID, name: category.name } },
-      update: { emoji: category.emoji, sortOrder: c * 10 },
+      update: { emoji: category.emoji, sortOrder: c * 10, isVisible: true, deletedAt: null },
       create: { id: category.id, tenantId: TENANT_ID, branchId: BRANCH_ID, name: category.name, emoji: category.emoji, sortOrder: c * 10 },
     });
     for (let p = 0; p < category.products.length; p += 1) {
       const product = category.products[p];
+      // Reparación se vende sin descontar stock; el resto es mercancía física.
+      const isService = category.id === 'cat-jimcell-reparacion';
       const data = {
         tenantId: TENANT_ID,
         branchId: BRANCH_ID,
@@ -215,17 +218,43 @@ async function main() {
         name: product.name,
         description: product.description,
         priceCOP: product.priceCOP,
+        // Sin costo real en el seed: se asume ~55% del precio para ver margen.
+        costCOP: Math.round(product.priceCOP * 0.55),
         emoji: product.emoji,
         imageUrls: [] as string[],
-        isAvailable: true,
+        trackStock: !isService,
+        minStock: isService ? 0 : 2,
+        isActive: true,
+        isPublished: true,
         sortOrder: p * 10,
         deletedAt: null,
       };
-      await prisma.product.upsert({
+      const existing = await prisma.retailProduct.findUnique({
         where: { id: product.id },
-        update: data,
-        create: { id: product.id, ...data },
+        select: { id: true },
       });
+      if (existing) {
+        await prisma.retailProduct.update({ where: { id: product.id }, data });
+        continue;
+      }
+      const initialStock = isService ? 0 : 5;
+      await prisma.retailProduct.create({
+        data: { id: product.id, ...data, stock: initialStock },
+      });
+      if (initialStock > 0) {
+        await prisma.retailStockMovement.create({
+          data: {
+            tenantId: TENANT_ID,
+            branchId: BRANCH_ID,
+            productId: product.id,
+            type: 'INITIAL',
+            quantity: initialStock,
+            stockAfter: initialStock,
+            unitCostCOP: data.costCOP,
+            reason: 'Carga inicial (seed)',
+          },
+        });
+      }
     }
   }
 

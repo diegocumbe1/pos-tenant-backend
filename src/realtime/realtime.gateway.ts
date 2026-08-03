@@ -9,6 +9,7 @@ import {
 } from '@nestjs/websockets';
 import * as jwt from 'jsonwebtoken';
 import { Server, Socket } from 'socket.io';
+import { corsOrigins } from '../common/cors-origins';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseJwtPayload } from '../auth/types/jwt-payload.interface';
 import {
@@ -32,7 +33,9 @@ interface AuthedSocket extends Socket {
 
 @WebSocketGateway({
   namespace: '/realtime',
-  cors: { origin: true, credentials: true },
+  // Socket.IO no hereda el CORS de `app.enableCors()`: se configura aparte y
+  // con la misma lista, si no el WS queda abierto a cualquier origen.
+  cors: { origin: corsOrigins(), credentials: true },
 })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect

@@ -23,6 +23,7 @@
     "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "seed:jimcell": "ts-node scripts/seed-jimcell.ts",
+    "seed:casehub": "ts-node scripts/seed-casehub.ts",
     "seed:qa-showcase": "ts-node scripts/seed-qa-showcase.ts"
   },
   "dependencies": {

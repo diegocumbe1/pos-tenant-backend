@@ -97,10 +97,28 @@ export class SignupInviteDto {
 
   @ApiProperty({
     example: 'restaurant',
-    enum: ['restaurant', 'restaurante', 'barber', 'barberia', 'barbershop'],
+    enum: [
+      'restaurant',
+      'restaurante',
+      'barber',
+      'barberia',
+      'barbershop',
+      'retail',
+      'tienda',
+      'minorista',
+    ],
   })
   @IsString()
-  @IsIn(['restaurant', 'restaurante', 'barber', 'barberia', 'barbershop'])
+  @IsIn([
+    'restaurant',
+    'restaurante',
+    'barber',
+    'barberia',
+    'barbershop',
+    'retail',
+    'tienda',
+    'minorista',
+  ])
   vertical!: string;
 
   @ApiProperty({

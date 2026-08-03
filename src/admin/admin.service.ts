@@ -684,6 +684,9 @@ export class AdminService {
     const barberPerms = perms
       .filter((p) => p.code.startsWith('barber:'))
       .map((p) => p.code);
+    const retailPerms = perms
+      .filter((p) => p.code.startsWith('retail:'))
+      .map((p) => p.code);
 
     const matrix: Record<string, { name: string; perms: string[] }> = {
       OWNER: {
@@ -691,6 +694,7 @@ export class AdminService {
         perms: [
           ...restaurantPerms,
           ...barberPerms,
+          ...retailPerms,
           'admin:users:invite',
           'admin:roles:manage',
         ],
@@ -700,6 +704,10 @@ export class AdminService {
         perms: [
           ...restaurantPerms.filter((p) => !p.endsWith(':delete')),
           ...barberPerms,
+          // Retail: todo menos borrar catálogo y anular ventas (queda en el dueño).
+          ...retailPerms.filter(
+            (p) => p !== 'retail:catalog:delete' && p !== 'retail:sales:void',
+          ),
           'admin:users:invite',
         ],
       },
@@ -714,6 +722,13 @@ export class AdminService {
           'restaurant:payments:read',
           'restaurant:payments:write',
           'restaurant:reservations:read',
+          // Retail: vende y atiende clientes, no administra catálogo ni stock.
+          'retail:catalog:read',
+          'retail:inventory:read',
+          'retail:sales:read',
+          'retail:sales:write',
+          'retail:customers:read',
+          'retail:customers:write',
         ],
       },
       WAITER: {
@@ -745,6 +760,13 @@ export class AdminService {
           'restaurant:reservations:read',
           'restaurant:settings:read',
           'restaurant:settings:write',
+          // Retail: lectura de operación + configuración; no vende ni mueve stock.
+          'retail:catalog:read',
+          'retail:inventory:read',
+          'retail:sales:read',
+          'retail:customers:read',
+          'retail:settings:read',
+          'retail:settings:write',
         ],
       },
     };

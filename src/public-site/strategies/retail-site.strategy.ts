@@ -3,6 +3,7 @@ import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { slugify } from '../../barber/shared/barber-slug';
 import {
+  PublicCatalogCategory,
   PublishableSite,
   SiteSeed,
   SiteSeedContext,
@@ -21,9 +22,10 @@ const RESERVED_RETAIL_SLUGS = new Set([
 ]);
 
 /**
- * Retail vertical (e.g. a phone shop like JIMCELL): a catalog-first public site
- * whose primary action is "order via WhatsApp". It has no bookings and no
- * BarberSettings — its catalog is sourced from the tenant's `Product` table.
+ * Retail vertical (e.g. a phone shop like JIMCELL or a case store like CaseHub):
+ * a catalog-first public site whose primary action is "order via WhatsApp". It
+ * has no bookings and no BarberSettings — its catalog comes from the vertical's
+ * own `RetailProduct` table, never from the restaurant `Product` table.
  */
 @Injectable()
 export class RetailSiteStrategy implements VerticalSiteStrategy {
@@ -65,11 +67,20 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
           subtitle: 'Toca un producto para pedirlo por WhatsApp.',
           ctaLabel: 'Pedir por WhatsApp',
           ctaAction: 'open_whatsapp',
-          settings: { source: 'branch', showPrices: true, groupByCategory: true },
+          settings: {
+            source: 'branch',
+            showPrices: true,
+            groupByCategory: true,
+          },
         },
         { type: 'gallery', sortOrder: 40, width: 'wide', title: 'Galería' },
         { type: 'instagram', sortOrder: 50, title: 'Instagram' },
-        { type: 'contact', sortOrder: 60, density: 'compact', title: 'Contacto' },
+        {
+          type: 'contact',
+          sortOrder: 60,
+          density: 'compact',
+          title: 'Contacto',
+        },
       ],
     };
   }
@@ -86,8 +97,13 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
     const hasHeroImage =
       site.assets.some((asset) => asset.kind === 'hero' && asset.isVisible) ||
       Boolean(site.ogImageUrl);
-    const availableProducts = await this.prisma.product.count({
-      where: { branchId: site.branchId, isAvailable: true, deletedAt: null },
+    const availableProducts = await this.prisma.retailProduct.count({
+      where: {
+        branchId: site.branchId,
+        isActive: true,
+        isPublished: true,
+        deletedAt: null,
+      },
     });
 
     const missing: string[] = [];
@@ -98,6 +114,44 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
     if (!hero?.title || !hero?.subtitle) missing.push('hero title/subtitle');
     if (!hasHeroImage) missing.push('hero image or og image');
     return missing;
+  }
+
+  /**
+   * Catálogo público: solo categorías visibles con productos activos y
+   * publicados. Un producto agotado sigue apareciendo (se pide por WhatsApp);
+   * lo que lo oculta es `isPublished=false`.
+   */
+  async buildPublicCatalog(site: {
+    tenantId: string;
+    branchId: string;
+  }): Promise<PublicCatalogCategory[]> {
+    const categories = await this.prisma.retailCategory.findMany({
+      where: {
+        tenantId: site.tenantId,
+        branchId: site.branchId,
+        isVisible: true,
+        deletedAt: null,
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        emoji: true,
+        products: {
+          where: { isActive: true, isPublished: true, deletedAt: null },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            priceCOP: true,
+            emoji: true,
+            imageUrls: true,
+          },
+        },
+      },
+    });
+    return categories.filter((category) => category.products.length > 0);
   }
 
   reservedSlugs(): Set<string> {

@@ -6,6 +6,9 @@ const VERTICAL_ALIASES: Record<string, string> = {
   barber: 'barber',
   barberia: 'barber',
   barbershop: 'barber',
+  retail: 'retail',
+  tienda: 'retail',
+  minorista: 'retail',
 };
 
 const RESERVED_MENU_SLUGS = new Set([
