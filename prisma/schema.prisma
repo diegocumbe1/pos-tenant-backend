@@ -1860,6 +1860,19 @@ model PlatformMessage {
   @@map("platform_messages")
 }
 
+// Configuracion comercial global de plataforma (fila unica id = 'singleton').
+// El precio comercial de los planes vive en USD; esta tasa deriva COP para la
+// landing, backoffice y calculos financieros que necesiten equivalencias.
+model PlatformPricingConfig {
+  id           String   @id @default("singleton")
+  usdToCopRate Int      @default(3650)
+  updatedBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("platform_pricing_config")
+}
+
 // Configuración global de mensajería (fila única id = 'singleton').
 // El proveedor de correo se configura DESDE LA CONSOLA, no por variables de
 // entorno: cambiar el remitente o rotar la API key no debe requerir un redeploy.

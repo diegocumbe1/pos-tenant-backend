@@ -29,7 +29,7 @@ export class RecipientResolverService {
     const contact = contacts[0];
 
     let name = contact?.name ?? null;
-    let rawPhone = contact?.whatsapp ?? contact?.phone ?? null;
+    const rawPhone = contact?.whatsapp ?? contact?.phone ?? null;
     let email = contact?.email ?? null;
 
     if (!contact || !email) {

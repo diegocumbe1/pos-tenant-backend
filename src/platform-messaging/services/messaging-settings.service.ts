@@ -37,7 +37,9 @@ export class MessagingSettingsService {
     };
   }
 
-  async update(dto: UpdateMessagingSettingsDto): Promise<PublicMessagingSettings> {
+  async update(
+    dto: UpdateMessagingSettingsDto,
+  ): Promise<PublicMessagingSettings> {
     await this.get();
 
     // La UI no puede mostrar la key guardada, así que manda el campo vacío

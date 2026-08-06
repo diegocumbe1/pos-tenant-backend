@@ -7,7 +7,7 @@
  * OJO: cada sesión levanta un Chromium (~400 MB). Con la del backoffice más la
  * de un tenant hacen falta `WA_MAX_ACTIVE_SESSIONS >= 2`.
  */
-export const PLATFORM_TENANT_ID = '__platform__';
+export { PLATFORM_SESSION_TENANT_ID as PLATFORM_TENANT_ID } from '../whatsapp/whatsapp-session.manager';
 export const PLATFORM_BRANCH_ID = '__platform__';
 
 /** Fila única de configuración (`PlatformMessagingSettings.id`). */

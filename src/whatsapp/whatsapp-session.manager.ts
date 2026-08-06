@@ -36,6 +36,14 @@ interface SessionState {
   readyTimeout?: NodeJS.Timeout;
 }
 
+/**
+ * tenantId sentinel de la sesión de la plataforma (el número de Lynko). Vive
+ * aquí, y no en platform-messaging, para que el manager pueda priorizarla al
+ * restaurar sin importar hacia arriba (platform-messaging ya depende de este
+ * módulo; al revés sería un ciclo).
+ */
+export const PLATFORM_SESSION_TENANT_ID = '__platform__';
+
 const sessionKey = (tenantId: string, branchId: string) => `${tenantId}:${branchId}`;
 
 const safeClientId = (tenantId: string, branchId: string) =>
@@ -52,7 +60,7 @@ export class WhatsAppSessionManager
     : path.resolve(process.cwd(), '.wa-sessions');
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
   private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
-  private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 1);
+  private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 2);
   // Respaldo periódico de la sesión a Storage (RemoteAuth). Mínimo permitido: 60s.
   private readonly backupSyncIntervalMs = Math.max(
     60000,
@@ -88,6 +96,16 @@ export class WhatsAppSessionManager
         orderBy: { updatedAt: 'desc' },
         take: this.maxActiveSessions,
       });
+      // La sesión de la PLATAFORMA (el número de Lynko) va primero: ordenar solo
+      // por `updatedAt` hacía que las sesiones de tenants ocuparan los cupos y
+      // el backoffice se quedara sin poder emparejar, con un 409 al conectar.
+      saved.sort((a, b) =>
+        a.tenantId === PLATFORM_SESSION_TENANT_ID
+          ? -1
+          : b.tenantId === PLATFORM_SESSION_TENANT_ID
+            ? 1
+            : 0,
+      );
       for (const s of saved) {
         this.logger.log(
           `Restaurando sesión WhatsApp guardada: ${s.tenantId}/${s.branchId}`,
@@ -113,6 +131,15 @@ export class WhatsAppSessionManager
         this.logger.warn(`Failed to destroy client ${key}: ${(err as Error).message}`);
       }
     }
+  }
+
+  /**
+   * Cupos de sesión. Cada sesión levanta un Chromium (~400 MB), por eso hay
+   * tope. Se expone para que la consola pueda explicar por qué no puede
+   * emparejar en vez de dejar al usuario mirando un botón que no hace nada.
+   */
+  getCapacity(): { active: number; max: number } {
+    return { active: this.sessions.size, max: this.maxActiveSessions };
   }
 
   getStatus(tenantId: string, branchId: string) {

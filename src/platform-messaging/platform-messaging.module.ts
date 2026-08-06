@@ -2,10 +2,7 @@ import { Logger, Module, OnApplicationBootstrap } from '@nestjs/common';
 import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 import { EmailPlatformChannel } from './channels/email.channel';
 import { WhatsAppPlatformChannel } from './channels/whatsapp.channel';
-import {
-  EMAIL_CHANNEL,
-  WHATSAPP_CHANNEL,
-} from './channels/channel.interface';
+import { EMAIL_CHANNEL, WHATSAPP_CHANNEL } from './channels/channel.interface';
 import { PlatformMessagingController } from './platform-messaging.controller';
 import { MessageSenderService } from './services/message-sender.service';
 import { MessagingSettingsService } from './services/messaging-settings.service';

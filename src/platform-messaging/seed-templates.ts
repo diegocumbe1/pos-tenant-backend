@@ -9,7 +9,8 @@ export interface SeedTemplate {
   body: string;
 }
 
-const FOOTER = 'Cuando pagues, mándanos el comprobante y lo registramos el mismo día.';
+const FOOTER =
+  'Cuando pagues, mándanos el comprobante y lo registramos el mismo día.';
 
 /**
  * Plantillas del sistema. Se siembran al arrancar (idempotente) y quedan
@@ -29,7 +30,7 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     body: [
       'Hola {{dueno}} 👋',
       '',
-      'Te recordamos que tu plan *{{plan}}* de Lynko vence el *{{fecha_vencimiento_larga}}*.',
+      'Te recordamos que el plan *{{plan}}* de Lynko de *{{negocio}}* vence el *{{fecha_vencimiento_larga}}*.',
       'Te quedan *{{dias_para_vencer}} días* para realizar el pago.',
       '',
       '💵 Valor: *{{valor}}* · {{ciclo}}',
@@ -49,11 +50,12 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     name: 'Recordatorio de pago (correo)',
     description: 'Aviso antes del vencimiento, con los medios de pago.',
     channel: PlatformMessageChannel.EMAIL,
-    subject: 'Tu plan {{plan}} de Lynko vence el {{fecha_vencimiento}}',
+    subject:
+      '{{negocio}} · tu plan {{plan}} de Lynko vence el {{fecha_vencimiento}}',
     body: [
       'Hola {{dueno}},',
       '',
-      'Te recordamos que tu plan *{{plan}}* de Lynko vence el *{{fecha_vencimiento_larga}}*.',
+      'Te recordamos que el plan *{{plan}}* de Lynko de *{{negocio}}* vence el *{{fecha_vencimiento_larga}}*.',
       'Te quedan *{{dias_para_vencer}} días* para realizar el pago.',
       '',
       'Valor: *{{valor}}* · {{ciclo}}',
@@ -78,7 +80,7 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     body: [
       'Hola {{dueno}} 👋',
       '',
-      'Tu plan *{{plan}}* de Lynko venció el *{{fecha_vencimiento_larga}}* — hace *{{dias_vencido}} días*.',
+      'El plan *{{plan}}* de Lynko de *{{negocio}}* venció el *{{fecha_vencimiento_larga}}* — hace *{{dias_vencido}} días*.',
       '',
       '💵 Valor pendiente: *{{valor}}* · {{ciclo}}',
       '⚠️ El servicio se suspende el *{{fecha_suspension_larga}}* si no recibimos el pago.',
@@ -96,11 +98,11 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     name: 'Pago vencido (correo)',
     description: 'Variante de mora: se envía sola cuando la fecha ya pasó.',
     channel: PlatformMessageChannel.EMAIL,
-    subject: 'Tu plan {{plan}} de Lynko venció hace {{dias_vencido}} días',
+    subject: '{{negocio}} · tu plan {{plan}} venció hace {{dias_vencido}} días',
     body: [
       'Hola {{dueno}},',
       '',
-      'Tu plan *{{plan}}* de Lynko venció el *{{fecha_vencimiento_larga}}* — hace *{{dias_vencido}} días*.',
+      'El plan *{{plan}}* de Lynko de *{{negocio}}* venció el *{{fecha_vencimiento_larga}}* — hace *{{dias_vencido}} días*.',
       '',
       'Valor pendiente: *{{valor}}* · {{ciclo}}',
       'El servicio se suspende el *{{fecha_suspension_larga}}* si no recibimos el pago.',
@@ -123,7 +125,7 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     body: [
       'Hola {{dueno}} 👋',
       '',
-      'Te compartimos los datos para el pago de tu plan *{{plan}}* ({{valor}} · {{ciclo}}):',
+      'Te compartimos los datos para el pago del plan *{{plan}}* de *{{negocio}}* ({{valor}} · {{ciclo}}):',
       '',
       '{{medios_pago}}',
       '',
@@ -137,11 +139,11 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     name: 'Datos de pago (correo)',
     description: 'Solo los medios de pago, sin recordatorio de vencimiento.',
     channel: PlatformMessageChannel.EMAIL,
-    subject: 'Datos de pago · Lynko',
+    subject: 'Datos de pago · {{negocio}} · Lynko',
     body: [
       'Hola {{dueno}},',
       '',
-      'Te compartimos los datos para el pago de tu plan *{{plan}}* ({{valor}} · {{ciclo}}):',
+      'Te compartimos los datos para el pago del plan *{{plan}}* de *{{negocio}}* ({{valor}} · {{ciclo}}):',
       '',
       '{{medios_pago}}',
       '',
@@ -199,7 +201,7 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     body: [
       '¡Gracias {{dueno}}! ✅',
       '',
-      'Registramos tu pago de *{{valor}}* del plan *{{plan}}*.',
+      'Registramos tu pago de *{{valor}}* del plan *{{plan}}* de *{{negocio}}*.',
       '',
       '📅 Cubre: {{periodo}}',
       '🔄 Próximo pago: {{fecha_vencimiento}}',
@@ -212,11 +214,11 @@ export const SEED_TEMPLATES: SeedTemplate[] = [
     name: 'Pago recibido (correo)',
     description: 'Confirmación después de registrar un pago.',
     channel: PlatformMessageChannel.EMAIL,
-    subject: 'Recibimos tu pago · Lynko',
+    subject: 'Recibimos tu pago · {{negocio}}',
     body: [
       '¡Gracias {{dueno}}!',
       '',
-      'Registramos tu pago de *{{valor}}* del plan *{{plan}}*.',
+      'Registramos tu pago de *{{valor}}* del plan *{{plan}}* de *{{negocio}}*.',
       '',
       'Cubre: {{periodo}}',
       'Próximo pago: {{fecha_vencimiento}}',

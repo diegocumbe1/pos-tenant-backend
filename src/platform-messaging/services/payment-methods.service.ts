@@ -23,15 +23,21 @@ export class PaymentMethodsService {
     const existing = await this.prisma.platformPaymentMethod.findUnique({
       where: { id },
     });
-    if (!existing) throw new NotFoundException(`Medio de pago no encontrado: ${id}`);
+    if (!existing)
+      throw new NotFoundException(`Medio de pago no encontrado: ${id}`);
     if (dto.isDefault) await this.clearDefault(id);
-    return this.prisma.platformPaymentMethod.update({ where: { id }, data: dto });
+    return this.prisma.platformPaymentMethod.update({
+      where: { id },
+      data: dto,
+    });
   }
 
   async remove(id: string) {
-    await this.prisma.platformPaymentMethod.delete({ where: { id } }).catch(() => {
-      throw new NotFoundException(`Medio de pago no encontrado: ${id}`);
-    });
+    await this.prisma.platformPaymentMethod
+      .delete({ where: { id } })
+      .catch(() => {
+        throw new NotFoundException(`Medio de pago no encontrado: ${id}`);
+      });
   }
 
   private clearDefault(exceptId?: string) {
@@ -53,7 +59,8 @@ export class PaymentMethodsService {
     return methods
       .map((m) => {
         const lines = [`*Cómo pagar · ${m.label}*`];
-        if (m.reference) lines.push(`🔑 ${this.referenceLabel(m)}: *${m.reference}*`);
+        if (m.reference)
+          lines.push(`🔑 ${this.referenceLabel(m)}: *${m.reference}*`);
         if (m.holder) lines.push(`👤 Titular: ${m.holder}`);
         if (m.bank && m.kind !== 'breb') lines.push(`🏦 ${m.bank}`);
         if (m.instructions) lines.push(m.instructions);
@@ -75,12 +82,17 @@ export class PaymentMethodsService {
             `<p style="margin:0 0 4px">${escapeHtml(this.referenceLabel(m))}: <strong>${escapeHtml(m.reference)}</strong></p>`,
           );
         }
-        if (m.holder) rows.push(`<p style="margin:0 0 4px">Titular: ${escapeHtml(m.holder)}</p>`);
+        if (m.holder)
+          rows.push(
+            `<p style="margin:0 0 4px">Titular: ${escapeHtml(m.holder)}</p>`,
+          );
         if (m.bank && m.kind !== 'breb') {
           rows.push(`<p style="margin:0 0 4px">${escapeHtml(m.bank)}</p>`);
         }
         if (m.instructions) {
-          rows.push(`<p style="margin:0 0 8px;color:#555">${escapeHtml(m.instructions)}</p>`);
+          rows.push(
+            `<p style="margin:0 0 8px;color:#555">${escapeHtml(m.instructions)}</p>`,
+          );
         }
         if (m.qrImageUrl) {
           rows.push(

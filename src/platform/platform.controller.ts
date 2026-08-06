@@ -34,6 +34,7 @@ import {
   UpdatePlatformExpenseDto,
   UpdatePlanDto,
   UpdatePlatformFinanceGoalDto,
+  UpdatePricingConfigDto,
   UpdateRecurringExpenseDto,
   UpdateSubscriptionDto,
   UpsertBillingContactDto,
@@ -53,6 +54,29 @@ import { PlatformService } from './platform.service';
 @Controller('platform')
 export class PlatformController {
   constructor(private readonly platform: PlatformService) {}
+
+  // ─── Configuracion comercial global ──────────────────────────────────────────
+
+  @Get('pricing-config')
+  @ApiOperation({ summary: 'Get USD to COP pricing rate' })
+  getPricingConfig() {
+    return this.platform.getPricingConfig();
+  }
+
+  @Patch('pricing-config')
+  @ApiOperation({ summary: 'Update USD to COP pricing rate' })
+  updatePricingConfig(
+    @Body() dto: UpdatePricingConfigDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.updatePricingConfig(dto, actor.id);
+  }
+
+  @Delete('pricing-config')
+  @ApiOperation({ summary: 'Reset USD to COP pricing rate to default' })
+  resetPricingConfig(@PlatformActor() actor: AuthenticatedUser) {
+    return this.platform.resetPricingConfig(actor.id);
+  }
 
   // ─── Dashboard / overview ──────────────────────────────────────────────────────
 

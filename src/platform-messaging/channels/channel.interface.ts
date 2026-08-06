@@ -23,6 +23,23 @@ export interface ChannelStatus {
   ready: boolean;
   /** Detalle para la UI: número conectado, remitente configurado, o el error. */
   detail?: string;
+  /**
+   * Estado crudo de la sesión de WhatsApp ('qr_ready', 'authenticated', …).
+   * La consola lo usa para saber qué mostrar mientras se empareja.
+   */
+  state?: string;
+  /**
+   * QR de emparejamiento como data URL. Viaja en el estado —y no por SSE—
+   * porque `EventSource` no puede mandar el header Authorization y estos
+   * endpoints van detrás de JwtAuthGuard; la consola ya hace polling.
+   */
+  qr?: string;
+  /**
+   * Solo WhatsApp: cupos de sesión ocupados / disponibles. Cada sesión es un
+   * Chromium, por eso hay tope (`WA_MAX_ACTIVE_SESSIONS`). Si están llenos, el
+   * pareo falla con 409 y esto permite decirlo antes de intentarlo.
+   */
+  slots?: { active: number; max: number };
 }
 
 /**

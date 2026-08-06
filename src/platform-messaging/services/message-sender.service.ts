@@ -159,7 +159,11 @@ export class MessageSenderService {
         if (channel === 'email') {
           // Se re-renderiza desde la MISMA plantilla, pero con la versión HTML
           // del bloque de medios de pago (que trae el QR embebido).
-          html = this.renderer.renderHtml(template.body, baseValues, htmlValues).html;
+          html = this.renderer.renderHtml(
+            template.body,
+            baseValues,
+            htmlValues,
+          ).html;
         }
       }
 
@@ -216,12 +220,14 @@ export class MessageSenderService {
         continue;
       }
 
-      const sender = preview.channel === 'whatsapp' ? this.whatsapp : this.email;
+      const sender =
+        preview.channel === 'whatsapp' ? this.whatsapp : this.email;
 
       try {
         const sent = await sender.send({
           to: preview.to,
-          subject: preview.subject ?? `Lynko · ${settings.fromName ?? 'Plataforma'}`,
+          subject:
+            preview.subject ?? `Lynko · ${settings.fromName ?? 'Plataforma'}`,
           body: preview.body,
           html: preview.html,
           attachments: preview.attachments,
@@ -296,7 +302,11 @@ export class MessageSenderService {
     if (!method) return [];
     const out: ChannelAttachment[] = [];
     if (method.qrImageUrl) {
-      out.push({ url: method.qrImageUrl, filename: 'qr-pago.webp', isImage: true });
+      out.push({
+        url: method.qrImageUrl,
+        filename: 'qr-pago.webp',
+        isImage: true,
+      });
     }
     if (method.qrPdfUrl) {
       out.push({ url: method.qrPdfUrl, filename: 'qr-pago.pdf' });

@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 const PLANS = ['BASIC', 'PRO', 'PREMIUM'] as const;
@@ -17,6 +18,23 @@ const TENANT_STATUSES = ['ACTIVE', 'SUSPENDED', 'INACTIVE'] as const;
 const BILLING_CYCLES = ['monthly', 'yearly'] as const;
 const USER_STATUSES = ['ACTIVE', 'DISABLED'] as const;
 const PERIODS = ['today', 'week', 'month', 'custom'] as const;
+
+export class UpdatePricingConfigDto {
+  @ApiPropertyOptional({ example: 4100, description: 'COP por 1 USD' })
+  @ValidateIf((dto) => dto.usdToCopRate === undefined)
+  @IsInt()
+  @Min(1)
+  rate?: number;
+
+  @ApiPropertyOptional({
+    example: 4100,
+    description: 'Alias compatible: COP por 1 USD',
+  })
+  @ValidateIf((dto) => dto.rate === undefined)
+  @IsInt()
+  @Min(1)
+  usdToCopRate?: number;
+}
 
 export class UpdatePlanDto {
   @ApiProperty({ enum: PLANS })

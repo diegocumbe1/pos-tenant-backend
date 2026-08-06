@@ -70,7 +70,9 @@ export class StorageRemoteAuthStore {
       // El backup corre cada N minutos aunque la sesión no haya cambiado: si el
       // zip es idéntico al último subido, no hay nada que escribir.
       if (row?.dataHash === hash && row?.storagePath === this.objectPath) {
-        this.logger.debug(`Sesión ${this.clientId} sin cambios, backup omitido`);
+        this.logger.debug(
+          `Sesión ${this.clientId} sin cambios, backup omitido`,
+        );
         return;
       }
 

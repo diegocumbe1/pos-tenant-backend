@@ -37,7 +37,8 @@ export class TemplatesService {
     const existing = await this.prisma.platformMessageTemplate.findUnique({
       where: { id },
     });
-    if (!existing) throw new NotFoundException(`Plantilla no encontrada: ${id}`);
+    if (!existing)
+      throw new NotFoundException(`Plantilla no encontrada: ${id}`);
 
     const body = dto.body ?? existing.body;
     this.assertVariablesAreKnown(body);
@@ -47,7 +48,9 @@ export class TemplatesService {
       where: { id },
       data: {
         ...dto,
-        variables: extractVariables(`${body} ${dto.subject ?? existing.subject ?? ''}`),
+        variables: extractVariables(
+          `${body} ${dto.subject ?? existing.subject ?? ''}`,
+        ),
       },
     });
   }
@@ -57,15 +60,20 @@ export class TemplatesService {
     const existing = await this.prisma.platformMessageTemplate.findUnique({
       where: { id },
     });
-    if (!existing) throw new NotFoundException(`Plantilla no encontrada: ${id}`);
+    if (!existing)
+      throw new NotFoundException(`Plantilla no encontrada: ${id}`);
     if (!existing.isSystem) {
-      throw new ForbiddenException('Solo las plantillas del sistema se pueden restaurar');
+      throw new ForbiddenException(
+        'Solo las plantillas del sistema se pueden restaurar',
+      );
     }
     const seed = SEED_TEMPLATES.find(
       (t) => t.key === existing.key && t.channel === existing.channel,
     );
     if (!seed) {
-      throw new NotFoundException(`No hay versión original de "${existing.key}"`);
+      throw new NotFoundException(
+        `No hay versión original de "${existing.key}"`,
+      );
     }
     return this.prisma.platformMessageTemplate.update({
       where: { id },

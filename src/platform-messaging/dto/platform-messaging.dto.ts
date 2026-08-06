@@ -8,6 +8,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -162,6 +163,13 @@ export class UpdateMessagingSettingsDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
+  // Toda key de Resend empieza por `re_`. Sin esta validación, un autocompletado
+  // del navegador (que pisa el campo con una contraseña guardada) se persiste
+  // como si fuera válido y el fallo recién aparece al primer envío.
+  @Matches(/^re_[A-Za-z0-9_-]{10,}$/, {
+    message:
+      'La API key de Resend debe empezar por "re_". Revisa que no se haya autocompletado otra cosa en el campo.',
+  })
   resendApiKey?: string;
 
   @ApiPropertyOptional({ description: 'true borra la API key guardada.' })
@@ -190,14 +198,17 @@ export class PreviewMessageDto {
 
 export class SendMessageDto extends PreviewMessageDto {
   @ApiPropertyOptional({
-    description: 'Texto editado a mano en el diálogo; reemplaza el renderizado.',
+    description:
+      'Texto editado a mano en el diálogo; reemplaza el renderizado.',
   })
   @IsOptional()
   @IsString()
   @MaxLength(4000)
   bodyOverride?: string;
 
-  @ApiPropertyOptional({ description: 'Adjunta el QR del medio de pago por defecto.' })
+  @ApiPropertyOptional({
+    description: 'Adjunta el QR del medio de pago por defecto.',
+  })
   @IsOptional()
   @IsBoolean()
   includeQr?: boolean;

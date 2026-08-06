@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { dayEndCO } from '../common/date.util';
+import { dayEndCO, dayStartCO } from '../common/date.util';
 import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlatformExpenseDto,
@@ -19,6 +19,7 @@ import {
   UpdatePlanDto,
   UpdatePlatformExpenseDto,
   UpdatePlatformFinanceGoalDto,
+  UpdatePricingConfigDto,
   UpdateRecurringExpenseDto,
   UpdateSubscriptionDto,
   UpsertBillingContactDto,
@@ -75,12 +76,68 @@ const RECURRENCE_MONTHS: Record<string, number> = {
 };
 
 const VALID_FEATURE_KEYS = new Set(Object.keys(PLAN_FEATURES.BASIC));
+const PLATFORM_PRICING_CONFIG_ID = 'singleton';
+const DEFAULT_USD_TO_COP_RATE = 3650;
 
 @Injectable()
 export class PlatformService {
   private readonly logger = new Logger(PlatformService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  // ─── Configuracion comercial global ─────────────────────────────────────────
+
+  async getPricingConfig() {
+    const config = await this.ensurePricingConfig();
+    return this.toPricingConfigDto(config);
+  }
+
+  async updatePricingConfig(dto: UpdatePricingConfigDto, actorUserId: string) {
+    const rate = dto.rate ?? dto.usdToCopRate;
+    if (!Number.isFinite(rate) || !rate || rate <= 0) {
+      throw new BadRequestException('rate must be a positive integer');
+    }
+
+    const current = await this.ensurePricingConfig();
+    const updated = await this.prisma.platformPricingConfig.update({
+      where: { id: PLATFORM_PRICING_CONFIG_ID },
+      data: {
+        usdToCopRate: Math.round(rate),
+        updatedBy: actorUserId,
+      },
+    });
+
+    await this.audit(
+      actorUserId,
+      'platform.pricing.update',
+      'platform_pricing_config',
+      PLATFORM_PRICING_CONFIG_ID,
+      this.toPricingConfigDto(current),
+      this.toPricingConfigDto(updated),
+    );
+    return this.toPricingConfigDto(updated);
+  }
+
+  async resetPricingConfig(actorUserId: string) {
+    const current = await this.ensurePricingConfig();
+    const updated = await this.prisma.platformPricingConfig.update({
+      where: { id: PLATFORM_PRICING_CONFIG_ID },
+      data: {
+        usdToCopRate: DEFAULT_USD_TO_COP_RATE,
+        updatedBy: actorUserId,
+      },
+    });
+
+    await this.audit(
+      actorUserId,
+      'platform.pricing.reset',
+      'platform_pricing_config',
+      PLATFORM_PRICING_CONFIG_ID,
+      this.toPricingConfigDto(current),
+      this.toPricingConfigDto(updated),
+    );
+    return this.toPricingConfigDto(updated);
+  }
 
   // ─── Tenants ────────────────────────────────────────────────────────────────
 
@@ -684,7 +741,12 @@ export class PlatformService {
     actorUserId: string,
   ) {
     const tenant = await this.loadTenant(tenantId);
-    const periodEnd = new Date(dto.periodEnd);
+    // Los periodos llegan del formulario como 'YYYY-MM-DD'. `new Date()` los
+    // parsea como UTC y en Colombia caen el día anterior a las 19:00, así que
+    // el periodo cubierto se corría un día. Se anclan al día colombiano: el
+    // inicio al comienzo del día, el fin al final.
+    const periodStart = dayStartCO(dto.periodStart);
+    const periodEnd = dayEndCO(dto.periodEnd);
     const extend = dto.extendPeriod ?? true;
 
     const kind = dto.kind ?? 'payment';
@@ -729,7 +791,7 @@ export class PlatformService {
           currency,
           billingCycle:
             dto.billingCycle ?? subscription.billingCycle ?? 'monthly',
-          periodStart: new Date(dto.periodStart),
+          periodStart,
           periodEnd,
           paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
           method: dto.method ?? 'manual',
@@ -747,7 +809,7 @@ export class PlatformService {
         await tx.subscription.update({
           where: { tenantId },
           data: {
-            currentPeriodStart: new Date(dto.periodStart),
+            currentPeriodStart: periodStart,
             currentPeriodEnd: periodEnd,
             nextPaymentDueAt: periodEnd,
             graceEndsAt: this.addDays(periodEnd, GRACE_DAYS),
@@ -2287,6 +2349,29 @@ export class PlatformService {
       branchIds: user.userBranches.map((ub) => ub.branchId),
       isActive: user.isActive,
       createdAt: user.createdAt.toISOString(),
+    };
+  }
+
+  private async ensurePricingConfig() {
+    return this.prisma.platformPricingConfig.upsert({
+      where: { id: PLATFORM_PRICING_CONFIG_ID },
+      update: {},
+      create: {
+        id: PLATFORM_PRICING_CONFIG_ID,
+        usdToCopRate: DEFAULT_USD_TO_COP_RATE,
+      },
+    });
+  }
+
+  private toPricingConfigDto(
+    config: Prisma.PlatformPricingConfigGetPayload<Record<string, never>>,
+  ) {
+    return {
+      id: config.id,
+      rate: config.usdToCopRate,
+      usdToCopRate: config.usdToCopRate,
+      updatedAt: config.updatedAt.toISOString(),
+      updatedBy: config.updatedBy ?? undefined,
     };
   }
 

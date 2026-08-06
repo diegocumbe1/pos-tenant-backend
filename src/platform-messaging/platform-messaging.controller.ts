@@ -9,13 +9,11 @@ import {
   Patch,
   Post,
   Query,
-  Sse,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { OnEvent } from '@nestjs/event-emitter';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -25,8 +23,6 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { PlatformMessageChannel } from '@prisma/client';
-import { Observable, Subject } from 'rxjs';
-import { filter, map } from 'rxjs/operators';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformActor } from '../platform/decorators/platform-actor.decorator';
@@ -55,15 +51,6 @@ import { TemplatesService } from './services/templates.service';
 import { TEMPLATE_VARIABLES } from './template-variables';
 import { EmailPlatformChannel } from './channels/email.channel';
 
-interface WaStatusEvent {
-  tenantId: string;
-  branchId: string;
-  status: string;
-  qr?: string;
-  phoneNumber?: string;
-  error?: string;
-}
-
 /** Ancho de salida del QR: por debajo de ~600 px la cámara sufre para leerlo. */
 const QR_MAX_WIDTH = 800;
 
@@ -77,8 +64,6 @@ const QR_MAX_WIDTH = 800;
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('platform')
 export class PlatformMessagingController {
-  private readonly waStatus$ = new Subject<WaStatusEvent>();
-
   constructor(
     private readonly templates: TemplatesService,
     private readonly paymentMethods: PaymentMethodsService,
@@ -88,11 +73,6 @@ export class PlatformMessagingController {
     private readonly images: ImageUploadService,
     private readonly email: EmailPlatformChannel,
   ) {}
-
-  @OnEvent('wa.status')
-  onWaStatus(payload: WaStatusEvent) {
-    this.waStatus$.next(payload);
-  }
 
   // ─── Canales ────────────────────────────────────────────────────────────────
 
@@ -104,35 +84,12 @@ export class PlatformMessagingController {
 
   @Post('messaging/channels/whatsapp/pair')
   @HttpCode(HttpStatus.ACCEPTED)
-  @ApiOperation({ summary: 'Inicia el pareo del WhatsApp de Lynko (devuelve QR por SSE)' })
+  @ApiOperation({
+    summary:
+      'Inicia el pareo del WhatsApp de Lynko. El QR aparece en GET /messaging/channels',
+  })
   pairWhatsApp() {
     return this.sessions.pair(PLATFORM_TENANT_ID, PLATFORM_BRANCH_ID);
-  }
-
-  @Sse('messaging/channels/whatsapp/stream')
-  streamWhatsApp(): Observable<MessageEvent> {
-    const initial = this.sessions.getStatus(PLATFORM_TENANT_ID, PLATFORM_BRANCH_ID);
-    return new Observable<MessageEvent>((subscriber) => {
-      subscriber.next({
-        data: { ...initial, tenantId: PLATFORM_TENANT_ID },
-      } as MessageEvent);
-      // Latido: mantiene viva la conexión detrás de proxies que cortan por inactividad.
-      const heartbeat = setInterval(() => {
-        subscriber.next({
-          data: this.sessions.getStatus(PLATFORM_TENANT_ID, PLATFORM_BRANCH_ID),
-        } as MessageEvent);
-      }, 25000);
-      const sub = this.waStatus$
-        .pipe(
-          filter((e) => e.tenantId === PLATFORM_TENANT_ID),
-          map((e) => ({ data: e }) as MessageEvent),
-        )
-        .subscribe((msg) => subscriber.next(msg));
-      return () => {
-        clearInterval(heartbeat);
-        sub.unsubscribe();
-      };
-    });
   }
 
   @Delete('messaging/channels/whatsapp')
@@ -143,7 +100,9 @@ export class PlatformMessagingController {
 
   @Post('messaging/channels/email/test')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Envía un correo de prueba con la configuración actual' })
+  @ApiOperation({
+    summary: 'Envía un correo de prueba con la configuración actual',
+  })
   async testEmail(@Body() dto: SendTestEmailDto) {
     // `sendTest` no exige que el canal esté encendido: se prueba la config y
     // luego se enciende, no al revés.
@@ -241,7 +200,9 @@ export class PlatformMessagingController {
 
   @Post('tenants/:id/messages/preview')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Renderiza el mensaje con los datos reales de la cuenta' })
+  @ApiOperation({
+    summary: 'Renderiza el mensaje con los datos reales de la cuenta',
+  })
   preview(@Param('id') tenantId: string, @Body() dto: PreviewMessageDto) {
     return this.sender.preview(tenantId, dto.templateKey, dto.channels, {
       includeQr: true,
@@ -250,7 +211,9 @@ export class PlatformMessagingController {
 
   @Post('tenants/:id/messages/send')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Envía por los canales pedidos; tolerante por canal' })
+  @ApiOperation({
+    summary: 'Envía por los canales pedidos; tolerante por canal',
+  })
   send(
     @Param('id') tenantId: string,
     @Body() dto: SendMessageDto,
