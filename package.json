@@ -8,6 +8,7 @@
   "scripts": {
     "prebuild": "prisma generate",
     "build": "nest build",
+    "clean": "rm -rf dist",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "TZ=America/Bogota nest start",
     "start:dev": "TZ=America/Bogota nest start --watch",

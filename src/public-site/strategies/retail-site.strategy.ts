@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { slugify } from '../../barber/shared/barber-slug';
+import { toPublicProductOptions } from '../../retail/shared/retail-product-options';
 import {
   PublicCatalogCategory,
   PublishableSite,
@@ -147,6 +148,7 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
             imageUrls: true,
             stock: true,
             trackStock: true,
+            options: true,
           },
         },
       },
@@ -157,11 +159,13 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
       .map((category) => ({
         ...category,
         products: category.products.map(
-          ({ trackStock, stock, ...product }) => ({
+          ({ trackStock, stock, options, ...product }) => ({
             ...product,
             // Sin control de stock (servicios) → siempre disponible.
             stock: trackStock ? stock : null,
             inStock: trackStock ? stock > 0 : true,
+            // Solo viaja si el admin configuró opciones para ese producto.
+            options: toPublicProductOptions(options),
           }),
         ),
       }));

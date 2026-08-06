@@ -9,6 +9,10 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
+  readProductOptions,
+  sanitizeProductOptions,
+} from '../../shared/retail-product-options';
+import {
   CreateRetailCategoryDto,
   CreateRetailProductDto,
   UpdateRetailCategoryDto,
@@ -172,6 +176,8 @@ export class RetailCatalogService {
     );
 
     const initialStock = dto.trackStock === false ? 0 : (dto.stock ?? 0);
+    const imageUrls = dto.imageUrls ?? [];
+    const options = sanitizeProductOptions(dto.options, imageUrls);
 
     try {
       const product = await this.prisma.$transaction(async (tx) => {
@@ -191,7 +197,7 @@ export class RetailCatalogService {
             minPriceCOP: dto.minPriceCOP,
             minMarginPct: dto.minMarginPct,
             emoji: dto.emoji,
-            imageUrls: dto.imageUrls ?? [],
+            imageUrls,
             trackStock: dto.trackStock ?? true,
             stock: initialStock,
             minStock: dto.minStock ?? 0,
@@ -199,6 +205,9 @@ export class RetailCatalogService {
             isPublished: dto.isPublished ?? true,
             sortOrder: dto.sortOrder ?? 0,
             attributes: (dto.attributes ?? undefined) as
+              | Prisma.InputJsonValue
+              | undefined,
+            options: (options ?? undefined) as
               | Prisma.InputJsonValue
               | undefined,
           },
@@ -251,6 +260,22 @@ export class RetailCatalogService {
         'Category',
       );
     }
+    // Las opciones se revalidan contra las fotos que quedarán guardadas, no
+    // contra las que llegan: si el admin borró una foto que un color usaba, la
+    // referencia debe morir con ella aunque el cliente no reenvíe las opciones.
+    let options: Prisma.InputJsonValue | typeof Prisma.DbNull | undefined;
+    if (dto.options !== undefined || dto.imageUrls !== undefined) {
+      const current = await this.prisma.retailProduct.findUnique({
+        where: { id },
+        select: { imageUrls: true, options: true },
+      });
+      const sanitized = sanitizeProductOptions(
+        dto.options ?? readProductOptions(current?.options),
+        dto.imageUrls ?? current?.imageUrls ?? [],
+      );
+      options = (sanitized as Prisma.InputJsonValue | null) ?? Prisma.DbNull;
+    }
+
     // El stock no se edita aquí: se mueve por /retail/inventory para dejar kardex.
     try {
       const updated = await this.prisma.retailProduct.update({
@@ -278,6 +303,7 @@ export class RetailCatalogService {
           attributes: (dto.attributes ?? undefined) as
             | Prisma.InputJsonValue
             | undefined,
+          options,
         },
         include: {
           category: { select: { id: true, name: true, emoji: true } },
@@ -349,6 +375,9 @@ export class RetailCatalogService {
       isPublished: product.isPublished,
       sortOrder: product.sortOrder,
       attributes: product.attributes,
+      // Siempre array: el formulario del admin no tiene que distinguir entre
+      // "nunca se configuró" y "se vació".
+      options: readProductOptions(product.options),
       createdAt: product.createdAt,
       updatedAt: product.updatedAt,
     };

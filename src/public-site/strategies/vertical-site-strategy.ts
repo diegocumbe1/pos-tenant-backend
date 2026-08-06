@@ -81,6 +81,30 @@ export type PublishableSite = {
   assets: { kind: string; isVisible: boolean }[];
 };
 
+/**
+ * Opción elegible de un producto publicado (color, talla, …). El contrato es
+ * genérico a propósito: la vertical decide de dónde salen y si existen; el
+ * renderer solo pinta un selector por grupo. Sin grupos, no se pinta nada.
+ */
+export type PublicCatalogOptionValue = {
+  id: string;
+  label: string;
+  copy: string | null;
+  /** Muestra de color, cuando el grupo es de tipo color. */
+  hex: string | null;
+  /** Fotos del producto asociadas a este valor (subconjunto de imageUrls). */
+  imageUrls: string[];
+  isAvailable: boolean;
+};
+
+export type PublicCatalogOption = {
+  id: string;
+  kind: 'color' | 'size' | 'custom';
+  label: string;
+  required: boolean;
+  values: PublicCatalogOptionValue[];
+};
+
 /** A product group of the public catalog, as rendered by the site. */
 export type PublicCatalogCategory = {
   id: string;
@@ -100,6 +124,11 @@ export type PublicCatalogCategory = {
      */
     stock: number | null;
     inStock: boolean;
+    /**
+     * Ausente cuando el producto no tiene opciones configuradas: el sitio no
+     * debe inventar un selector de color ni de talla para quien no los definió.
+     */
+    options?: PublicCatalogOption[];
   }>;
 };
 

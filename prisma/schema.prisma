@@ -60,6 +60,7 @@ model Tenant {
   retailStockMovements RetailStockMovement[]
   retailCustomers      RetailCustomer[]
   retailSales          RetailSale[]
+  retailPurchaseItems  RetailPurchaseItem[]
   publicSites          PublicSite[]
   orderEvents          OrderEvent[]
   orderClaims          OrderClaim[]
@@ -158,6 +159,7 @@ model Branch {
   retailStockMovements RetailStockMovement[]
   retailCustomers      RetailCustomer[]
   retailSales          RetailSale[]
+  retailPurchaseItems  RetailPurchaseItem[]
   publicSites          PublicSite[]
   printers             Printer[]
   printJobs            PrintJob[]
@@ -1910,14 +1912,23 @@ model RetailProduct {
   isActive    Boolean        @default(true)
   isPublished Boolean        @default(true)
   sortOrder   Int            @default(0)
-  // Atributos libres del producto (color, modelo compatible, capacidad...).
+  // Atributos libres del producto (modelo compatible, capacidad...).
   attributes  Json?
+  // Opciones de presentación que el cliente elige al pedir: color, talla, etc.
+  // Cada grupo trae sus valores con copy propio y las fotos asociadas, así el
+  // sitio público puede mostrar "Pijama color negro" y cambiar la galería al
+  // elegir. Null / [] = el producto no ofrece opciones y no se muestra nada.
+  // Es configuración de catálogo, no una matriz de variantes: el stock y el SKU
+  // siguen siendo del producto (una variante con inventario propio sería otra
+  // tabla y cambiaría POS, kardex y ventas).
+  options     Json?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
   deletedAt   DateTime?
 
-  movements RetailStockMovement[]
-  saleItems RetailSaleItem[]
+  movements     RetailStockMovement[]
+  saleItems     RetailSaleItem[]
+  purchaseItems RetailPurchaseItem[]
 
   @@unique([tenantId, branchId, sku])
   @@index([tenantId, branchId, deletedAt])
@@ -2053,4 +2064,66 @@ model RetailSaleItem {
   @@index([saleId])
   @@index([productId])
   @@map("retail_sale_items")
+}
+
+enum RetailPurchaseStatus {
+  PENDING // apuntado: falta pedirlo al proveedor
+  ORDERED // ya se hizo el pedido, se espera que llegue
+  RECEIVED // llegó a la tienda
+  CANCELLED // ya no se va a pedir
+}
+
+/**
+ * Lista de pedidos al proveedor: el paso previo al catálogo y al inventario.
+ *
+ * Es una lista de tareas, no un documento contable. Se apunta lo que hace falta
+ * ("20 pijamas beige"), se marca cuando se pidió y se marca cuando llegó; cada
+ * marca deja su fecha, así se sabe cuánto lleva un pedido sin hacerse o sin
+ * llegar. Recién al recibir se toca el inventario, y siempre por el kardex.
+ *
+ * `productId` es opcional a propósito: se apunta mercancía que todavía no
+ * existe en el catálogo (por eso es el paso *previo*). Cuando sí está enlazado,
+ * recibirlo puede generar el movimiento PURCHASE del inventario.
+ */
+model RetailPurchaseItem {
+  id        String  @id @default(cuid())
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  branchId  String
+  branch    Branch  @relation(fields: [branchId], references: [id])
+  // Enlace opcional al catálogo: null = todavía no es un producto de la tienda.
+  productId String?
+  product   RetailProduct? @relation(fields: [productId], references: [id])
+  // Lo que se apunta. Con producto enlazado arranca con su nombre, pero se
+  // puede editar: "pijamas beige talla M" describe mejor el pedido.
+  name      String
+  quantity  Int     @default(1)
+  // Unidad de compra tal como se le pide al proveedor (cajas, docenas, pares).
+  unit      String?
+  supplier  String?
+  // Costo unitario estimado al apuntarlo; al recibir se confirma y va al kardex.
+  estimatedCostCOP Int?
+  note      String?
+  status    RetailPurchaseStatus @default(PENDING)
+  // Prioridad simple para ordenar la lista: lo urgente primero.
+  isUrgent  Boolean @default(false)
+
+  // Fechas de cada marca: sin ellas la lista no dice si algo está atascado.
+  createdAt  DateTime  @default(now())
+  orderedAt  DateTime?
+  receivedAt DateTime?
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  // Quién marcó cada paso (sin FK: User es transversal a las verticales).
+  createdById  String?
+  orderedById  String?
+  receivedById String?
+  // Movimiento de inventario generado al recibir, si se enlazó al catálogo.
+  stockMovementId String?
+
+  @@index([tenantId, branchId, status, deletedAt])
+  @@index([tenantId, branchId, createdAt])
+  @@index([productId])
+  @@map("retail_purchase_items")
 }

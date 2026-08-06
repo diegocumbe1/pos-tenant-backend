@@ -9,6 +9,12 @@
     "target": "ES2023",
     "sourceMap": true,
     "outDir": "./dist",
+    // Fija la salida en dist/<ruta-desde-la-raíz> → siempre dist/src/main.js,
+    // que es lo que esperan `start:prod` y el CMD del Dockerfile. Sin rootDir,
+    // tsc infiere la raíz común de los archivos del programa: si prisma/*.ts o
+    // scripts/*.ts salieran de la compilación, el entrypoint se movería solo a
+    // dist/main.js y producción rompería.
+    "rootDir": ".",
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": true,
