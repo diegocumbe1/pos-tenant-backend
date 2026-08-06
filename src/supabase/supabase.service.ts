@@ -18,6 +18,7 @@ export class SupabaseService {
   private _admin?: SupabaseClient;
   private _public?: SupabaseClient;
   private assetsBucketReady = false;
+  private privateBucketReady = false;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -57,6 +58,15 @@ export class SupabaseService {
 
   get assetsBucket(): string {
     return this.config.get<string>('SUPABASE_ASSETS_BUCKET') || 'lynko-assets';
+  }
+
+  // Bucket NO público: blobs internos que nunca se sirven al navegador
+  // (sesiones de WhatsApp, respaldos). Separado de `assetsBucket` porque ese es
+  // público y tiene límite de 5MB + mimes de imagen.
+  get privateBucket(): string {
+    return (
+      this.config.get<string>('SUPABASE_PRIVATE_BUCKET') || 'lynko-private'
+    );
   }
 
   async inviteUserByEmail(email: string, options: InviteUserOptions = {}) {
@@ -269,6 +279,121 @@ export class SupabaseService {
         `Supabase asset delete failed: ${error.message}`,
       );
     }
+  }
+
+  async uploadPrivateFile(params: {
+    path: string;
+    buffer: Buffer;
+    contentType?: string;
+  }) {
+    await this.ensurePrivateBucket();
+
+    const { error } = await this.admin.storage
+      .from(this.privateBucket)
+      .upload(params.path, params.buffer, {
+        contentType: params.contentType ?? 'application/octet-stream',
+        upsert: true,
+      });
+
+    if (error) {
+      this.logger.error(`Private upload failed: ${error.message}`);
+      throw new InternalServerErrorException(
+        `Supabase private upload failed: ${error.message}`,
+      );
+    }
+
+    return { bucket: this.privateBucket, path: params.path };
+  }
+
+  async downloadPrivateFile(path: string): Promise<Buffer> {
+    await this.ensurePrivateBucket();
+
+    const { data, error } = await this.admin.storage
+      .from(this.privateBucket)
+      .download(path);
+
+    if (error || !data) {
+      throw new InternalServerErrorException(
+        `Supabase private download failed: ${error?.message ?? 'no data'}`,
+      );
+    }
+
+    return Buffer.from(await data.arrayBuffer());
+  }
+
+  // Metadata sin descargar el archivo: `list` devuelve tamaño y fecha, así que
+  // comprobar existencia no consume egress del tamaño del objeto.
+  async statPrivateFile(
+    path: string,
+  ): Promise<{ size: number; updatedAt?: string } | null> {
+    await this.ensurePrivateBucket();
+
+    const slash = path.lastIndexOf('/');
+    const dir = slash === -1 ? '' : path.slice(0, slash);
+    const name = slash === -1 ? path : path.slice(slash + 1);
+
+    const { data, error } = await this.admin.storage
+      .from(this.privateBucket)
+      .list(dir, { limit: 1, search: name });
+
+    if (error) {
+      this.logger.warn(`Private stat failed for ${path}: ${error.message}`);
+      return null;
+    }
+
+    const found = data?.find((entry) => entry.name === name);
+    if (!found) return null;
+
+    return {
+      size: Number((found.metadata as { size?: number } | null)?.size ?? 0),
+      updatedAt: found.updated_at ?? undefined,
+    };
+  }
+
+  async deletePrivateFile(path: string) {
+    await this.ensurePrivateBucket();
+
+    const { error } = await this.admin.storage
+      .from(this.privateBucket)
+      .remove([path]);
+
+    if (error) {
+      this.logger.warn(`Private delete failed for ${path}: ${error.message}`);
+    }
+  }
+
+  private async ensurePrivateBucket() {
+    if (this.privateBucketReady) return;
+
+    const { error: getError } = await this.admin.storage.getBucket(
+      this.privateBucket,
+    );
+
+    if (!getError) {
+      this.privateBucketReady = true;
+      return;
+    }
+
+    // 50MB es el tope global por archivo del plan Free; pedir más falla con
+    // "The object exceeded the maximum allowed size". Configurable por si el
+    // proyecto sube de plan y la sesión crece.
+    const { error: createError } = await this.admin.storage.createBucket(
+      this.privateBucket,
+      {
+        public: false,
+        fileSizeLimit:
+          this.config.get<string>('SUPABASE_PRIVATE_MAX_FILE_SIZE') || '50MB',
+      },
+    );
+
+    if (createError) {
+      this.logger.error(`Private bucket setup failed: ${createError.message}`);
+      throw new InternalServerErrorException(
+        `Supabase private bucket setup failed: ${createError.message}`,
+      );
+    }
+
+    this.privateBucketReady = true;
   }
 
   private async ensureAssetsBucket() {

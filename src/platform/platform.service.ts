@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { dayEndCO } from '../common/date.util';
+import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlatformExpenseDto,
   CreatePaymentDto,
@@ -60,8 +62,8 @@ const ACTION_MAP: Record<
 // Roles del BE → UserRole del FE (el FE usa ADMINISTRATIVE en vez de ADMIN).
 const ROLE_CODE_MAP: Record<string, string> = { ADMIN: 'ADMINISTRATIVE' };
 
-// Días de gracia tras el vencimiento antes de cortar el acceso.
-const GRACE_DAYS = 5;
+// GRACE_DAYS vive en platform.constants para que la mensajería calcule la misma
+// fecha de suspensión que muestra esta consola.
 
 // Cuántos meses representa cada ciclo, para mensualizar compromisos recurrentes
 // y calcular el burn rate mensual de la plataforma.
@@ -568,16 +570,21 @@ export class PlatformService {
         data: {
           plan: dto.plan,
           billingCycle: dto.billingCycle,
+          // El formulario manda 'YYYY-MM-DD'. `new Date('2026-08-10')` se parsea
+          // como UTC por spec y en Colombia cae el 9 a las 19:00, así que el
+          // vencimiento quedaba un día antes de lo que el admin escribió. Se
+          // guarda como FIN de ese día en hora Colombia: el cliente tiene todo
+          // el día para pagar.
           currentPeriodEnd: dto.currentPeriodEnd
-            ? new Date(dto.currentPeriodEnd)
+            ? dayEndCO(dto.currentPeriodEnd)
             : undefined,
           nextPaymentDueAt: dto.nextPaymentDueAt
-            ? new Date(dto.nextPaymentDueAt)
+            ? dayEndCO(dto.nextPaymentDueAt)
             : dto.currentPeriodEnd
-              ? new Date(dto.currentPeriodEnd)
+              ? dayEndCO(dto.currentPeriodEnd)
               : undefined,
           graceEndsAt: dto.currentPeriodEnd
-            ? this.addDays(new Date(dto.currentPeriodEnd), GRACE_DAYS)
+            ? this.addDays(dayEndCO(dto.currentPeriodEnd), GRACE_DAYS)
             : undefined,
           priceCOP: agreedCOP,
           priceUSD: agreedUSD,

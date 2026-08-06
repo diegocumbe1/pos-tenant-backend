@@ -22,6 +22,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "bootstrap:root": "ts-node scripts/bootstrap-root.ts",
     "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
+    "migrate:wa-session": "ts-node scripts/migrate-wa-session-to-storage.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "seed:jimcell": "ts-node scripts/seed-jimcell.ts",
     "seed:casehub": "ts-node scripts/seed-casehub.ts",

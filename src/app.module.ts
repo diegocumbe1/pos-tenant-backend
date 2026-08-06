@@ -18,6 +18,7 @@ import { BarberModule } from './barber/barber.module';
 import { RetailModule } from './retail/retail.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PlatformModule } from './platform/platform.module';
+import { PlatformMessagingModule } from './platform-messaging/platform-messaging.module';
 import { StaffCompensationModule } from './staff-compensation/staff-compensation.module';
 import { LoggingInterceptor } from './monitoring/logging.interceptor';
 import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
@@ -40,6 +41,7 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
     RetailModule,
     NotificationsModule,
     PlatformModule,
+    PlatformMessagingModule,
     StaffCompensationModule,
   ],
   controllers: [AppController],

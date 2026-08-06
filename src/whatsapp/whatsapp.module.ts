@@ -12,6 +12,8 @@ import { WhatsAppWebJsProvider } from './providers/whatsapp-webjs.provider';
     WhatsAppSessionManager,
     { provide: MESSAGING_PROVIDER, useClass: WhatsAppWebJsProvider },
   ],
-  exports: [WhatsAppService],
+  // El session manager se exporta para que la mensajería de plataforma pueda
+  // manejar su propia sesión (el número de Lynko) sin duplicar el motor.
+  exports: [WhatsAppService, WhatsAppSessionManager],
 })
 export class WhatsAppModule {}

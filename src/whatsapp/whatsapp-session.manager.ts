@@ -11,7 +11,8 @@ import * as QRCode from 'qrcode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { PrismaService } from '../prisma/prisma.service';
-import { PrismaRemoteAuthStore } from './prisma-remote-auth.store';
+import { SupabaseService } from '../supabase/supabase.service';
+import { StorageRemoteAuthStore } from './storage-remote-auth.store';
 
 export type SessionStatus =
   | 'idle'
@@ -49,23 +50,37 @@ export class WhatsAppSessionManager
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
   private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
   private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 1);
-  // Respaldo periódico de la sesión a DB (RemoteAuth). Mínimo permitido: 60s.
+  // Respaldo periódico de la sesión a Storage (RemoteAuth). Mínimo permitido: 60s.
   private readonly backupSyncIntervalMs = Math.max(
     60000,
     Number(process.env.WA_BACKUP_SYNC_MS ?? 1800000),
   );
+  // Restaurar la sesión al arrancar descarga ~30MB del bucket. En dev, con
+  // hot-reload, eso se repite en cada guardado y quema la cuota de egress del
+  // proyecto, así que por defecto solo se restaura en producción.
+  private readonly restoreOnBoot =
+    process.env.WA_RESTORE_ON_BOOT !== undefined
+      ? process.env.WA_RESTORE_ON_BOOT === 'true'
+      : process.env.NODE_ENV === 'production';
 
   constructor(
     private readonly events: EventEmitter2,
     private readonly prisma: PrismaService,
+    private readonly supabase: SupabaseService,
   ) {}
 
-  // Reconecta al arrancar las sesiones ya guardadas en DB (sin QR). Así WhatsApp
+  // Reconecta al arrancar las sesiones ya guardadas (sin QR). Así WhatsApp
   // sigue conectado tras redeploys/reinicios, en cualquier ambiente.
   async onApplicationBootstrap() {
+    if (!this.restoreOnBoot) {
+      this.logger.log(
+        'Restore-on-boot de WhatsApp desactivado (WA_RESTORE_ON_BOOT=false o entorno no productivo)',
+      );
+      return;
+    }
     try {
       const saved = await this.prisma.whatsappSession.findMany({
-        where: { data: { not: null } },
+        where: { storagePath: { not: null } },
         select: { tenantId: true, branchId: true },
         orderBy: { updatedAt: 'desc' },
         take: this.maxActiveSessions,
@@ -189,13 +204,14 @@ export class WhatsAppSessionManager
           process.env.WA_WEB_VERSION_PATH ??
           'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
       },
-      // Sesión persistida en DB (sobrevive redeploys, igual en local/prod).
+      // Sesión persistida en Storage (sobrevive redeploys, igual en local/prod).
       authStrategy: new RemoteAuth({
         clientId,
         dataPath: this.dataPath,
         backupSyncIntervalMs: this.backupSyncIntervalMs,
-        store: new PrismaRemoteAuthStore(
+        store: new StorageRemoteAuthStore(
           this.prisma,
+          this.supabase,
           clientId,
           tenantId,
           branchId,
@@ -284,7 +300,7 @@ export class WhatsAppSessionManager
     });
 
     client.on('remote_session_saved', () => {
-      this.logger.debug(`WhatsApp session persisted to DB for ${key}`);
+      this.logger.debug(`WhatsApp session persisted to Storage for ${key}`);
     });
 
     client.on('auth_failure', (msg) => {
@@ -307,9 +323,7 @@ export class WhatsAppSessionManager
       const isTerminal = terminal.includes(String(reason).toUpperCase());
       void this.destroyClient(key, state, { remove: true }).then(() => {
         if (isTerminal) {
-          this.prisma.whatsappSession
-            .delete({ where: { clientId } })
-            .catch(() => undefined);
+          void this.purgePersistedSession(clientId);
           for (const dir of this.localSessionDirs(clientId)) {
             if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
           }
@@ -341,18 +355,31 @@ export class WhatsAppSessionManager
       await this.destroyClient(key, state, { logout: true });
     }
 
-    // Borra la sesión persistida en DB (idempotente) + carpetas temporales locales.
+    // Borra la sesión persistida (idempotente) + carpetas temporales locales.
     const clientId = safeClientId(tenantId, branchId);
-    await this.prisma.whatsappSession
-      .delete({ where: { clientId } })
-      .catch(() => undefined);
+    await this.purgePersistedSession(clientId);
     for (const dir of this.localSessionDirs(clientId)) {
       if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
     }
     this.events.emit('wa.status', { tenantId, branchId, status: 'idle' });
   }
 
-  // Carpetas de trabajo locales de RemoteAuth (efímeras; la fuente real es la DB).
+  // Elimina la sesión persistida: el zip en el bucket privado + la fila índice.
+  // Idempotente: se llama en desvinculaciones y en logout desde el celular.
+  private async purgePersistedSession(clientId: string) {
+    await this.supabase
+      .deletePrivateFile(`whatsapp-sessions/${clientId}.zip`)
+      .catch((err: Error) =>
+        this.logger.warn(
+          `No se pudo borrar el zip de sesión de ${clientId}: ${err.message}`,
+        ),
+      );
+    await this.prisma.whatsappSession
+      .delete({ where: { clientId } })
+      .catch(() => undefined);
+  }
+
+  // Carpetas de trabajo locales de RemoteAuth (efímeras; la fuente real es Storage).
   private localSessionDirs(clientId: string): string[] {
     return [
       path.join(this.dataPath, `RemoteAuth-${clientId}`),

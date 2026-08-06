@@ -71,6 +71,7 @@ model Tenant {
   notificationEvents   NotificationEvent[]
   notificationPrefs    NotificationPreference[]
   webPushSubscriptions WebPushSubscription[]
+  platformMessages     PlatformMessage[]
 
   @@index([plan])
   @@index([verticalId])
@@ -1760,6 +1761,119 @@ model PlatformAuditLog {
   @@map("platform_audit_logs")
 }
 
+// ─── Mensajería de plataforma (super-admin → dueño del tenant) ────────────────
+// Envío MANUAL de WhatsApp/correo desde el backoffice: recordatorios de pago,
+// datos de pago, bienvenida. No hay scheduler: cada mensaje sale por un clic.
+// Ver docs/PLATFORM_MESSAGING_PLAN.md.
+
+enum PlatformMessageChannel {
+  WHATSAPP
+  EMAIL
+}
+
+enum PlatformMessageStatus {
+  SENDING
+  SENT
+  FAILED
+  SKIPPED // sin destinatario, canal caído o datos incompletos
+}
+
+// Plantillas editables desde la consola: cambiar el texto de un cobro no debe
+// requerir deploy. `isSystem` marca las sembradas (no se borran, sí se editan).
+model PlatformMessageTemplate {
+  id          String                 @id @default(cuid())
+  // Una misma clave tiene una plantilla por canal: el texto de WhatsApp y el
+  // HTML del correo son distintos aunque digan lo mismo.
+  key         String // 'payment_reminder', 'payment_details', …
+  name        String
+  description String?
+  channel     PlatformMessageChannel
+  subject     String? // solo EMAIL
+  body        String // texto plano (WA) o HTML (EMAIL)
+  bodyText    String? // fallback texto plano del email
+  variables   String[] // detectadas al guardar, para pintar los chips en la UI
+  isSystem    Boolean                @default(false)
+  isActive    Boolean                @default(true)
+  updatedBy   String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@unique([key, channel])
+  @@index([channel])
+  @@map("platform_message_templates")
+}
+
+// Medios de pago de Lynko (Bre-B/Nu, Nequi, transferencia…). Se configuran una
+// vez y los renderiza {{medios_pago}}: cambiar la llave no toca las plantillas.
+model PlatformPaymentMethod {
+  id           String   @id @default(cuid())
+  kind         String // 'breb' | 'nequi' | 'bank_transfer' | 'link' | 'cash'
+  label        String // 'Bre-B · Nu'
+  holder       String? // titular de la cuenta
+  reference    String? // la llave '@DCU963', el nº de cuenta o el link
+  bank         String? // 'Nu Colombia'
+  accountType  String? // 'ahorros' | 'corriente'
+  document     String? // CC/NIT del titular
+  instructions String?
+  qrImageUrl   String? // QR subido con POST /assets/upload
+  qrPdfUrl     String? // PDF oficial del QR, adjuntable al correo
+  isActive     Boolean  @default(true)
+  isDefault    Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("platform_payment_methods")
+}
+
+// Historial de todo lo enviado. Guarda el texto EXACTO que salió: es la única
+// forma de responder "¿ya le avisamos y qué le dijimos?" sin adivinar.
+model PlatformMessage {
+  id          String                 @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?                @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  templateKey String?
+  channel     PlatformMessageChannel
+  status      PlatformMessageStatus  @default(SENDING)
+  to          String // E.164 o email, ya normalizado
+  toName      String?
+  subject     String?
+  body        String // snapshot de lo enviado
+  attachments Json? // [{ filename, url }]
+  sentAt      DateTime?
+  lastError   String?
+  providerId  String? // id del proveedor (wa msg id / resend id)
+  skipReason  String? // 'no_whatsapp' | 'no_email' | 'channel_offline' | 'missing_data'
+  createdBy   String // platform admin que hizo clic
+  meta        Json? // { dueAt, amountCOP, plan, daysToDue } para auditoría
+  createdAt   DateTime               @default(now())
+
+  // Reservados para cuando se automatice (plan §10): así no hay segunda
+  // migración el día que se agreguen los jobs.
+  jobKey       String?
+  dedupeKey    String?   @unique
+  scheduledFor DateTime?
+
+  @@index([tenantId, createdAt])
+  @@index([status, createdAt])
+  @@map("platform_messages")
+}
+
+// Configuración global de mensajería (fila única id = 'singleton').
+model PlatformMessagingSettings {
+  id           String   @id @default("singleton")
+  waEnabled    Boolean  @default(false)
+  emailEnabled Boolean  @default(false)
+  fromEmail    String?
+  fromName     String?
+  replyTo      String?
+  signature    String?  @default("Equipo Lynko")
+  updatedAt    DateTime @updatedAt
+
+  @@map("platform_messaging_settings")
+}
+
 // ─── Compensación de staff / Nómina (agnóstico de vertical) ───────────────────
 // staffId apunta a User.id (restaurante) o BarberStaff.id (barber) según `source`.
 // Sin FK dura porque referencia dos tablas; se valida en el service.
@@ -1804,14 +1918,17 @@ model RoleCompensationTemplate {
   @@map("role_compensation_templates")
 }
 
-// Sesión de WhatsApp (whatsapp-web.js RemoteAuth) persistida en DB.
-// `data` = zip de credenciales de la sesión. Sobrevive redeploys y funciona
+// Sesión de WhatsApp (whatsapp-web.js RemoteAuth). El zip de credenciales
+// (~30MB) vive en Supabase Storage, bucket privado: aquí queda solo el índice.
+// Guardarlo como bytea reescribía 30MB de TOAST + WAL en cada backup periódico
+// y agotaba el Disk IO budget del proyecto. Sobrevive redeploys y funciona
 // igual en local/prod (no depende del filesystem del contenedor).
 model WhatsappSession {
   clientId    String   @id // safeClientId(tenantId, branchId)
   tenantId    String
   branchId    String
-  data        Bytes? // archivo de sesión comprimido (RemoteAuth)
+  storagePath String? // objeto en el bucket privado: whatsapp-sessions/<clientId>.zip
+  dataHash    String? // sha256 del zip subido; evita reescribir si no cambió
   phoneNumber String?
   updatedAt   DateTime @updatedAt
   createdAt   DateTime @default(now())
@@ -1879,41 +1996,41 @@ model RetailCategory {
 }
 
 model RetailProduct {
-  id          String         @id @default(cuid())
-  tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id])
-  branchId    String
-  branch      Branch         @relation(fields: [branchId], references: [id])
-  categoryId  String
-  category    RetailCategory @relation(fields: [categoryId], references: [id])
+  id            String         @id @default(cuid())
+  tenantId      String
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  branchId      String
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  categoryId    String
+  category      RetailCategory @relation(fields: [categoryId], references: [id])
   // Identificadores de retail: SKU interno y código de barras para el escáner.
-  sku         String?
-  barcode     String?
-  brand       String?
-  name        String
-  description String?
+  sku           String?
+  barcode       String?
+  brand         String?
+  name          String
+  description   String?
   // Costo de compra y precio de venta. El precio escrito es la fuente de verdad;
   // los % se guardan para poder recalcular y para el piso de negociación.
-  costCOP     Int            @default(0)
-  priceCOP    Int
+  costCOP       Int            @default(0)
+  priceCOP      Int
   // % de ganancia sobre el precio con el que se sugirió `priceCOP`.
   saleMarginPct Float?
   // Piso de negociación: por debajo de este precio la venta pierde margen
   // aceptable. Solo lo ve/edita el admin, nunca el cajero.
   minPriceCOP   Int?
   minMarginPct  Float?
-  emoji       String?
-  imageUrls   String[]
+  emoji         String?
+  imageUrls     String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
-  trackStock  Boolean        @default(true)
-  stock       Int            @default(0)
-  minStock    Int            @default(0)
+  trackStock    Boolean        @default(true)
+  stock         Int            @default(0)
+  minStock      Int            @default(0)
   // isActive = vendible en el POS. isPublished = visible en el sitio público.
-  isActive    Boolean        @default(true)
-  isPublished Boolean        @default(true)
-  sortOrder   Int            @default(0)
+  isActive      Boolean        @default(true)
+  isPublished   Boolean        @default(true)
+  sortOrder     Int            @default(0)
   // Atributos libres del producto (modelo compatible, capacidad...).
-  attributes  Json?
+  attributes    Json?
   // Opciones de presentación que el cliente elige al pedir: color, talla, etc.
   // Cada grupo trae sus valores con copy propio y las fotos asociadas, así el
   // sitio público puede mostrar "Pijama color negro" y cambiar la galería al
@@ -1921,10 +2038,10 @@ model RetailProduct {
   // Es configuración de catálogo, no una matriz de variantes: el stock y el SKU
   // siguen siendo del producto (una variante con inventario propio sería otra
   // tabla y cambiaría POS, kardex y ventas).
-  options     Json?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  deletedAt   DateTime?
+  options       Json?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
 
   movements     RetailStockMovement[]
   saleItems     RetailSaleItem[]
@@ -2075,38 +2192,36 @@ enum RetailPurchaseStatus {
 
 /**
  * Lista de pedidos al proveedor: el paso previo al catálogo y al inventario.
- *
  * Es una lista de tareas, no un documento contable. Se apunta lo que hace falta
  * ("20 pijamas beige"), se marca cuando se pidió y se marca cuando llegó; cada
  * marca deja su fecha, así se sabe cuánto lleva un pedido sin hacerse o sin
  * llegar. Recién al recibir se toca el inventario, y siempre por el kardex.
- *
  * `productId` es opcional a propósito: se apunta mercancía que todavía no
  * existe en el catálogo (por eso es el paso *previo*). Cuando sí está enlazado,
  * recibirlo puede generar el movimiento PURCHASE del inventario.
  */
 model RetailPurchaseItem {
-  id        String  @id @default(cuid())
-  tenantId  String
-  tenant    Tenant  @relation(fields: [tenantId], references: [id])
-  branchId  String
-  branch    Branch  @relation(fields: [branchId], references: [id])
+  id               String               @id @default(cuid())
+  tenantId         String
+  tenant           Tenant               @relation(fields: [tenantId], references: [id])
+  branchId         String
+  branch           Branch               @relation(fields: [branchId], references: [id])
   // Enlace opcional al catálogo: null = todavía no es un producto de la tienda.
-  productId String?
-  product   RetailProduct? @relation(fields: [productId], references: [id])
+  productId        String?
+  product          RetailProduct?       @relation(fields: [productId], references: [id])
   // Lo que se apunta. Con producto enlazado arranca con su nombre, pero se
   // puede editar: "pijamas beige talla M" describe mejor el pedido.
-  name      String
-  quantity  Int     @default(1)
+  name             String
+  quantity         Int                  @default(1)
   // Unidad de compra tal como se le pide al proveedor (cajas, docenas, pares).
-  unit      String?
-  supplier  String?
+  unit             String?
+  supplier         String?
   // Costo unitario estimado al apuntarlo; al recibir se confirma y va al kardex.
   estimatedCostCOP Int?
-  note      String?
-  status    RetailPurchaseStatus @default(PENDING)
+  note             String?
+  status           RetailPurchaseStatus @default(PENDING)
   // Prioridad simple para ordenar la lista: lo urgente primero.
-  isUrgent  Boolean @default(false)
+  isUrgent         Boolean              @default(false)
 
   // Fechas de cada marca: sin ellas la lista no dice si algo está atascado.
   createdAt  DateTime  @default(now())
@@ -2116,9 +2231,9 @@ model RetailPurchaseItem {
   deletedAt  DateTime?
 
   // Quién marcó cada paso (sin FK: User es transversal a las verticales).
-  createdById  String?
-  orderedById  String?
-  receivedById String?
+  createdById     String?
+  orderedById     String?
+  receivedById    String?
   // Movimiento de inventario generado al recibir, si se enlazó al catálogo.
   stockMovementId String?
 
