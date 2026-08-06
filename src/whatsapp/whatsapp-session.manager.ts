@@ -12,7 +12,10 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseService } from '../supabase/supabase.service';
-import { StorageRemoteAuthStore } from './storage-remote-auth.store';
+import {
+  StorageRemoteAuthStore,
+  waSessionObjectPath,
+} from './storage-remote-auth.store';
 
 export type SessionStatus =
   | 'idle'
@@ -368,7 +371,7 @@ export class WhatsAppSessionManager
   // Idempotente: se llama en desvinculaciones y en logout desde el celular.
   private async purgePersistedSession(clientId: string) {
     await this.supabase
-      .deletePrivateFile(`whatsapp-sessions/${clientId}.zip`)
+      .deletePrivateFile(waSessionObjectPath(clientId))
       .catch((err: Error) =>
         this.logger.warn(
           `No se pudo borrar el zip de sesión de ${clientId}: ${err.message}`,

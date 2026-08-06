@@ -139,11 +139,35 @@ export class UpdateMessagingSettingsDto {
   @IsBoolean()
   emailEnabled?: boolean;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: 'cobros@uselynko.com' })
+  @IsOptional()
+  @IsEmail()
+  fromEmail?: string;
+
+  @ApiPropertyOptional({ example: 'Lynko' })
   @IsOptional()
   @IsString()
   @MaxLength(120)
   fromName?: string;
+
+  @ApiPropertyOptional({ example: 'soporte@uselynko.com' })
+  @IsOptional()
+  @IsEmail()
+  replyTo?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'API key de Resend. Vacío = no se toca la guardada. Nunca se devuelve por la API.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  resendApiKey?: string;
+
+  @ApiPropertyOptional({ description: 'true borra la API key guardada.' })
+  @IsOptional()
+  @IsBoolean()
+  clearApiKey?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()

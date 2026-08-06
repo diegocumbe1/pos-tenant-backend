@@ -1861,6 +1861,8 @@ model PlatformMessage {
 }
 
 // Configuración global de mensajería (fila única id = 'singleton').
+// El proveedor de correo se configura DESDE LA CONSOLA, no por variables de
+// entorno: cambiar el remitente o rotar la API key no debe requerir un redeploy.
 model PlatformMessagingSettings {
   id           String   @id @default("singleton")
   waEnabled    Boolean  @default(false)
@@ -1868,6 +1870,9 @@ model PlatformMessagingSettings {
   fromEmail    String?
   fromName     String?
   replyTo      String?
+  // Secreto: NUNCA se devuelve por la API. El GET expone solo `hasApiKey` y los
+  // últimos 4 caracteres, para que la UI pueda decir si está puesta sin filtrarla.
+  resendApiKey String?
   signature    String?  @default("Equipo Lynko")
   updatedAt    DateTime @updatedAt
 

@@ -270,8 +270,9 @@ export class PlatformMessagingController {
   }
 
   @Get('messaging/settings')
+  @ApiOperation({ summary: 'Config de mensajería (sin la API key en claro)' })
   getSettings() {
-    return this.settings.get();
+    return this.settings.getPublic();
   }
 
   @Patch('messaging/settings')
