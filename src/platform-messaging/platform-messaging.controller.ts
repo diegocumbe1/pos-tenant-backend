@@ -145,7 +145,9 @@ export class PlatformMessagingController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Envía un correo de prueba con la configuración actual' })
   async testEmail(@Body() dto: SendTestEmailDto) {
-    const sent = await this.email.send({
+    // `sendTest` no exige que el canal esté encendido: se prueba la config y
+    // luego se enciende, no al revés.
+    const sent = await this.email.sendTest({
       to: dto.to,
       subject: 'Prueba de correo · Lynko',
       body: 'Este es un correo de prueba de la consola de plataforma. Si lo recibes, el canal está bien configurado.',

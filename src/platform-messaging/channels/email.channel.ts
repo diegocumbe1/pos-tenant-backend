@@ -53,23 +53,44 @@ export class EmailPlatformChannel implements IPlatformChannelSender {
     };
   }
 
-  async status(): Promise<ChannelStatus> {
-    const { apiKey, from, enabled } = await this.config();
-    if (!apiKey) {
-      return { ready: false, detail: 'Falta la API key de Resend' };
-    }
-    if (!from) {
-      return { ready: false, detail: 'Falta el correo remitente' };
-    }
-    if (!enabled) {
-      return { ready: false, detail: `Canal apagado · ${from}` };
-    }
+  /**
+   * ¿Están las credenciales completas? Deliberadamente ignora `emailEnabled`:
+   * el envío de prueba tiene que funcionar ANTES de encender el canal, que es
+   * el orden natural (configuro → pruebo → enciendo). Exigir el canal prendido
+   * para poder probarlo obliga a encenderlo a ciegas.
+   */
+  private async configStatus(): Promise<ChannelStatus> {
+    const { apiKey, from } = await this.config();
+    if (!apiKey) return { ready: false, detail: 'Falta la API key de Resend' };
+    if (!from) return { ready: false, detail: 'Falta el correo remitente' };
     return { ready: true, detail: from };
   }
 
+  /** Estado del canal para la consola y para los envíos reales. */
+  async status(): Promise<ChannelStatus> {
+    const config = await this.configStatus();
+    if (!config.ready) return config;
+    const { enabled } = await this.config();
+    if (!enabled) {
+      return { ready: false, detail: `Canal apagado · ${config.detail}` };
+    }
+    return config;
+  }
+
+  /** Envío de prueba: solo exige credenciales, no que el canal esté activo. */
+  async sendTest(input: ChannelSendInput): Promise<{ id: string }> {
+    return this.dispatch(input, await this.configStatus());
+  }
+
   async send(input: ChannelSendInput): Promise<{ id: string }> {
+    return this.dispatch(input, await this.status());
+  }
+
+  private async dispatch(
+    input: ChannelSendInput,
+    { ready, detail }: ChannelStatus,
+  ): Promise<{ id: string }> {
     const { apiKey, from, replyTo } = await this.config();
-    const { ready, detail } = await this.status();
     if (!ready) {
       throw new ServiceUnavailableException(
         `El correo no está configurado: ${detail}`,
