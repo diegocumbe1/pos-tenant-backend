@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   ChannelAttachment,
+  ChannelStatus,
   EMAIL_CHANNEL,
   IPlatformChannelSender,
   WHATSAPP_CHANNEL,
@@ -83,14 +84,28 @@ export class MessageSenderService {
     templateKey: string,
     channels: MessageChannel[],
     options: { includeQr?: boolean; bodyOverride?: string } = {},
-  ): Promise<{ templateKey: string; perChannel: ChannelPreview[] }> {
+  ): Promise<{
+    templateKey: string;
+    perChannel: ChannelPreview[];
+    channelStatus: Record<MessageChannel, ChannelStatus>;
+  }> {
     const effectiveKey = await this.resolveTemplateKey(tenantId, templateKey);
-    const [ctx, recipient, methods, settings] = await Promise.all([
-      this.subscriptions.build(tenantId),
-      this.recipients.resolve(tenantId),
-      this.paymentMethods.list(false),
-      this.settings.get(),
-    ]);
+    // El estado de los canales entra al preview para que un canal caído se vea
+    // como bloqueo ANTES de enviar. Antes se descubría al fallar el envío, que
+    // dejaba una fila FAILED en el historial por algo que era reconectable.
+    const [ctx, recipient, methods, settings, waStatus, emailStatus] =
+      await Promise.all([
+        this.subscriptions.build(tenantId),
+        this.recipients.resolve(tenantId),
+        this.paymentMethods.list(false),
+        this.settings.get(),
+        this.whatsapp.status(),
+        this.email.status(),
+      ]);
+    const channelStatus: Record<MessageChannel, ChannelStatus> = {
+      whatsapp: waStatus,
+      email: emailStatus,
+    };
 
     const baseValues: Record<string, string> = {
       ...this.subscriptions.toVariables(ctx),
@@ -116,6 +131,15 @@ export class MessageSenderService {
           ? recipient.whatsappSkipReason
           : recipient.emailSkipReason;
       if (!to && skipReason) blockers.push(skipReason);
+
+      const status = channelStatus[channel];
+      if (!status.ready) {
+        blockers.push(
+          channel === 'whatsapp'
+            ? `El WhatsApp de la plataforma no está conectado (${status.detail ?? status.state ?? 'sin sesión'}). Conéctalo en Mensajería → Canales.`
+            : `El correo no está disponible: ${status.detail ?? 'sin configurar'}`,
+        );
+      }
 
       const template = await this.templates
         .byKey(effectiveKey, CHANNEL_ENUM[channel])
@@ -179,7 +203,7 @@ export class MessageSenderService {
       });
     }
 
-    return { templateKey: effectiveKey, perChannel };
+    return { templateKey: effectiveKey, perChannel, channelStatus };
   }
 
   async send(
