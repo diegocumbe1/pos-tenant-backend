@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { dayEndCO, dayStartCO } from '../common/date.util';
 import { GRACE_DAYS } from './platform.constants';
 import {
+  CreatePlanPriceDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
   CreateRecurringExpenseDto,
@@ -31,6 +32,7 @@ import {
   resolveEffectiveFeatures,
   resolveFeatureValue,
 } from './plans/plan-features';
+import { PlanPricingService, usdToCop } from './pricing/plan-pricing.service';
 
 type SubscriptionAction = 'activate' | 'suspend' | 'cancel';
 type PlatformGoalMetric =
@@ -83,13 +85,21 @@ const DEFAULT_USD_TO_COP_RATE = 3650;
 export class PlatformService {
   private readonly logger = new Logger(PlatformService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pricing: PlanPricingService,
+  ) {}
 
   // ─── Configuracion comercial global ─────────────────────────────────────────
+  //
+  // La tasa y los precios de plan son APPEND-ONLY (ver PlanPricingService):
+  // "actualizar" inserta una fila con fecha efectiva y el valor viejo queda en el
+  // histórico. Nada de esto reescribe cobros ya registrados.
 
   async getPricingConfig() {
     const config = await this.ensurePricingConfig();
-    return this.toPricingConfigDto(config);
+    const rate = await this.pricing.getRateAt();
+    return this.toPricingConfigDto(config, rate);
   }
 
   async updatePricingConfig(dto: UpdatePricingConfigDto, actorUserId: string) {
@@ -98,45 +108,66 @@ export class PlatformService {
       throw new BadRequestException('rate must be a positive integer');
     }
 
-    const current = await this.ensurePricingConfig();
-    const updated = await this.prisma.platformPricingConfig.update({
-      where: { id: PLATFORM_PRICING_CONFIG_ID },
-      data: {
-        usdToCopRate: Math.round(rate),
-        updatedBy: actorUserId,
-      },
-    });
+    const before = await this.pricing.getRateAt();
+    const created = await this.pricing.createRate(
+      { rate, effectiveFrom: dto.effectiveFrom, note: dto.note },
+      actorUserId,
+    );
 
     await this.audit(
       actorUserId,
-      'platform.pricing.update',
-      'platform_pricing_config',
-      PLATFORM_PRICING_CONFIG_ID,
-      this.toPricingConfigDto(current),
-      this.toPricingConfigDto(updated),
+      'platform.rate.create',
+      'platform_rate',
+      created.id,
+      { rate: before },
+      created,
     );
-    return this.toPricingConfigDto(updated);
+
+    const config = await this.ensurePricingConfig();
+    return this.toPricingConfigDto(config, await this.pricing.getRateAt());
   }
 
   async resetPricingConfig(actorUserId: string) {
-    const current = await this.ensurePricingConfig();
-    const updated = await this.prisma.platformPricingConfig.update({
-      where: { id: PLATFORM_PRICING_CONFIG_ID },
-      data: {
-        usdToCopRate: DEFAULT_USD_TO_COP_RATE,
-        updatedBy: actorUserId,
+    const before = await this.pricing.getRateAt();
+    const created = await this.pricing.createRate(
+      {
+        rate: DEFAULT_USD_TO_COP_RATE,
+        note: 'Restablecida al valor de fábrica',
       },
-    });
+      actorUserId,
+    );
 
     await this.audit(
       actorUserId,
-      'platform.pricing.reset',
-      'platform_pricing_config',
-      PLATFORM_PRICING_CONFIG_ID,
-      this.toPricingConfigDto(current),
-      this.toPricingConfigDto(updated),
+      'platform.rate.reset',
+      'platform_rate',
+      created.id,
+      { rate: before },
+      created,
     );
-    return this.toPricingConfigDto(updated);
+
+    const config = await this.ensurePricingConfig();
+    return this.toPricingConfigDto(config, await this.pricing.getRateAt());
+  }
+
+  // ─── Precios de planes por vertical ─────────────────────────────────────────
+
+  async createPlanPrice(dto: CreatePlanPriceDto, actorUserId: string) {
+    const before = await this.pricing.getPlanPriceAt(
+      dto.verticalCode,
+      dto.planCode,
+    );
+    const created = await this.pricing.createPlanPrice(dto, actorUserId);
+
+    await this.audit(
+      actorUserId,
+      'platform.plan-price.create',
+      'plan_price',
+      created.id,
+      { priceUSD: before },
+      created,
+    );
+    return created;
   }
 
   // ─── Tenants ────────────────────────────────────────────────────────────────
@@ -754,6 +785,17 @@ export class PlatformService {
     // periodo regalado y del motivo, pero NO suma a ingresos ni a la utilidad.
     const countsAsRevenue = kind === 'payment';
     const currency = dto.currency ?? 'COP';
+    const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
+
+    // Precio de lista vigente A LA FECHA DEL COBRO. Es el eslabón que hace que
+    // subir la tarifa en septiembre no toque lo que se cobró en junio: cada pago
+    // consulta la tarifa de su propia fecha y la congela en `officialPrice`.
+    const listedPrice = await this.listPriceForCharge(
+      tenant.vertical?.code,
+      tenant.plan,
+      currency,
+      paidAt,
+    );
 
     const payment = await this.prisma.$transaction(async (tx) => {
       // Un pago siempre debe quedar colgado de una suscripción: si el tenant no
@@ -765,12 +807,16 @@ export class PlatformService {
       );
 
       // Snapshot comercial: precio de lista al momento del cobro y cuánto se
-      // dejó de cobrar. Si no vienen en el DTO se derivan de la suscripción.
+      // dejó de cobrar. Si no vienen en el DTO se derivan de la suscripción y, en
+      // último término, de la tarifa vigente a la fecha del pago. Antes se caía a
+      // `dto.amount`, con lo que un cobro con descuento se registraba sin rastro
+      // de que hubiera descuento.
       const listPrice =
         dto.officialPrice ??
         (currency === 'USD'
           ? (subscription.listPriceUSD ?? subscription.priceUSD)
           : (subscription.listPriceCOP ?? subscription.priceCOP)) ??
+        listedPrice ??
         undefined;
       const officialPrice = listPrice ?? dto.amount;
       const discountApplied =
@@ -793,7 +839,7 @@ export class PlatformService {
             dto.billingCycle ?? subscription.billingCycle ?? 'monthly',
           periodStart,
           periodEnd,
-          paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
+          paidAt,
           method: dto.method ?? 'manual',
           reference: dto.reference,
           receiptUrl: dto.receiptUrl,
@@ -2242,6 +2288,33 @@ export class PlatformService {
     });
   }
 
+  /**
+   * Precio de lista del plan del tenant, en la moneda del cobro, vigente a la
+   * fecha dada. Devuelve `undefined` si el vertical no tiene tarifa cargada — en
+   * ese caso el llamador conserva su fallback previo.
+   *
+   * IMPORTANTE: esto es solo el precio de LISTA (referencia). El precio pactado
+   * del tenant (`agreedPrice*`) manda siempre y no se toca al cambiar la lista.
+   */
+  private async listPriceForCharge(
+    verticalCode: string | undefined,
+    planCode: string,
+    currency: string,
+    at: Date,
+  ): Promise<number | undefined> {
+    if (!verticalCode) return undefined;
+    const priceUSD = await this.pricing.getPlanPriceAt(
+      verticalCode,
+      planCode,
+      at,
+    );
+    if (priceUSD == null) return undefined;
+    if (currency === 'USD') return priceUSD;
+    // La conversión usa la tasa vigente a la MISMA fecha, no la de hoy.
+    const rate = await this.pricing.getRateAt(at);
+    return usdToCop(priceUSD, rate);
+  }
+
   private async loadTenant(id: string) {
     const tenant = await this.prisma.tenant.findFirst({
       where: { id, deletedAt: null },
@@ -2363,13 +2436,18 @@ export class PlatformService {
     });
   }
 
+  /**
+   * `rate` viene de `PlatformRate` (fuente de verdad con fecha efectiva); la fila
+   * única solo aporta los metadatos de auditoría del último cambio.
+   */
   private toPricingConfigDto(
     config: Prisma.PlatformPricingConfigGetPayload<Record<string, never>>,
+    rate: number = config.usdToCopRate,
   ) {
     return {
       id: config.id,
-      rate: config.usdToCopRate,
-      usdToCopRate: config.usdToCopRate,
+      rate,
+      usdToCopRate: rate,
       updatedAt: config.updatedAt.toISOString(),
       updatedBy: config.updatedBy ?? undefined,
     };

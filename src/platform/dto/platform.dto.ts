@@ -34,6 +34,63 @@ export class UpdatePricingConfigDto {
   @IsInt()
   @Min(1)
   usdToCopRate?: number;
+
+  @ApiPropertyOptional({
+    description: 'Desde cuándo rige la tasa. Por defecto, ya mismo.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional({
+    description: 'Motivo del cambio (queda en histórico)',
+  })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+const VERTICALS = ['restaurant', 'barber', 'retail'] as const;
+
+export class CreatePlanPriceDto {
+  @ApiProperty({ enum: VERTICALS })
+  @IsIn(VERTICALS)
+  verticalCode!: string;
+
+  @ApiProperty({ enum: PLANS })
+  @IsIn(PLANS)
+  planCode!: string;
+
+  @ApiProperty({ example: 33, description: 'Precio de lista mensual en USD' })
+  @IsInt()
+  @Min(0)
+  priceUSD!: number;
+
+  @ApiPropertyOptional({
+    description: 'Desde cuándo rige el precio. Por defecto, ya mismo.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional({
+    description: 'Motivo del cambio (queda en histórico)',
+  })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class PlanPriceHistoryQueryDto {
+  @ApiPropertyOptional({ enum: VERTICALS })
+  @IsOptional()
+  @IsIn(VERTICALS)
+  verticalCode?: string;
+
+  @ApiPropertyOptional({ enum: PLANS })
+  @IsOptional()
+  @IsIn(PLANS)
+  planCode?: string;
 }
 
 export class UpdatePlanDto {

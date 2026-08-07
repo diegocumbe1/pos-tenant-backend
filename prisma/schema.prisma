@@ -1866,6 +1866,10 @@ model PlatformMessage {
 // Configuracion comercial global de plataforma (fila unica id = 'singleton').
 // El precio comercial de los planes vive en USD; esta tasa deriva COP para la
 // landing, backoffice y calculos financieros que necesiten equivalencias.
+//
+// La fuente de verdad de la tasa pasó a ser `PlatformRate` (con fecha efectiva e
+// histórico). Esta fila se sigue escribiendo en la misma transacción para no
+// romper lectores legacy, pero NO se lee para resolver la tasa vigente.
 model PlatformPricingConfig {
   id           String   @id @default("singleton")
   usdToCopRate Int      @default(3650)
@@ -1874,6 +1878,43 @@ model PlatformPricingConfig {
   updatedAt    DateTime @updatedAt
 
   @@map("platform_pricing_config")
+}
+
+// ─── Tarifas con fecha efectiva (append-only) ─────────────────────────────────
+//
+// Estas dos tablas son INMUTABLES: editar un precio es insertar una fila nueva,
+// nunca UPDATE ni DELETE. Así la trazabilidad queda garantizada por construcción
+// y un cambio de tarifa solo puede correr hacia adelante.
+//
+// Precio vigente a una fecha D = la fila con el `effectiveFrom` más alto que sea
+// <= D, para ese (verticalCode, planCode).
+
+/// Precio de lista de un plan para un vertical, a partir de una fecha.
+model PlanPrice {
+  id            String   @id @default(cuid())
+  verticalCode  String // 'restaurant' | 'barber' | 'retail'
+  planCode      String // 'BASIC' | 'PRO' | 'PREMIUM'
+  priceUSD      Int
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([verticalCode, planCode, effectiveFrom])
+  @@map("plan_prices")
+}
+
+/// Tasa USD→COP a partir de una fecha.
+model PlatformRate {
+  id            String   @id @default(cuid())
+  usdToCopRate  Int
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([effectiveFrom])
+  @@map("platform_rates")
 }
 
 // Configuración global de mensajería (fila única id = 'singleton').

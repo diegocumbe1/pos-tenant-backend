@@ -21,9 +21,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformActor } from './decorators/platform-actor.decorator';
 import {
+  CreatePlanPriceDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
   CreateRecurringExpenseDto,
+  PlanPriceHistoryQueryDto,
   PlatformFinanceMonthQueryDto,
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
@@ -42,6 +44,7 @@ import {
 } from './dto/platform.dto';
 import { PlatformAdminGuard } from './guards/platform-admin.guard';
 import { PlatformService } from './platform.service';
+import { PlanPricingService } from './pricing/plan-pricing.service';
 
 /**
  * Backoffice de plataforma (super-admin, cross-tenant).
@@ -53,7 +56,10 @@ import { PlatformService } from './platform.service';
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('platform')
 export class PlatformController {
-  constructor(private readonly platform: PlatformService) {}
+  constructor(
+    private readonly platform: PlatformService,
+    private readonly pricing: PlanPricingService,
+  ) {}
 
   // ─── Configuracion comercial global ──────────────────────────────────────────
 
@@ -61,6 +67,40 @@ export class PlatformController {
   @ApiOperation({ summary: 'Get USD to COP pricing rate' })
   getPricingConfig() {
     return this.platform.getPricingConfig();
+  }
+
+  @Get('pricing-config/history')
+  @ApiOperation({ summary: 'Rate change history (super admin only)' })
+  getRateHistory() {
+    return this.pricing.getRateHistory();
+  }
+
+  // ─── Precios de planes por vertical (con fecha efectiva) ─────────────────────
+
+  @Get('plan-prices')
+  @ApiOperation({ summary: 'Current plan price matrix (vertical x plan)' })
+  getPlanPrices() {
+    return this.pricing.getPriceMatrixAt();
+  }
+
+  @Get('plan-prices/history')
+  @ApiOperation({ summary: 'Plan price change history (super admin only)' })
+  @ApiQuery({ name: 'verticalCode', required: false })
+  @ApiQuery({ name: 'planCode', required: false })
+  getPlanPriceHistory(@Query() query: PlanPriceHistoryQueryDto) {
+    return this.pricing.getPlanPriceHistory(query);
+  }
+
+  @Post('plan-prices')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Set a plan price from a date (append-only, never overwrites)',
+  })
+  createPlanPrice(
+    @Body() dto: CreatePlanPriceDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.createPlanPrice(dto, actor.id);
   }
 
   @Patch('pricing-config')
