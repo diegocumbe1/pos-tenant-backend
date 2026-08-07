@@ -12,6 +12,7 @@ import { PrintingModule } from './modules/printing/printing.module';
 import { ReceiptsModule } from './modules/receipts/receipts.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { CashSessionsModule } from './modules/cash-sessions/cash-sessions.module';
+import { PosStateModule } from './modules/pos-state/pos-state.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { CashSessionsModule } from './modules/cash-sessions/cash-sessions.module
     ReceiptsModule,
     SalesModule,
     CashSessionsModule,
+    PosStateModule,
   ],
 })
 export class RestaurantModule {}
