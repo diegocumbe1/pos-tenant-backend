@@ -198,6 +198,8 @@ export class SalesService {
         method: c.method,
         amount: c.amount,
         cardType: c.cardType ?? undefined,
+        cashReceived: c.cashReceived ?? undefined,
+        cashChange: c.cashChange ?? undefined,
       })),
     );
 

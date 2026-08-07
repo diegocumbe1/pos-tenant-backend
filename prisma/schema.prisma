@@ -1038,6 +1038,9 @@ model PaymentContribution {
   amount   Int
   cardType String? // "credit" | "debit"
 
+  cashReceived Int? // solo efectivo: con cuánto pagó el cliente
+  cashChange   Int? // solo efectivo: vuelto entregado (cashReceived - amount)
+
   @@unique([splitId, method])
   @@map("payment_contributions")
 }

@@ -22,63 +22,92 @@ interface Range {
   label: Period;
 }
 
+type FinanceVertical = 'restaurant' | 'barber' | 'retail' | 'unknown';
+type DashboardSplit = Prisma.PaymentSplitGetPayload<{
+  include: {
+    items: true;
+    order: { select: { waiterId: true } };
+  };
+}>;
+type DashboardBarberAppointment = Prisma.BarberAppointmentGetPayload<{
+  include: {
+    service: { select: { id: true; name: true; priceCOP: true } };
+  };
+}>;
+type DashboardRetailSale = Prisma.RetailSaleGetPayload<{
+  include: { items: true };
+}>;
+type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
+  include: { service: { select: { priceCOP: true } } };
+}>;
+
+const COMPLETED_BARBER_STATUSES = ['completed', 'COMPLETED', 'Completed'];
+
 @Injectable()
 export class FinanceService {
   constructor(private readonly prisma: PrismaService) {}
 
   async dashboard(ctx: TenantContext, query: PeriodQueryDto) {
     const range = this.resolveRange(query);
+    const vertical = await this.resolveTenantVertical(ctx);
+    const includeRestaurant = vertical === 'restaurant' || vertical === 'unknown';
+    const includeBarber = vertical === 'barber' || vertical === 'unknown';
+    const includeRetail = vertical === 'retail' || vertical === 'unknown';
 
-    const splits = await this.prisma.paymentSplit.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        order: { branchId: ctx.branchId },
-        paidAt: { gte: range.from, lte: range.to },
-      },
-      include: {
-        items: true,
-        order: { select: { waiterId: true } },
-      },
-    });
+    const [splits, expenses, barberAppointments, retailSales] =
+      await Promise.all([
+        includeRestaurant
+          ? this.prisma.paymentSplit.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                order: { branchId: ctx.branchId },
+                paidAt: { gte: range.from, lte: range.to },
+              },
+              include: {
+                items: true,
+                order: { select: { waiterId: true } },
+              },
+            })
+          : Promise.resolve([] as DashboardSplit[]),
+        this.prisma.expense.aggregate({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            incurredAt: { gte: range.from, lte: range.to },
+          },
+          _sum: { amountCOP: true },
+        }),
+        includeBarber
+          ? this.prisma.barberAppointment.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                status: { in: COMPLETED_BARBER_STATUSES },
+                scheduledAt: { gte: range.from, lte: range.to },
+              },
+              include: {
+                service: { select: { id: true, name: true, priceCOP: true } },
+              },
+            })
+          : Promise.resolve([] as DashboardBarberAppointment[]),
+        includeRetail
+          ? this.prisma.retailSale.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                status: 'COMPLETED',
+                soldAt: { gte: range.from, lte: range.to },
+              },
+              include: { items: true },
+            })
+          : Promise.resolve([] as DashboardRetailSale[]),
+      ]);
 
-    const expenses = await this.prisma.expense.aggregate({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        incurredAt: { gte: range.from, lte: range.to },
-      },
-      _sum: { amountCOP: true },
-    });
-
-    // Ingreso de la vertical barber: citas completadas × precio del servicio.
-    // Read-only y agnóstico: un tenant de restaurante no tiene citas → 0.
-    const barberAppointments = await this.prisma.barberAppointment.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        status: { in: ['completed', 'COMPLETED', 'Completed'] },
-        scheduledAt: { gte: range.from, lte: range.to },
-      },
-      include: {
-        service: { select: { id: true, name: true, priceCOP: true } },
-      },
-    });
     const barberRevenue = barberAppointments.reduce(
       (acc, a) => acc + (a.service?.priceCOP ?? 0),
       0,
     );
 
-    // Ingreso de la vertical retail: ventas de mostrador completadas.
-    // Mismo criterio agnóstico: un tenant sin tienda no tiene ventas → 0.
-    const retailSales = await this.prisma.retailSale.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        status: 'COMPLETED',
-        soldAt: { gte: range.from, lte: range.to },
-      },
-      include: { items: true },
-    });
     const retailRevenue = retailSales.reduce(
       (acc, sale) => acc + sale.totalCOP,
       0,
@@ -334,24 +363,28 @@ export class FinanceService {
 
   async goals(ctx: TenantContext, query: PeriodQueryDto) {
     const { periodMonth } = this.resolvePayrollMonth(query);
+    const vertical = await this.resolveTenantVertical(ctx);
     const goals = await this.prisma.financeGoal.findMany({
       where: { tenantId: ctx.tenantId, branchId: ctx.branchId, periodMonth },
     });
 
     // Horarios del negocio → días operativos (barber). Restaurante/sin datos = todos.
-    const settings = await this.prisma.barberSettings
-      .findUnique({
-        where: { branchId: ctx.branchId },
-        select: { businessHours: true },
-      })
-      .catch(() => null);
+    const settings =
+      vertical === 'barber'
+        ? await this.prisma.barberSettings
+            .findUnique({
+              where: { branchId: ctx.branchId },
+              select: { businessHours: true },
+            })
+            .catch(() => null)
+        : null;
     const hours =
       (settings?.businessHours as Record<string, unknown> | null) ?? null;
 
     const enriched = await Promise.all(
       goals.map(async (g) => {
         const { from, to } = this.goalRange(g, periodMonth);
-        const revenue = await this.revenueInRange(ctx, from, to);
+        const revenue = await this.revenueInRange(ctx, from, to, vertical);
         const actualCOP =
           g.metric === 'revenue'
             ? revenue
@@ -466,34 +499,45 @@ export class FinanceService {
     ctx: TenantContext,
     from: Date,
     to: Date,
+    vertical: FinanceVertical = 'unknown',
   ): Promise<number> {
+    const includeRestaurant = vertical === 'restaurant' || vertical === 'unknown';
+    const includeBarber = vertical === 'barber' || vertical === 'unknown';
+    const includeRetail = vertical === 'retail' || vertical === 'unknown';
+
     const [splitAgg, appts, retailAgg] = await Promise.all([
-      this.prisma.paymentSplit.aggregate({
-        where: {
-          tenantId: ctx.tenantId,
-          order: { branchId: ctx.branchId },
-          paidAt: { gte: from, lt: to },
-        },
-        _sum: { totalCOP: true },
-      }),
-      this.prisma.barberAppointment.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          status: { in: ['completed', 'COMPLETED', 'Completed'] },
-          scheduledAt: { gte: from, lt: to },
-        },
-        include: { service: { select: { priceCOP: true } } },
-      }),
-      this.prisma.retailSale.aggregate({
-        where: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          status: 'COMPLETED',
-          soldAt: { gte: from, lt: to },
-        },
-        _sum: { totalCOP: true },
-      }),
+      includeRestaurant
+        ? this.prisma.paymentSplit.aggregate({
+            where: {
+              tenantId: ctx.tenantId,
+              order: { branchId: ctx.branchId },
+              paidAt: { gte: from, lt: to },
+            },
+            _sum: { totalCOP: true },
+          })
+        : Promise.resolve({ _sum: { totalCOP: 0 } }),
+      includeBarber
+        ? this.prisma.barberAppointment.findMany({
+            where: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              status: { in: COMPLETED_BARBER_STATUSES },
+              scheduledAt: { gte: from, lt: to },
+            },
+            include: { service: { select: { priceCOP: true } } },
+          })
+        : Promise.resolve([] as RevenueBarberAppointment[]),
+      includeRetail
+        ? this.prisma.retailSale.aggregate({
+            where: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              status: 'COMPLETED',
+              soldAt: { gte: from, lt: to },
+            },
+            _sum: { totalCOP: true },
+          })
+        : Promise.resolve({ _sum: { totalCOP: 0 } }),
     ]);
     const barber = appts.reduce((a, x) => a + (x.service?.priceCOP ?? 0), 0);
     return (
@@ -515,6 +559,18 @@ export class FinanceService {
       _sum: { amountCOP: true },
     });
     return agg._sum.amountCOP ?? 0;
+  }
+
+  private async resolveTenantVertical(ctx: TenantContext): Promise<FinanceVertical> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: ctx.tenantId },
+      select: { vertical: { select: { code: true } } },
+    });
+    const code = tenant?.vertical?.code;
+    if (code === 'restaurant' || code === 'barber' || code === 'retail') {
+      return code;
+    }
+    return 'unknown';
   }
 
   // Resuelve periodType + rango al crear/editar una meta.

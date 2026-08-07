@@ -1,9 +1,5 @@
 import { randomBytes } from 'crypto';
-import {
-  Injectable,
-  NotFoundException,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
@@ -155,9 +151,12 @@ export class ReceiptsService {
     publicUrl?: string | null,
   ): PrintDocument {
     const splits = order.paymentSplits ?? [];
+    // El POS imprime el recibo con el split optimista (id local, p. ej. "PAY-001")
+    // apenas se registra el cobro, antes de que la escritura llegue al servidor.
+    // Si el split aún no existe aquí, el documento se arma con la orden completa:
+    // es solo el andamio para acuñar el token/URL, porque el cliente sobrescribe
+    // el payload con su propio documento en la segunda llamada a /share.
     const split = splitId ? splits.find((s) => s.id === splitId) : undefined;
-    if (splitId && !split)
-      throw new UnprocessableEntityException(`Split ${splitId} not found`);
 
     const items = split?.items?.length
       ? split.items.map((i) => ({ name: i.name, qty: i.qty, priceCOP: i.priceCOP }))
@@ -168,12 +167,16 @@ export class ReceiptsService {
           method: c.method,
           amount: c.amount,
           cardType: c.cardType,
+          cashReceived: c.cashReceived,
+          cashChange: c.cashChange,
         }))
       : splits.flatMap((s) =>
           s.contributions.map((c) => ({
             method: c.method,
             amount: c.amount,
             cardType: c.cardType,
+            cashReceived: c.cashReceived,
+            cashChange: c.cashChange,
           })),
         );
 

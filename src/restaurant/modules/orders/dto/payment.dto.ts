@@ -24,6 +24,17 @@ export class PaymentContributionDto {
   @IsOptional()
   @IsIn(CARD_TYPES)
   cardType?: string;
+
+  // Solo efectivo: con cuánto pagó el cliente y el vuelto entregado.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  cashReceived?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  cashChange?: number;
 }
 
 export class PaymentItemDto {

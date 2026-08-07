@@ -1187,18 +1187,34 @@ export class OrdersService {
   ) {
     const byMethod = new Map<
       string,
-      { method: string; amount: number; cardType: string | null }
+      {
+        method: string;
+        amount: number;
+        cardType: string | null;
+        cashReceived: number | null;
+        cashChange: number | null;
+      }
     >();
     for (const contribution of contributions) {
       const existing = byMethod.get(contribution.method);
       if (existing) {
         existing.amount += contribution.amount;
         existing.cardType ??= contribution.cardType ?? null;
+        if (contribution.cashReceived != null) {
+          existing.cashReceived =
+            (existing.cashReceived ?? 0) + contribution.cashReceived;
+        }
+        if (contribution.cashChange != null) {
+          existing.cashChange =
+            (existing.cashChange ?? 0) + contribution.cashChange;
+        }
       } else {
         byMethod.set(contribution.method, {
           method: contribution.method,
           amount: contribution.amount,
           cardType: contribution.cardType ?? null,
+          cashReceived: contribution.cashReceived ?? null,
+          cashChange: contribution.cashChange ?? null,
         });
       }
     }

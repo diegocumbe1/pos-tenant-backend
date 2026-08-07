@@ -35,7 +35,13 @@ export interface ReceiptDoc {
   tenantId?: string | null;
   closedAt: Date;
   items: Array<{ name: string; qty: number; priceCOP: number }>;
-  payments: Array<{ method: string; amount: number; cardType?: string | null }>;
+  payments: Array<{
+    method: string;
+    amount: number;
+    cardType?: string | null;
+    cashReceived?: number | null;
+    cashChange?: number | null;
+  }>;
   subtotalCOP: number;
   totalCOP: number;
   publicUrl?: string | null;
@@ -149,6 +155,14 @@ export class PrintingDocumentService {
     for (const pay of input.payments) {
       const label = pay.cardType ? `${pay.method} (${pay.cardType})` : pay.method;
       blocks.push({ kind: 'row', left: this.capitalize(label), right: COP.format(pay.amount) });
+      if (pay.method === 'cash' && pay.cashReceived != null && pay.cashReceived > pay.amount) {
+        blocks.push({ kind: 'row', left: '  Recibido', right: COP.format(pay.cashReceived) });
+        blocks.push({
+          kind: 'row',
+          left: '  Cambio',
+          right: COP.format(pay.cashChange ?? pay.cashReceived - pay.amount),
+        });
+      }
     }
 
     if (input.publicUrl) {
