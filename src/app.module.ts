@@ -25,7 +25,10 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    // `.env.local` primero: en desarrollo apunta la base a la réplica de Docker
+    // sin tocar `.env`, donde siguen las credenciales de producción. En el deploy
+    // no existe `.env.local` (está en .gitignore) y manda el entorno de Railway.
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'] }),
     EventEmitterModule.forRoot(),
     PrismaModule,
     SupabaseModule,

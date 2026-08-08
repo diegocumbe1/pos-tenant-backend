@@ -368,6 +368,8 @@ export class PlatformService {
       tables,
       recentOrders,
       counts,
+      sites,
+      menuConfig,
     ] = await Promise.all([
       this.prisma.branch.findMany({
         where: { tenantId: id },
@@ -488,10 +490,67 @@ export class PlatformService {
         take: 25,
       }),
       this.resolveTenantOperationCounts(id),
+      // Presencia pública: micrositio (barbería/retail) y carta pública
+      // (restaurante). El super-admin necesita ver el link real sin impersonar.
+      this.prisma.publicSite.findMany({
+        where: { tenantId: id },
+        select: {
+          id: true,
+          branchId: true,
+          slug: true,
+          publishedSlug: true,
+          status: true,
+          vertical: true,
+          publishedAt: true,
+          updatedAt: true,
+          sections: { select: { type: true, isVisible: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.menuPublicConfig.findFirst({
+        where: { tenantId: id },
+        select: {
+          id: true,
+          branchId: true,
+          slug: true,
+          isPublished: true,
+          templateId: true,
+          featuredProductIds: true,
+          updatedAt: true,
+        },
+      }),
     ]);
 
     return {
       counts,
+      publicPresence: {
+        sites: sites.map((site) => ({
+          id: site.id,
+          branchId: site.branchId,
+          slug: site.slug,
+          // El link vivo usa `publishedSlug`; `slug` es el del borrador y puede
+          // diferir si lo renombraron sin volver a publicar.
+          publishedSlug: site.publishedSlug ?? undefined,
+          status: site.status,
+          vertical: site.vertical,
+          publishedAt: site.publishedAt?.toISOString(),
+          updatedAt: site.updatedAt.toISOString(),
+          visibleSections: site.sections
+            .filter((section) => section.isVisible)
+            .map((section) => section.type),
+        })),
+        menu: menuConfig
+          ? {
+              id: menuConfig.id,
+              branchId: menuConfig.branchId ?? undefined,
+              slug: menuConfig.slug,
+              isPublished: menuConfig.isPublished,
+              templateId: menuConfig.templateId,
+              featuredCount: menuConfig.featuredProductIds.length,
+              updatedAt: menuConfig.updatedAt.toISOString(),
+            }
+          : undefined,
+      },
       branches: branches.map((branch) => ({
         id: branch.id,
         name: branch.name,

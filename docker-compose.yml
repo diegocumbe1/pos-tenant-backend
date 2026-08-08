@@ -1,0 +1,39 @@
+# Réplica local de la base de datos para desarrollo.
+#
+# Existe porque hasta ahora local y producción compartían la MISMA base (un solo
+# proyecto Supabase). Eso hacía que cualquier `prisma migrate dev` corriera contra
+# producción — y ese comando, ante un drift, ofrece resetear la base.
+#
+# Flujo:
+#   1. docker compose up -d
+#   2. scripts/db-replica.sh          → vuelca prod y la restaura aquí
+#   3. el backend usa .env.local      → DATABASE_URL apunta a este contenedor
+#
+# A partir de ahí: `prisma migrate dev` SOLO contra este contenedor.
+# A producción se va únicamente con `prisma migrate deploy`.
+#
+# La versión debe seguir a la de Supabase (hoy PostgreSQL 17.6). Si allá suben de
+# mayor, hay que subir aquí o el volcado no restaura.
+services:
+  db:
+    image: postgres:17
+    container_name: lynko-db-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lynko
+      POSTGRES_PASSWORD: lynko
+      POSTGRES_DB: postgres
+    ports:
+      # 5433 en el host a propósito: deja libre el 5432 por si hay un Postgres
+      # nativo instalado (el de Homebrew, por ejemplo).
+      - "5433:5432"
+    volumes:
+      - lynko-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lynko -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  lynko-db-data:
