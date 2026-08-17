@@ -45,6 +45,7 @@ export class BarberServicesService {
         description: dto.description,
         durationMin: dto.durationMin,
         priceCOP: dto.priceCOP,
+        costCOP: dto.costCOP ?? 0,
         durationOptions: (dto.durationOptions ??
           []) as unknown as Prisma.InputJsonValue,
         color: dto.color,
@@ -83,6 +84,7 @@ export class BarberServicesService {
         description: dto.description,
         durationMin: dto.durationMin,
         priceCOP: dto.priceCOP,
+        costCOP: dto.costCOP,
         durationOptions:
           dto.durationOptions === undefined
             ? undefined
@@ -129,6 +131,7 @@ export class BarberServicesService {
       description: service.description,
       durationMin: service.durationMin,
       priceCOP: service.priceCOP,
+      costCOP: service.costCOP,
       durationOptions: this.coerceDurationOptions(service.durationOptions),
       color: service.color,
       imageUrls: service.imageUrls,

@@ -45,6 +45,12 @@ export class CreateBarberServiceDto {
   @Min(0)
   priceCOP!: number;
 
+  // Costo de insumos del servicio. Sin él la vertical queda fuera del margen.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  costCOP?: number;
+
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
@@ -111,6 +117,11 @@ export class UpdateBarberServiceDto {
   @IsInt()
   @Min(0)
   priceCOP?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  costCOP?: number;
 
   @IsOptional()
   @IsArray()

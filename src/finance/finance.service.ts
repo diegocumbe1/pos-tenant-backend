@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { ExpenseFrequency, PayFrequency, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { COMPLETED_STATUS_VARIANTS } from '../barber/shared/appointment-status';
 import { TenantContext } from '../auth/types/tenant-context.interface';
+import { accumulateBuckets } from './expense-buckets';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
 import { PayrollQueryDto } from './dto/payroll-query.dto';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
@@ -29,9 +31,22 @@ type DashboardSplit = Prisma.PaymentSplitGetPayload<{
     order: { select: { waiterId: true } };
   };
 }>;
+/**
+ * Acumulador de costo de lo vendido.
+ *
+ * `unknownRevenueCOP` no es un detalle: es la venta cuyo costo NO conocemos
+ * (producto sin receta, cita anterior al congelado, orden vieja). Sin ese
+ * número, un margen calculado sobre cobertura parcial se ve idéntico a uno
+ * completo, y es exactamente así como un dashboard reporta utilidad inflada.
+ */
+interface CogsAccumulator {
+  cogsCOP: number;
+  knownRevenueCOP: number;
+  unknownRevenueCOP: number;
+}
 type DashboardBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: {
-    service: { select: { id: true; name: true; priceCOP: true } };
+    service: { select: { id: true; name: true; priceCOP: true; costCOP: true } };
   };
 }>;
 type DashboardRetailSale = Prisma.RetailSaleGetPayload<{
@@ -41,7 +56,7 @@ type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: { service: { select: { priceCOP: true } } };
 }>;
 
-const COMPLETED_BARBER_STATUSES = ['completed', 'COMPLETED', 'Completed'];
+
 
 @Injectable()
 export class FinanceService {
@@ -82,11 +97,13 @@ export class FinanceService {
               where: {
                 tenantId: ctx.tenantId,
                 branchId: ctx.branchId,
-                status: { in: COMPLETED_BARBER_STATUSES },
+                status: { in: COMPLETED_STATUS_VARIANTS },
                 scheduledAt: { gte: range.from, lte: range.to },
               },
               include: {
-                service: { select: { id: true, name: true, priceCOP: true } },
+                service: {
+                  select: { id: true, name: true, priceCOP: true, costCOP: true },
+                },
               },
             })
           : Promise.resolve([] as DashboardBarberAppointment[]),
@@ -103,8 +120,11 @@ export class FinanceService {
           : Promise.resolve([] as DashboardRetailSale[]),
       ]);
 
+    // El precio congelado en la cita manda sobre el del catálogo: reprecio o
+    // renombrar un servicio no debe reescribir el histórico. Las citas
+    // anteriores al congelado caen al precio actual, como antes.
     const barberRevenue = barberAppointments.reduce(
-      (acc, a) => acc + (a.service?.priceCOP ?? 0),
+      (acc, a) => acc + (a.priceCOP ?? a.service?.priceCOP ?? 0),
       0,
     );
 
@@ -118,6 +138,25 @@ export class FinanceService {
       barberRevenue +
       retailRevenue;
     const expensesTotal = expenses._sum.amountCOP ?? 0;
+
+    // ── Costo de lo vendido ────────────────────────────────────────────────
+    const cogs = this.accumulateCogs(splits, barberAppointments, retailSales);
+    const cogsCOP = cogs.cogsCOP;
+    const grossProfitCOP = revenue - cogsCOP;
+    const grossMarginPct =
+      revenue > 0 ? Math.round((grossProfitCOP / revenue) * 1000) / 10 : 0;
+    const netProfitCOP = revenue - cogsCOP - expensesTotal;
+    const netMarginPct =
+      revenue > 0 ? Math.round((netProfitCOP / revenue) * 1000) / 10 : 0;
+    const coverageBase = cogs.knownRevenueCOP + cogs.unknownRevenueCOP;
+    const cogsCoveragePct =
+      coverageBase > 0
+        ? Math.round((cogs.knownRevenueCOP / coverageBase) * 1000) / 10
+        : 0;
+
+    // `profit` y `profitMarginPct` se mantienen con su significado ANTERIOR
+    // (ingreso − gastos, sin costo) para no romper a quien ya los consume. La
+    // utilidad de verdad viaja en netProfitCOP.
     const profit = revenue - expensesTotal;
     const profitMarginPct =
       revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0;
@@ -258,6 +297,16 @@ export class FinanceService {
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
+    // Gasto por categoría: el mapeo a los buckets que dibuja la pantalla de
+    // rentabilidad se define AQUÍ, una sola vez, y viaja en la respuesta. Antes
+    // el frontend recibía un único entero y por eso el punto de equilibrio
+    // salía en $0.
+    const expensesByCategory = await this.expenseBreakdown(
+      ctx,
+      range.from,
+      range.to,
+    );
+
     return {
       revenue,
       expenses: expensesTotal,
@@ -268,10 +317,157 @@ export class FinanceService {
       topProductsByRevenue,
       topWaitersByRevenue,
       revenueByDay,
+      // ── Costo real de lo vendido (aditivo) ──
+      cogsCOP,
+      grossProfitCOP,
+      grossMarginPct,
+      netProfitCOP,
+      netMarginPct,
+      cogsCoveragePct,
+      uncostedRevenueCOP: cogs.unknownRevenueCOP,
+      expensesByCategory,
+      expenseBuckets: accumulateBuckets(expensesByCategory),
       period: range.label,
       dateFrom: range.from.toISOString(),
       dateTo: range.to.toISOString(),
     };
+  }
+
+  /**
+   * Suma el costo congelado de las tres verticales y, en paralelo, cuánta venta
+   * quedó sin costo conocido.
+   *
+   * Regla que sostiene todo el cálculo: costo `null` NO es costo cero. Una orden
+   * sin receta cargada no aporta al COGS y su ingreso se marca como no costeado,
+   * para que el margen resultante se pueda leer junto a su cobertura.
+   */
+  private accumulateCogs(
+    splits: DashboardSplit[],
+    appointments: DashboardBarberAppointment[],
+    retailSales: DashboardRetailSale[],
+  ): CogsAccumulator {
+    const acc: CogsAccumulator = {
+      cogsCOP: 0,
+      knownRevenueCOP: 0,
+      unknownRevenueCOP: 0,
+    };
+
+    // Restaurante: costo por línea de pago, congelado al enviar a cocina.
+    for (const split of splits) {
+      for (const item of split.items) {
+        const lineRevenue = item.priceCOP * item.qty;
+        if (item.unitCostCOP === null) {
+          acc.unknownRevenueCOP += lineRevenue;
+          continue;
+        }
+        acc.cogsCOP += item.unitCostCOP * item.qty;
+        acc.knownRevenueCOP += lineRevenue;
+      }
+    }
+
+    // Barbería: costo congelado al completar la cita.
+    for (const appt of appointments) {
+      const apptRevenue = appt.priceCOP ?? appt.service?.priceCOP ?? 0;
+      if (appt.costCOP === null) {
+        acc.unknownRevenueCOP += apptRevenue;
+        continue;
+      }
+      acc.cogsCOP += appt.costCOP;
+      acc.knownRevenueCOP += apptRevenue;
+    }
+
+    // Tiendas: el costo ya venía congelado desde que existe el modelo, así que
+    // esta vertical siempre tiene cobertura completa.
+    for (const sale of retailSales) {
+      acc.cogsCOP += sale.costCOP;
+      acc.knownRevenueCOP += sale.totalCOP;
+    }
+
+    return acc;
+  }
+
+  /**
+   * Saldo de caja del rango. Solo lectura sobre CashSession/CashMovement.
+   *
+   * Existe aquí, y no en el módulo de cash-sessions, a propósito: mover ese
+   * módulo fuera de `restaurant/` toca el POS y no es crítico hoy. Este endpoint
+   * únicamente lee, así que no interfiere con el arqueo.
+   *
+   * `hasCashTracking: false` significa que la vertical no lleva caja (barbería
+   * hoy). El frontend debe mostrar "sin datos" — nunca un cero que se lee como
+   * "caja vacía".
+   */
+  async cashBalance(ctx: TenantContext, query: PeriodQueryDto) {
+    const range = this.resolveRange(query);
+    const sessions = await this.prisma.cashSession.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        openedAt: { lte: range.to },
+        OR: [{ closedAt: null }, { closedAt: { gte: range.from } }],
+      },
+      include: { movements: true },
+      orderBy: { openedAt: 'desc' },
+    });
+
+    // El signo lo define el tipo de movimiento, igual que en CashSessionsService.
+    const OUTFLOW = new Set(['REFUND', 'EXPENSE', 'WITHDRAWAL']);
+    let expectedCashCOP = 0;
+    let countedCashCOP = 0;
+    let differenceCOP = 0;
+    let openSessions = 0;
+    let lastClosedAt: Date | null = null;
+
+    for (const session of sessions) {
+      if (session.status === 'OPEN') {
+        openSessions += 1;
+        for (const m of session.movements) {
+          if (m.method !== 'cash') continue;
+          expectedCashCOP += OUTFLOW.has(m.type) ? -m.amount : m.amount;
+        }
+      } else {
+        expectedCashCOP += session.expectedAmount ?? 0;
+        countedCashCOP += session.countedAmount ?? 0;
+        differenceCOP += session.difference ?? 0;
+        if (
+          session.closedAt &&
+          (!lastClosedAt || session.closedAt > lastClosedAt)
+        ) {
+          lastClosedAt = session.closedAt;
+        }
+      }
+    }
+
+    return {
+      hasCashTracking: sessions.length > 0,
+      openSessions,
+      expectedCashCOP,
+      countedCashCOP,
+      differenceCOP,
+      lastClosedAt: lastClosedAt ? lastClosedAt.toISOString() : null,
+      period: range.label,
+      dateFrom: range.from.toISOString(),
+      dateTo: range.to.toISOString(),
+    };
+  }
+
+  /** Gasto agrupado por categoría en un rango. Espeja `expenses()`. */
+  private async expenseBreakdown(ctx: TenantContext, from: Date, to: Date) {
+    const rows = await this.prisma.expense.groupBy({
+      by: ['category'],
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        incurredAt: { gte: from, lte: to },
+      },
+      _sum: { amountCOP: true },
+    });
+    return rows
+      .map((row) => ({
+        category: row.category,
+        amountCOP: row._sum.amountCOP ?? 0,
+      }))
+      .sort((a, b) => b.amountCOP - a.amountCOP);
   }
 
   async expenses(ctx: TenantContext, query: PeriodQueryDto) {
@@ -521,7 +717,7 @@ export class FinanceService {
             where: {
               tenantId: ctx.tenantId,
               branchId: ctx.branchId,
-              status: { in: COMPLETED_BARBER_STATUSES },
+              status: { in: COMPLETED_STATUS_VARIANTS },
               scheduledAt: { gte: from, lt: to },
             },
             include: { service: { select: { priceCOP: true } } },
@@ -539,7 +735,11 @@ export class FinanceService {
           })
         : Promise.resolve({ _sum: { totalCOP: 0 } }),
     ]);
-    const barber = appts.reduce((a, x) => a + (x.service?.priceCOP ?? 0), 0);
+    // Mismo criterio que el dashboard: manda el precio congelado en la cita.
+    const barber = appts.reduce(
+      (a, x) => a + (x.priceCOP ?? x.service?.priceCOP ?? 0),
+      0,
+    );
     return (
       (splitAgg._sum.totalCOP ?? 0) + barber + (retailAgg._sum.totalCOP ?? 0)
     );

@@ -32,6 +32,8 @@ import { ReceiptsService } from '../receipts/receipts.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import { RequestMetricsStore } from '../../../monitoring/request-metrics.store';
 import { convertQuantity as convertUnitQuantity } from '../inventory/unit-conversion';
+import { productUnitCostCOP } from '../inventory/recipe-cost';
+import { valueIngredientAt } from '../inventory/stock-valuation';
 
 // Opciones para las transacciones interactivas de órdenes. El default de
 // Prisma es timeout 5s / maxWait 2s, que se queda corto cuando la DB está
@@ -494,33 +496,65 @@ export class OrdersService {
         }
       }
 
+      // Costo de receta congelado por ítem. Se calcula aquí porque `recipeLines`
+      // ya está en memoria (cero queries de lectura extra) y porque este es el
+      // momento en que el insumo se consume de verdad.
+      //
+      // Los ítems se agrupan por costo para escribirlos con un `updateMany` por
+      // valor distinto en vez de uno por ítem: esta transacción está optimizada a
+      // propósito para no hacer N round-trips y no se va a regresar por esto.
+      //
+      // Best-effort: un fallo de costeo no puede impedir que salga la comanda.
+      const itemIdsByCost = new Map<number, string[]>();
+      for (const item of pendingItems) {
+        if (item.unitCostCOP !== null) continue; // ya costeado en un envío previo
+        try {
+          const lines = linesByProduct.get(item.productId) ?? [];
+          const unitCostCOP = productUnitCostCOP(
+            lines.map((line) => ({ line, ingredient: line.ingredient })),
+          );
+          if (unitCostCOP === null) continue; // sin receta → queda null, no 0
+          const bucket = itemIdsByCost.get(unitCostCOP);
+          if (bucket) bucket.push(item.id);
+          else itemIdsByCost.set(unitCostCOP, [item.id]);
+        } catch (error) {
+          this.logger.warn(
+            `No se pudo costear el ítem ${item.id} (${item.name}): ${
+              error instanceof Error ? error.message : 'error desconocido'
+            }`,
+          );
+        }
+      }
+      for (const [unitCostCOP, ids] of itemIdsByCost) {
+        await tx.orderItem.updateMany({
+          where: { id: { in: ids } },
+          data: { unitCostCOP },
+        });
+      }
+
       // Movimientos de stock en un solo insert.
       if (movements.length > 0) {
         await tx.stockMovement.createMany({ data: movements });
       }
 
       // Un update por ingrediente distinto con su saldo final.
+      //
+      // Vender NO cambia el costo unitario: sale valor y unidades en la misma
+      // proporción. Antes aquí se dividía `totalPurchaseCost` (que nunca bajaba)
+      // por el stock restante, y el costo se inflaba con cada venta.
       for (const [ingredientId, newStock] of stockBalances) {
         const ingredient = ingredientById.get(ingredientId)!;
-        const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
-        const netUsableQuantity =
-          convertUnitQuantity(
-            newStock,
-            ingredient.purchaseUnit,
-            ingredient.recipeUnit,
-            ingredient,
-          ) * usableRatio;
+        const valuation = valueIngredientAt(ingredient, newStock);
 
         await tx.ingredient.update({
           where: { id: ingredientId },
           data: {
             currentStock: newStock,
             grossStockQuantity: newStock,
-            netUsableQuantity,
-            netUnitCost:
-              netUsableQuantity > 0
-                ? ingredient.totalPurchaseCost / netUsableQuantity
-                : 0,
+            netUsableQuantity: valuation.netUsableQuantity,
+            totalPurchaseCost: valuation.totalPurchaseCost,
+            grossUnitCost: valuation.grossUnitCost,
+            netUnitCost: valuation.netUnitCost,
           },
         });
       }
@@ -832,7 +866,15 @@ export class OrdersService {
     }
 
     const contributions = this.normalizePaymentContributions(dto.contributions);
-    const items = this.normalizePaymentItems(dto.items);
+    // El costo viaja del OrderItem al PaymentSplitItem: el split es la unidad de
+    // ingreso que lee finanzas, así que el costo tiene que ir con él.
+    const costByProduct = new Map<string, number>();
+    for (const item of order.items) {
+      if (item.unitCostCOP !== null && !costByProduct.has(item.productId)) {
+        costByProduct.set(item.productId, item.unitCostCOP);
+      }
+    }
+    const items = this.normalizePaymentItems(dto.items, costByProduct);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.paymentSplit.create({
@@ -916,6 +958,16 @@ export class OrdersService {
     }
     const terminalId = dto.terminalId ?? order.terminalId;
 
+    // Costo de la orden: suma de los costos congelados al enviar a cocina.
+    // Se deja en null si NINGÚN ítem tiene costo — null es "no sabemos", y esa
+    // distinción es la que permite a finanzas reportar cobertura en vez de
+    // inventar un margen sobre un costo cero.
+    const costedItems = order.items.filter((i) => i.unitCostCOP !== null);
+    const costCOP =
+      costedItems.length > 0
+        ? costedItems.reduce((sum, i) => sum + i.unitCostCOP! * i.qty, 0)
+        : null;
+
     const closedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
       await tx.order.update({
@@ -924,6 +976,7 @@ export class OrdersService {
           status: 'CLOSED',
           closedAt,
           totalCOP,
+          costCOP,
           terminalId,
         },
       });
@@ -1083,27 +1136,21 @@ export class OrdersService {
         restoredStockMovements = reversalMovements.length;
       }
 
+      // El stock vuelve a entrar al costo vigente (no trae precio propio: es una
+      // reversión, no una compra), así que el costo unitario no se mueve.
       for (const [ingredientId, newStock] of stockBalances) {
         const ingredient = ingredientById.get(ingredientId)!;
-        const usableRatio = 1 - ingredient.technicalWastePercentage / 100;
-        const netUsableQuantity =
-          convertUnitQuantity(
-            newStock,
-            ingredient.purchaseUnit,
-            ingredient.recipeUnit,
-            ingredient,
-          ) * usableRatio;
+        const valuation = valueIngredientAt(ingredient, newStock);
 
         await tx.ingredient.update({
           where: { id: ingredientId },
           data: {
             currentStock: newStock,
             grossStockQuantity: newStock,
-            netUsableQuantity,
-            netUnitCost:
-              netUsableQuantity > 0
-                ? ingredient.totalPurchaseCost / netUsableQuantity
-                : 0,
+            netUsableQuantity: valuation.netUsableQuantity,
+            totalPurchaseCost: valuation.totalPurchaseCost,
+            grossUnitCost: valuation.grossUnitCost,
+            netUnitCost: valuation.netUnitCost,
           },
         });
       }
@@ -1221,17 +1268,36 @@ export class OrdersService {
     return [...byMethod.values()];
   }
 
-  private normalizePaymentItems(items: RegisterPaymentDto['items']) {
+  /**
+   * Agrupa las líneas de pago por producto (PaymentSplitItem es único por
+   * splitId+productId) y les adjunta el costo congelado del OrderItem.
+   *
+   * `costByProduct` viene de la orden: varias líneas del mismo producto con
+   * notas distintas comparten receta, así que basta el primer costo no nulo.
+   */
+  private normalizePaymentItems(
+    items: RegisterPaymentDto['items'],
+    costByProduct?: Map<string, number>,
+  ) {
     const byProduct = new Map<
       string,
-      { productId: string; name: string; qty: number; priceCOP: number }
+      {
+        productId: string;
+        name: string;
+        qty: number;
+        priceCOP: number;
+        unitCostCOP: number | null;
+      }
     >();
     for (const item of items) {
       const existing = byProduct.get(item.productId);
       if (existing) {
         existing.qty += item.qty;
       } else {
-        byProduct.set(item.productId, { ...item });
+        byProduct.set(item.productId, {
+          ...item,
+          unitCostCOP: costByProduct?.get(item.productId) ?? null,
+        });
       }
     }
     return [...byProduct.values()];

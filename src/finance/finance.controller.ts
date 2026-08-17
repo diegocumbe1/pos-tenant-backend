@@ -9,7 +9,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantGuard } from '../auth/guards/tenant.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -43,6 +48,17 @@ export class FinanceController {
     @Query() query: PeriodQueryDto,
   ) {
     return this.financeService.dashboard(ctx, query);
+  }
+
+  @Get('cash-balance')
+  @ApiOperation({
+    summary: 'Saldo de caja del período (solo lectura sobre CashSession)',
+  })
+  cashBalance(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: PeriodQueryDto,
+  ) {
+    return this.financeService.cashBalance(ctx, query);
   }
 
   @Get('expenses')

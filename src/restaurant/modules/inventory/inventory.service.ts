@@ -24,6 +24,8 @@ import {
   isPhysicallyConvertible,
   type ConversionCtx,
 } from './unit-conversion';
+import { convertUnitCost, recipeLineCost } from './recipe-cost';
+import { valueIngredientAt } from './stock-valuation';
 
 type IngredientRow = Prisma.IngredientGetPayload<Record<string, never>>;
 type RecipeLineRow = Prisma.RecipeLineGetPayload<{
@@ -245,19 +247,16 @@ export class InventoryService {
       throw new BadRequestException('Movement would make stock negative');
     }
 
-    const totalPurchaseCost =
-      dto.type === 'PURCHASE' && dto.unitCost !== undefined
-        ? ingredient.totalPurchaseCost + dto.quantity * dto.unitCost
-        : ingredient.totalPurchaseCost;
-
-    const metrics = this.calculateMetrics({
-      grossStockQuantity: newStock,
-      purchaseUnit: ingredient.purchaseUnit,
-      recipeUnit: ingredient.recipeUnit,
-      purchaseToRecipeFactor: ingredient.purchaseToRecipeFactor,
-      technicalWastePercentage: ingredient.technicalWastePercentage,
-      totalPurchaseCost,
+    // Promedio ponderado móvil: solo una entrada CON precio propio mueve el
+    // costo unitario. Consumos, mermas y ajustes a la baja lo dejan igual.
+    const metrics = valueIngredientAt(ingredient, newStock, {
+      previousStock,
+      entryUnitCost:
+        dto.type === 'PURCHASE' && dto.unitCost !== undefined
+          ? dto.unitCost
+          : null,
     });
+    const totalPurchaseCost = metrics.totalPurchaseCost;
 
     const movement = await this.prisma.$transaction(async (tx) => {
       const created = await tx.stockMovement.create({
@@ -517,7 +516,6 @@ export class InventoryService {
         );
         batchCost += usedInRecipeUnit * ing.netUnitCost;
 
-        const usableRatio = 1 - ing.technicalWastePercentage / 100;
         await tx.stockMovement.create({
           data: {
             tenantId: ctx.tenantId,
@@ -532,14 +530,19 @@ export class InventoryService {
             createdByName: ctx.name,
           },
         });
+        // Antes este update movía el stock pero NO el valor, así que
+        // `totalPurchaseCost` quedaba sobrestimado y el siguiente movimiento
+        // inflaba el costo unitario.
+        const valuation = valueIngredientAt(ing, newStock);
         await tx.ingredient.update({
           where: { id: ing.id },
           data: {
             currentStock: newStock,
             grossStockQuantity: newStock,
-            netUsableQuantity:
-              convertQuantity(newStock, ing.purchaseUnit, ing.recipeUnit, ing) *
-              usableRatio,
+            netUsableQuantity: valuation.netUsableQuantity,
+            totalPurchaseCost: valuation.totalPurchaseCost,
+            grossUnitCost: valuation.grossUnitCost,
+            netUnitCost: valuation.netUnitCost,
           },
         });
       }
@@ -548,19 +551,13 @@ export class InventoryService {
       const producedQty = preparation.yieldQuantity * batches;
       const prevStock = preparation.currentStock;
       const newPrepStock = prevStock + producedQty;
-      const prevValue = prevStock * preparation.grossUnitCost;
-      const newTotalValue = prevValue + batchCost;
-      const grossUnitCost = newPrepStock > 0 ? newTotalValue / newPrepStock : 0;
-      const usableRatio = 1 - preparation.technicalWastePercentage / 100;
-      const netUsableQuantity =
-        convertQuantity(
-          newPrepStock,
-          preparation.purchaseUnit,
-          preparation.recipeUnit,
-          preparation,
-        ) * usableRatio;
-      const netUnitCost =
-        netUsableQuantity > 0 ? newTotalValue / netUsableQuantity : 0;
+      // La tanda entra a su propio costo de producción; el resto del stock
+      // conserva el suyo. Es el mismo promedio ponderado de las compras.
+      const { totalPurchaseCost: newTotalValue, grossUnitCost, netUnitCost, netUsableQuantity } =
+        valueIngredientAt(preparation, newPrepStock, {
+          previousStock: prevStock,
+          entryUnitCost: producedQty > 0 ? batchCost / producedQty : null,
+        });
 
       await tx.stockMovement.create({
         data: {
@@ -609,15 +606,11 @@ export class InventoryService {
   private toPreparationComponentDto(
     line: Prisma.PreparationComponentGetPayload<{ include: { component: true } }>,
   ) {
-    const unitCost = this.convertUnitCost(
+    const unitCost = convertUnitCost(
       line.component.netUnitCost,
       line.component.recipeUnit,
       line.unit,
-      {
-        purchaseUnit: line.component.purchaseUnit,
-        recipeUnit: line.component.recipeUnit,
-        purchaseToRecipeFactor: line.component.purchaseToRecipeFactor,
-      },
+      line.component,
     );
     return {
       id: line.id,
@@ -744,19 +737,14 @@ export class InventoryService {
   }
 
   private toRecipeLineDto(line: RecipeLineRow) {
-    const unitCost = this.convertUnitCost(
+    const unitCost = convertUnitCost(
       line.ingredient.netUnitCost,
       line.ingredient.recipeUnit,
       line.unit,
-      {
-        purchaseUnit: line.ingredient.purchaseUnit,
-        recipeUnit: line.ingredient.recipeUnit,
-        purchaseToRecipeFactor: line.ingredient.purchaseToRecipeFactor,
-      },
+      line.ingredient,
     );
-    // Aplica la merma por línea: si se pierde X% al preparar, se necesita más cantidad.
     const wastePercent = line.wastePercent ?? 0;
-    const lineCost = line.quantity * (1 + wastePercent / 100) * unitCost;
+    const lineCost = recipeLineCost(line, line.ingredient);
 
     return {
       id: line.id,
@@ -846,13 +834,4 @@ export class InventoryService {
     }
   }
 
-  private convertUnitCost(
-    costPerFromUnit: number,
-    from: string,
-    to: string,
-    ctx?: ConversionCtx,
-  ) {
-    const oneTo = convertQuantity(1, to, from, ctx);
-    return costPerFromUnit * oneTo;
-  }
 }

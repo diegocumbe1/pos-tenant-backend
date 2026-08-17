@@ -410,6 +410,10 @@ model BarberService {
   description     String?
   durationMin     Int
   priceCOP        Int
+  // Costo de insumos del servicio (tintes, agujas, pigmentos...). Capturado a
+  // mano: barbería no tiene inventario todavía. Sin esto la vertical queda
+  // fuera de cualquier cálculo de margen.
+  costCOP         Int      @default(0)
   // Modo recursos: bloques de reserva adicionales al base (1h = priceCOP).
   // [{ minutes: number, priceCOP?: number | null }]. priceCOP null = derivado.
   durationOptions Json     @default("[]")
@@ -535,6 +539,11 @@ model BarberAppointment {
   staff        BarberStaff?   @relation(fields: [staffId], references: [id])
   scheduledAt  DateTime
   scheduledEnd DateTime
+  // Precio y costo congelados al completar la cita. Hasta ahora el ingreso se
+  // leía del BarberService ACTUAL: reprecio o renombrar reescribía el histórico
+  // entero. null = cita no completada, o completada antes de este cambio.
+  priceCOP     Int?
+  costCOP      Int?
   status       String         @default("SCHEDULED")
   source       String         @default("manual")
   notes        String?
@@ -924,6 +933,10 @@ model Order {
   waiter     User?           @relation("waiters", fields: [waiterId], references: [id])
   status     String          @default("OPEN") // "OPEN" | "CLOSED"
   totalCOP   Int?
+  // Costo de lo vendido, congelado al cerrar (suma de OrderItem.unitCostCOP*qty).
+  // null = la orden es anterior al costeo o ningún ítem tenía receta. NUNCA 0
+  // por defecto: 0 significaría "costó cero" e inflaría el margen.
+  costCOP    Int?
   createdAt  DateTime        @default(now())
   closedAt   DateTime?
 
@@ -943,23 +956,26 @@ model Order {
 }
 
 model OrderItem {
-  id        String   @id @default(cuid())
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId String
-  product   Product  @relation(fields: [productId], references: [id])
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
   // Identidad de la línea. Permite el mismo producto en varias líneas con
   // distintas notas/opciones. El backend usa `lineKey ?? productId`.
-  lineKey   String
-  name      String
-  priceCOP  Int
-  qty       Int
-  sentQty   Int      @default(0)
+  lineKey     String
+  name        String
+  priceCOP    Int
+  // Costo de receta de UNA unidad, congelado al enviar a cocina (que es cuando
+  // el insumo se consume de verdad). null = producto sin receta cargada.
+  unitCostCOP Int?
+  qty         Int
+  sentQty     Int      @default(0)
   // Opciones/especificaciones del ítem (persistidas para orden + comanda).
-  notes     String?
-  additions Json?
-  modifiers Json?
-  addedAt   DateTime @default(now())
+  notes       String?
+  additions   Json?
+  modifiers   Json?
+  addedAt     DateTime @default(now())
 
   @@unique([orderId, lineKey])
   @@index([orderId])
@@ -1046,13 +1062,16 @@ model PaymentContribution {
 }
 
 model PaymentSplitItem {
-  id        String       @id @default(cuid())
-  splitId   String
-  split     PaymentSplit @relation(fields: [splitId], references: [id], onDelete: Cascade)
-  productId String
-  name      String
-  qty       Int
-  priceCOP  Int
+  id          String       @id @default(cuid())
+  splitId     String
+  split       PaymentSplit @relation(fields: [splitId], references: [id], onDelete: Cascade)
+  productId   String
+  name        String
+  qty         Int
+  priceCOP    Int
+  // Copiado del OrderItem al cerrar. El split es la unidad de ingreso que lee
+  // finanzas, así que el costo tiene que viajar con él. null = sin receta.
+  unitCostCOP Int?
 
   @@unique([splitId, productId])
   @@map("payment_split_items")

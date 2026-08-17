@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import { isCompletedStatus } from '../../shared/appointment-status';
 import {
   CancelBarberAppointmentDto,
   CreateBarberAppointmentDto,
@@ -71,20 +72,23 @@ export class BarberAppointmentsService {
       staffId: dto.staffId,
     });
 
-    const serviceId =
-      dto.serviceId ??
-      (
-        await this.prisma.barberAppointment.findUniqueOrThrow({
-          where: { id },
-          select: { serviceId: true },
-        })
-      ).serviceId;
+    const current = await this.prisma.barberAppointment.findUniqueOrThrow({
+      where: { id },
+      select: { serviceId: true, status: true, priceCOP: true },
+    });
+    const serviceId = dto.serviceId ?? current.serviceId;
     const service = await this.prisma.barberService.findUniqueOrThrow({
       where: { id: serviceId },
-      select: { durationMin: true },
+      select: { durationMin: true, priceCOP: true, costCOP: true },
     });
     const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : undefined;
+
+    // Al completar, se congelan precio y costo del servicio. Sin esto el ingreso
+    // se lee del BarberService ACTUAL y reprecio o renombrar reescribe el
+    // histórico entero. Solo se congela la primera vez (priceCOP aún null).
+    const completesNow =
+      isCompletedStatus(dto.status) && current.priceCOP === null;
 
     return this.prisma.barberAppointment.update({
       where: { id },
@@ -98,6 +102,9 @@ export class BarberAppointmentsService {
           : undefined,
         status: dto.status,
         notes: dto.notes,
+        ...(completesNow
+          ? { priceCOP: service.priceCOP, costCOP: service.costCOP }
+          : {}),
       },
       include: { customer: true, service: true, staff: true },
     });
