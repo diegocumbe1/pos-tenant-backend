@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrintDocumentType, PrinterTarget } from '@prisma/client';
 import { PrintBlock, PrintDocument } from './printing.types';
+import { calendarDayCO } from '../../../common/date.util';
 
 const COP = new Intl.NumberFormat('es-CO', {
   style: 'currency',
@@ -68,7 +69,9 @@ export interface ZReportDoc {
 @Injectable()
 export class PrintingDocumentService {
   private shortOrderCode(orderId: string, tenantId?: string | null, date?: Date): string {
-    const dateKey = (date ?? new Date()).toISOString().slice(0, 10).replace(/-/g, '');
+    // Día de negocio COLOMBIANO, igual que el builder del frontend: si acá se
+    // usa UTC, el mismo pedido genera un código corto distinto en cada lado.
+    const dateKey = calendarDayCO(date ?? new Date()).replace(/-/g, '');
     const seed = `${tenantId ?? ''}|${dateKey}|${orderId}`;
     let hash = 2166136261;
     for (let i = 0; i < seed.length; i += 1) {

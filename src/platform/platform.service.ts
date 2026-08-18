@@ -6,7 +6,16 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { dayEndCO, dayStartCO } from '../common/date.util';
+import {
+  addCalendarDaysCO,
+  calendarDayCO,
+  calendarMonthCO,
+  dayEndCO,
+  dayStartCO,
+  monthEndDayCO,
+  monthStartDayCO,
+  weekStartDayCO,
+} from '../common/date.util';
 import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlanPriceDto,
@@ -2069,26 +2078,24 @@ export class PlatformService {
       };
     }
 
-    const from = new Date(now);
-    const to = new Date(now);
+    // Rango semiabierto [from, to) derivado del CALENDARIO colombiano: no puede
+    // depender del TZ del proceso (main.ts respeta el del host).
+    let fromDay: string;
+    let toDayExclusive: string;
 
     if (period === 'today') {
-      from.setHours(0, 0, 0, 0);
-      to.setDate(to.getDate() + 1);
-      to.setHours(0, 0, 0, 0);
+      fromDay = calendarDayCO(now);
+      toDayExclusive = addCalendarDaysCO(fromDay, 1);
     } else if (period === 'week') {
-      const day = from.getDay();
-      const diff = (day + 6) % 7;
-      from.setDate(from.getDate() - diff);
-      from.setHours(0, 0, 0, 0);
-      to.setTime(from.getTime());
-      to.setDate(to.getDate() + 7);
+      fromDay = weekStartDayCO(now);
+      toDayExclusive = addCalendarDaysCO(fromDay, 7);
     } else {
-      from.setDate(1);
-      from.setHours(0, 0, 0, 0);
-      to.setTime(from.getTime());
-      to.setMonth(to.getMonth() + 1);
+      fromDay = monthStartDayCO(now);
+      toDayExclusive = addCalendarDaysCO(monthEndDayCO(now), 1);
     }
+
+    const from = dayStartCO(fromDay);
+    const to = dayStartCO(toDayExclusive);
 
     return {
       from,
@@ -2099,7 +2106,7 @@ export class PlatformService {
   }
 
   private monthFromDate(date: Date): string {
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return calendarMonthCO(date);
   }
 
   private addDays(date: Date, days: number): Date {

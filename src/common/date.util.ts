@@ -1,16 +1,15 @@
 /**
  * Utilidades de fecha para hora Colombia (America/Bogota).
  *
- * El proceso corre con TZ=America/Bogota (ver main.ts), así que el constructor
- * local de Date interpreta las cadenas con componente de hora en hora Colombia.
- * OJO: una cadena date-only 'YYYY-MM-DD' SIEMPRE se parsea como UTC por spec de
- * ECMAScript, sin importar la TZ del proceso. Por eso, para filtrar por rango de
- * día hay que anexarle un componente de hora antes de construir el Date.
- *
- * Los helpers de FORMATO y de DÍA CALENDARIO no dependen del TZ del proceso:
- * `main.ts` respeta el TZ que traiga el host, así que un contenedor con TZ=UTC
- * movería todo cinco horas en silencio. Por eso pasan `timeZone` explícito.
+ * NINGÚN helper de este archivo depende de la TZ del proceso. `main.ts` respeta
+ * el TZ que traiga el host (`process.env.TZ ?? 'America/Bogota'`), así que un
+ * contenedor arrancado con TZ=UTC movería todo cinco horas en silencio: los
+ * bordes de día anclan el offset a mano y los de formato pasan `timeZone`.
  * Ver docs/PLATFORM_MESSAGING_PLAN.md §6.
+ *
+ * OJO: una cadena date-only 'YYYY-MM-DD' SIEMPRE se parsea como UTC por spec de
+ * ECMAScript. Por eso, para filtrar por rango de día hay que anexarle hora Y
+ * offset antes de construir el Date.
  */
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -18,17 +17,26 @@ const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 export const CO_TZ = 'America/Bogota';
 export const CO_LOCALE = 'es-CO';
 
+/**
+ * Colombia no tiene horario de verano y lleva en UTC-5 de forma permanente, así
+ * que fijar el offset es seguro y hace los bordes de día reproducibles en
+ * cualquier host. Espejo de `CO_UTC_OFFSET` en el frontend (lib/date.ts).
+ */
+export const CO_UTC_OFFSET = '-05:00';
+
 const MS_PER_DAY = 86_400_000;
 
 /** Inicio de día (00:00:00.000) en hora Colombia para 'YYYY-MM-DD'. */
 export function dayStartCO(value: string): Date {
-  if (DATE_ONLY.test(value)) return new Date(`${value}T00:00:00.000`);
+  if (DATE_ONLY.test(value))
+    return new Date(`${value}T00:00:00.000${CO_UTC_OFFSET}`);
   return new Date(value);
 }
 
 /** Fin de día (23:59:59.999) en hora Colombia para 'YYYY-MM-DD'. */
 export function dayEndCO(value: string): Date {
-  if (DATE_ONLY.test(value)) return new Date(`${value}T23:59:59.999`);
+  if (DATE_ONLY.test(value))
+    return new Date(`${value}T23:59:59.999${CO_UTC_OFFSET}`);
   return new Date(value);
 }
 
@@ -96,6 +104,39 @@ export function diffCalendarDaysCO(
   const a = Date.parse(`${calendarDayCO(from)}T12:00:00.000Z`);
   const b = Date.parse(`${calendarDayCO(to)}T12:00:00.000Z`);
   return Math.round((b - a) / MS_PER_DAY);
+}
+
+/**
+ * Suma n días a una fecha calendario 'YYYY-MM-DD' y devuelve 'YYYY-MM-DD'.
+ * Aritmética pura anclada en UTC: no toca la TZ del proceso.
+ */
+export function addCalendarDaysCO(day: string, n: number): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** Mes calendario colombiano de un instante, como 'YYYY-MM'. */
+export function calendarMonthCO(value: Date | string = new Date()): string {
+  return calendarDayCO(value).slice(0, 7);
+}
+
+/** Primer día ('YYYY-MM-DD') del mes calendario colombiano de un instante. */
+export function monthStartDayCO(value: Date | string = new Date()): string {
+  return `${calendarMonthCO(value)}-01`;
+}
+
+/** Último día ('YYYY-MM-DD') del mes calendario colombiano de un instante. */
+export function monthEndDayCO(value: Date | string = new Date()): string {
+  const [year, month] = calendarMonthCO(value).split('-').map(Number);
+  // Día 0 del mes siguiente = último día del mes en curso.
+  return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+}
+
+/** Lunes ('YYYY-MM-DD') de la semana colombiana de un instante. */
+export function weekStartDayCO(value: Date | string = new Date()): string {
+  const day = calendarDayCO(value);
+  const weekday = new Date(`${day}T12:00:00.000Z`).getUTCDay(); // 0 = domingo
+  return addCalendarDaysCO(day, -(weekday === 0 ? 6 : weekday - 1));
 }
 
 /** Moneda colombiana sin decimales: '$ 92.000'. */

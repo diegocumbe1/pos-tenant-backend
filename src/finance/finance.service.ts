@@ -17,6 +17,15 @@ import {
   CreateFinanceGoalDto,
   UpdateFinanceGoalDto,
 } from './dto/finance-goal.dto';
+import {
+  calendarDayCO,
+  calendarMonthCO,
+  dayEndCO,
+  dayStartCO,
+  monthEndDayCO,
+  monthStartDayCO,
+  weekStartDayCO,
+} from '../common/date.util';
 
 interface Range {
   from: Date;
@@ -1105,33 +1114,26 @@ export class FinanceService {
       };
     }
 
-    const from = new Date(now);
-    const to = new Date(now);
+    // Los bordes se derivan del CALENDARIO colombiano, no del reloj del proceso:
+    // main.ts respeta el TZ del host, así que un contenedor en UTC corría todos
+    // los rangos cinco horas.
+    const today = calendarDayCO(now);
+    let fromDay = today;
+    let toDay = today;
 
-    if (period === 'today') {
-      from.setHours(0, 0, 0, 0);
-      to.setHours(23, 59, 59, 999);
-    } else if (period === 'week') {
-      const day = from.getDay();
-      const diff = (day + 6) % 7; // lunes como inicio
-      from.setDate(from.getDate() - diff);
-      from.setHours(0, 0, 0, 0);
-      to.setHours(23, 59, 59, 999);
+    if (period === 'week') {
+      fromDay = weekStartDayCO(now);
     } else if (period === 'month') {
-      from.setDate(1);
-      from.setHours(0, 0, 0, 0);
-      to.setMonth(to.getMonth() + 1, 0);
-      to.setHours(23, 59, 59, 999);
+      fromDay = monthStartDayCO(now);
+      toDay = monthEndDayCO(now);
     }
 
-    return { from, to, label: period };
+    return { from: dayStartCO(fromDay), to: dayEndCO(toDay), label: period };
   }
 
   private resolvePayrollMonth(query: PeriodQueryDto) {
     const range = this.resolveRange(query);
-    const periodMonth = `${range.from.getFullYear()}-${String(
-      range.from.getMonth() + 1,
-    ).padStart(2, '0')}`;
+    const periodMonth = calendarMonthCO(range.from);
     return { periodMonth, range };
   }
 
