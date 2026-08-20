@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { RetailPaymentMethod } from '@prisma/client';
+import { RetailPaymentMethod, RetailSaleType } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -57,6 +57,16 @@ export class CreateRetailSaleDto {
   @IsOptional()
   @IsEnum(RetailPaymentMethod)
   paymentMethod?: RetailPaymentMethod;
+
+  @ApiPropertyOptional({
+    enum: RetailSaleType,
+    example: 'RETAIL',
+    description:
+      'Lista de precios con la que se cobró. El precio unitario de cada línea llega en `items[].unitPriceCOP`; esto solo clasifica la venta para finanzas.',
+  })
+  @IsOptional()
+  @IsEnum(RetailSaleType)
+  saleType?: RetailSaleType;
 
   @ApiPropertyOptional({ example: 0, description: 'Descuento sobre el total' })
   @IsOptional()

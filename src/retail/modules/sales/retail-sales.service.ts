@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, RetailSaleType } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
@@ -21,13 +21,19 @@ export class RetailSalesService {
 
   async listSales(
     ctx: TenantContext,
-    filters: { from?: string; to?: string; limit?: number } = {},
+    filters: {
+      from?: string;
+      to?: string;
+      limit?: number;
+      saleType?: RetailSaleType;
+    } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
     const sales = await this.prisma.retailSale.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        ...(filters.saleType ? { saleType: filters.saleType } : {}),
         ...this.soldAtRange(filters.from, filters.to),
       },
       orderBy: { soldAt: 'desc' },
@@ -53,19 +59,26 @@ export class RetailSalesService {
   }
 
   /** Totales del día/rango para el dashboard de la tienda. */
-  async getSummary(ctx: TenantContext, from?: string, to?: string) {
+  async getSummary(
+    ctx: TenantContext,
+    from?: string,
+    to?: string,
+    saleType?: RetailSaleType,
+  ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
     const sales = await this.prisma.retailSale.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         status: 'COMPLETED',
+        ...(saleType ? { saleType } : {}),
         ...this.soldAtRange(from, to),
       },
       select: {
         totalCOP: true,
         costCOP: true,
         paymentMethod: true,
+        saleType: true,
         items: { select: { quantity: true } },
       },
     });
@@ -82,21 +95,58 @@ export class RetailSalesService {
         (byPaymentMethod[sale.paymentMethod] ?? 0) + sale.totalCOP;
     }
 
+    // Desglose normal vs mayorista. Va con costo y margen propios, no solo con
+    // ingresos: el punto de separarlos es poder ver que el mayorista factura
+    // más y deja menos por unidad, y eso solo se ve comparando márgenes.
+    const bySaleType = {
+      RETAIL: this.emptyTypeBucket(),
+      WHOLESALE: this.emptyTypeBucket(),
+    };
+    for (const sale of sales) {
+      const bucket = bySaleType[sale.saleType];
+      bucket.salesCount += 1;
+      bucket.revenueCOP += sale.totalCOP;
+      bucket.costCOP += sale.costCOP;
+      bucket.unitsSold += sale.items.reduce((n, item) => n + item.quantity, 0);
+    }
+    for (const bucket of Object.values(bySaleType)) {
+      bucket.grossProfitCOP = bucket.revenueCOP - bucket.costCOP;
+      bucket.marginPct = this.marginPct(bucket.revenueCOP, bucket.costCOP);
+      bucket.averageTicketCOP = bucket.salesCount
+        ? Math.round(bucket.revenueCOP / bucket.salesCount)
+        : 0;
+    }
+
     return {
       salesCount: sales.length,
       revenueCOP,
       costCOP,
       grossProfitCOP: revenueCOP - costCOP,
-      marginPct:
-        revenueCOP > 0
-          ? Math.round(((revenueCOP - costCOP) / revenueCOP) * 1000) / 10
-          : 0,
+      marginPct: this.marginPct(revenueCOP, costCOP),
       unitsSold,
       averageTicketCOP: sales.length
         ? Math.round(revenueCOP / sales.length)
         : 0,
       byPaymentMethod,
+      bySaleType,
     };
+  }
+
+  private emptyTypeBucket() {
+    return {
+      salesCount: 0,
+      revenueCOP: 0,
+      costCOP: 0,
+      grossProfitCOP: 0,
+      marginPct: 0,
+      unitsSold: 0,
+      averageTicketCOP: 0,
+    };
+  }
+
+  private marginPct(revenueCOP: number, costCOP: number): number {
+    if (revenueCOP <= 0) return 0;
+    return Math.round(((revenueCOP - costCOP) / revenueCOP) * 1000) / 10;
   }
 
   /**
@@ -207,6 +257,7 @@ export class RetailSalesService {
           totalCOP,
           costCOP,
           paymentMethod: dto.paymentMethod ?? 'CASH',
+          saleType: dto.saleType ?? 'RETAIL',
           receivedCOP: dto.receivedCOP,
           changeCOP:
             dto.receivedCOP !== undefined ? dto.receivedCOP - totalCOP : null,
@@ -364,6 +415,7 @@ export class RetailSalesService {
       tenantId: sale.tenantId,
       branchId: sale.branchId,
       status: sale.status,
+      saleType: sale.saleType,
       customerId: sale.customerId,
       customerName: sale.customer?.name ?? null,
       customerPhone: sale.customer?.phone ?? null,

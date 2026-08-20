@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { RetailSaleType } from '@prisma/client';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
@@ -19,6 +20,16 @@ import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { CreateRetailSaleDto, VoidRetailSaleDto } from './dto/retail-sale.dto';
 import { RetailSalesService } from './retail-sales.service';
+
+/**
+ * El query param llega como string suelto. Un valor basura se ignora (= sin
+ * filtro) en vez de tumbar la petición: es un filtro de reporte, no un dato de
+ * la venta, y romper el histórico de finanzas por un parámetro mal escrito en
+ * la URL sería peor que mostrarlo completo.
+ */
+function parseSaleType(value?: string): RetailSaleType | undefined {
+  return value === 'RETAIL' || value === 'WHOLESALE' ? value : undefined;
+}
 
 @ApiTags('Retail')
 @ApiBearerAuth()
@@ -34,16 +45,19 @@ export class RetailSalesController {
   @ApiQuery({ name: 'from', required: false, description: 'ISO date' })
   @ApiQuery({ name: 'to', required: false, description: 'ISO date' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'saleType', required: false, enum: RetailSaleType })
   list(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('limit') limit?: string,
+    @Query('saleType') saleType?: RetailSaleType,
   ) {
     return this.sales.listSales(ctx, {
       from,
       to,
       limit: limit ? Number(limit) : undefined,
+      saleType: parseSaleType(saleType),
     });
   }
 
@@ -51,12 +65,14 @@ export class RetailSalesController {
   @RequirePermissions('retail:sales:read')
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })
+  @ApiQuery({ name: 'saleType', required: false, enum: RetailSaleType })
   summary(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('saleType') saleType?: RetailSaleType,
   ) {
-    return this.sales.getSummary(ctx, from, to);
+    return this.sales.getSummary(ctx, from, to, parseSaleType(saleType));
   }
 
   @Get(':id')

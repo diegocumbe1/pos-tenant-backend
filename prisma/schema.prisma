@@ -2213,6 +2213,14 @@ enum RetailPaymentMethod {
   OTHER
 }
 
+// Con qué lista de precios se cobró. El mayorista vende más barato por unidad,
+// así que mezclar los dos tipos en un mismo total esconde el margen real: una
+// caída de utilidad puede ser "vendimos peor" o "vendimos más al por mayor".
+enum RetailSaleType {
+  RETAIL // precio normal de mostrador
+  WHOLESALE // escalones mayoristas del producto (6+, 12+)
+}
+
 model RetailSale {
   id            String              @id @default(cuid())
   tenantId      String
@@ -2227,6 +2235,9 @@ model RetailSale {
   userId        String?
   cashSessionId String?
   status        RetailSaleStatus    @default(COMPLETED)
+  // Lista de precios con la que se cobró. Default RETAIL para que las ventas
+  // que ya existen queden clasificadas como normales, que es lo que fueron.
+  saleType      RetailSaleType      @default(RETAIL)
   subtotalCOP   Int
   discountCOP   Int                 @default(0)
   totalCOP      Int
@@ -2246,6 +2257,9 @@ model RetailSale {
   @@unique([tenantId, code])
   @@index([tenantId, branchId, soldAt])
   @@index([tenantId, branchId, status, soldAt])
+  // Finanzas filtra por tipo dentro de un rango de fechas: sin este índice el
+  // filtro "solo mayorista" recorre todas las ventas del período.
+  @@index([tenantId, branchId, saleType, soldAt])
   @@index([customerId])
   @@map("retail_sales")
 }
