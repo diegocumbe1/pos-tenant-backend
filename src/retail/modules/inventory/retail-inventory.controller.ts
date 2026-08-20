@@ -7,7 +7,7 @@ import { PasswordSetGuard } from '../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
-import { CreateStockMovementDto } from './dto/retail-inventory.dto';
+import { CreateRetailStockMovementDto } from './dto/retail-inventory.dto';
 import { RetailInventoryService } from './retail-inventory.service';
 
 @ApiTags('Retail')
@@ -44,7 +44,7 @@ export class RetailInventoryController {
   @RequirePermissions('retail:inventory:write')
   createMovement(
     @CurrentTenant() ctx: TenantContext,
-    @Body() dto: CreateStockMovementDto,
+    @Body() dto: CreateRetailStockMovementDto,
   ) {
     return this.inventory.createMovement(ctx, dto);
   }

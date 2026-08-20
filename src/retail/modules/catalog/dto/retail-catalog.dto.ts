@@ -201,6 +201,33 @@ export class CreateRetailProductDto {
   @Max(99)
   minMarginPct?: number;
 
+  // Precios por volumen. Opcionales y anulables: `null` apaga el escalón (se
+  // cobra el precio normal) y `undefined` lo deja como está. El margen y el
+  // descuento NO se reciben: se derivan del costo y del precio de venta.
+  @ApiPropertyOptional({
+    example: 22000,
+    nullable: true,
+    description: 'Precio por unidad desde 6 unidades. null = escalón apagado.',
+  })
+  // `@IsOptional` ignora los validadores cuando el valor es null o undefined,
+  // así que null pasa y llega tal cual al servicio para apagar el escalón.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  wholesalePrice6COP?: number | null;
+
+  @ApiPropertyOptional({
+    example: 21500,
+    nullable: true,
+    description: 'Precio por unidad desde 12 unidades. null = escalón apagado.',
+  })
+  // `@IsOptional` ignora los validadores cuando el valor es null o undefined,
+  // así que null pasa y llega tal cual al servicio para apagar el escalón.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  wholesalePrice12COP?: number | null;
+
   @ApiPropertyOptional({ example: '🛡️' })
   @IsOptional()
   @IsString()

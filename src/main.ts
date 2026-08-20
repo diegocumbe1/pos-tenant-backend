@@ -4,6 +4,10 @@
 // cualquier import que instancie fechas. Si el host ya define TZ, se respeta.
 process.env.TZ = process.env.TZ ?? 'America/Bogota';
 
+// Primero que todo: define DATABASE_URL antes de que `@prisma/client` se importe
+// (vía AppModule) y cargue `.env` de producción por su cuenta. Ver load-env.ts.
+import './load-env';
+
 import { ValidationPipe } from '@nestjs/common';
 import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';

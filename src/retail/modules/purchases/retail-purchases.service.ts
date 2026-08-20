@@ -155,6 +155,9 @@ export class RetailPurchasesService {
         estimatedCostCOP: dto.estimatedCostCOP,
         note: dto.note === undefined ? undefined : dto.note.trim() || null,
         isUrgent: dto.isUrgent,
+        // Prisma ya distingue null (desenlazar) de undefined (no tocar).
+        expenseId: dto.expenseId,
+        shippingExpenseId: dto.shippingExpenseId,
       },
       include: {
         product: { select: { id: true, name: true, sku: true, stock: true } },
@@ -379,6 +382,9 @@ export class RetailPurchasesService {
       receivedById: item.receivedById,
       // Deja ver si la entrada al inventario efectivamente se generó.
       stockMovementId: item.stockMovementId,
+      // …y si la plata que salió quedó registrada en Finanzas. null = falta.
+      expenseId: item.expenseId,
+      shippingExpenseId: item.shippingExpenseId,
     };
   }
 

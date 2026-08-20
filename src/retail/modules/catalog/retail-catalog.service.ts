@@ -12,6 +12,7 @@ import {
   readProductOptions,
   sanitizeProductOptions,
 } from '../../shared/retail-product-options';
+import { wholesaleTiersOf } from '../../shared/retail-pricing';
 import {
   CreateRetailCategoryDto,
   CreateRetailProductDto,
@@ -196,6 +197,8 @@ export class RetailCatalogService {
             saleMarginPct: dto.saleMarginPct,
             minPriceCOP: dto.minPriceCOP,
             minMarginPct: dto.minMarginPct,
+            wholesalePrice6COP: dto.wholesalePrice6COP,
+            wholesalePrice12COP: dto.wholesalePrice12COP,
             emoji: dto.emoji,
             imageUrls,
             trackStock: dto.trackStock ?? true,
@@ -293,6 +296,10 @@ export class RetailCatalogService {
           saleMarginPct: dto.saleMarginPct,
           minPriceCOP: dto.minPriceCOP,
           minMarginPct: dto.minMarginPct,
+          // null apaga el escalón, undefined lo deja como estaba: Prisma ya
+          // distingue los dos casos, así que se pasan tal cual.
+          wholesalePrice6COP: dto.wholesalePrice6COP,
+          wholesalePrice12COP: dto.wholesalePrice12COP,
           emoji: dto.emoji,
           imageUrls: dto.imageUrls,
           trackStock: dto.trackStock,
@@ -364,6 +371,12 @@ export class RetailCatalogService {
         product.minPriceCOP !== null
           ? product.minPriceCOP - product.costCOP
           : null,
+      // Precios por volumen: se devuelven crudos (para el formulario) y ya
+      // resueltos en `wholesaleTiers` (para cualquiera que solo quiera leer la
+      // rentabilidad sin repetir la fórmula). Los % no viven en la base.
+      wholesalePrice6COP: product.wholesalePrice6COP,
+      wholesalePrice12COP: product.wholesalePrice12COP,
+      wholesaleTiers: wholesaleTiersOf(product),
       emoji: product.emoji,
       imageUrls: product.imageUrls,
       primaryImageUrl: product.imageUrls[0] ?? null,

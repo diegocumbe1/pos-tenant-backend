@@ -2100,6 +2100,12 @@ model RetailProduct {
   // aceptable. Solo lo ve/edita el admin, nunca el cajero.
   minPriceCOP   Int?
   minMarginPct  Float?
+  // Precios por volumen, opcionales y escritos a mano por el admin. NULL = el
+  // escalón no está activo y esa cantidad se cobra al precio normal; nunca
+  // significa "gratis". Enteros COP igual que costCOP/priceCOP: el margen y el
+  // descuento se derivan (ver retail-pricing.ts), no se guardan.
+  wholesalePrice6COP  Int?
+  wholesalePrice12COP Int?
   emoji         String?
   imageUrls     String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
@@ -2317,6 +2323,15 @@ model RetailPurchaseItem {
   receivedById    String?
   // Movimiento de inventario generado al recibir, si se enlazó al catálogo.
   stockMovementId String?
+  // Gastos de Finanzas que pagaron este pedido. Sin FK, igual que
+  // stockMovementId: Expense es transversal a las verticales y un mismo gasto
+  // cubre varias líneas de un pedido conjunto.
+  //
+  // Mercancía y envío van separados a propósito: el flete se paga aparte, se
+  // conoce después y el negocio quiere verlo como línea propia en Finanzas.
+  // NULL = ese gasto todavía no se registró, que es distinto de "costó cero".
+  expenseId         String?
+  shippingExpenseId String?
 
   @@index([tenantId, branchId, status, deletedAt])
   @@index([tenantId, branchId, createdAt])

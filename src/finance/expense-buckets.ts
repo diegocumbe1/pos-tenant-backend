@@ -16,6 +16,10 @@ export type ExpenseBucket =
 const BUCKET_BY_CATEGORY: Record<string, ExpenseBucket> = {
   KITCHEN: 'supplies',
   INVENTORY_PURCHASE: 'supplies',
+  // El flete es costo de adquirir la mercancía, no un gasto operativo suelto:
+  // va al mismo bucket que la compra para que la estructura de costos y el
+  // punto de equilibrio no lo pierdan.
+  INVENTORY_SHIPPING: 'supplies',
   PAYROLL: 'payroll',
   RENT: 'rent',
   UTILITIES: 'utilities',

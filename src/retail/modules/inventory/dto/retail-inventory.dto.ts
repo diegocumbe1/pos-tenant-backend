@@ -18,7 +18,7 @@ export const MANUAL_MOVEMENT_TYPES = [
   'LOSS',
 ] as const;
 
-export class CreateStockMovementDto {
+export class CreateRetailStockMovementDto {
   @ApiProperty({ example: 'prod_xxx' })
   @IsString()
   productId!: string;

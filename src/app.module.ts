@@ -56,6 +56,9 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
+    // `{*path}` y no `*`: Express 5 (Nest 11) usa path-to-regexp v8, que ya no
+    // acepta comodines sin nombre. Las llaves lo hacen opcional, así que sigue
+    // cubriendo la raíz del prefijo (`/api/v1`) además de todo lo que cuelga.
+    consumer.apply(RequestMetricsMiddleware).forRoutes('{*path}');
   }
 }

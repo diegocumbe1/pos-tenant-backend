@@ -3,7 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
-import { CreateStockMovementDto } from './dto/retail-inventory.dto';
+import { CreateRetailStockMovementDto } from './dto/retail-inventory.dto';
 
 @Injectable()
 export class RetailInventoryService {
@@ -106,7 +106,7 @@ export class RetailInventoryService {
    * Registra un movimiento manual (compra, devolución, ajuste, pérdida) y deja
    * el stock del producto en el mismo commit: stock y kardex nunca divergen.
    */
-  async createMovement(ctx: TenantContext, dto: CreateStockMovementDto) {
+  async createMovement(ctx: TenantContext, dto: CreateRetailStockMovementDto) {
     await this.tenantHelper.assertScopedRecord(
       'retailProduct',
       ctx,

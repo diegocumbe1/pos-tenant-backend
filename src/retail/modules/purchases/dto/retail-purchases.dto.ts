@@ -66,7 +66,27 @@ export class CreateRetailPurchaseItemDto {
 
 export class UpdateRetailPurchaseItemDto extends PartialType(
   CreateRetailPurchaseItemDto,
-) {}
+) {
+  // El enlace al gasto solo se puede escribir en update, no en create: el gasto
+  // se registra cuando se paga el pedido, que siempre es después de apuntarlo.
+  // `null` desenlaza (el gasto se borró o se enlazó por error); `undefined` lo
+  // deja como está. `@IsOptional` ignora los validadores en ambos casos.
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Gasto de Finanzas que pagó la mercancía. null desenlaza.',
+  })
+  @IsOptional()
+  @IsString()
+  expenseId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Gasto de Finanzas del envío/flete. null desenlaza.',
+  })
+  @IsOptional()
+  @IsString()
+  shippingExpenseId?: string | null;
+}
 
 /**
  * Marcar un ítem como recibido. Es el único paso que puede tocar el inventario,
