@@ -294,6 +294,19 @@ export class CreateRetailProductDto {
   @ValidateNested({ each: true })
   @Type(() => RetailProductOptionDto)
   options?: RetailProductOptionDto[];
+
+  @ApiPropertyOptional({
+    example: 'opt_aromas',
+    nullable: true,
+    description:
+      'Id del grupo de `options` que lleva el conteo de existencias (p. ej. Aromas). ' +
+      'null = el stock es del producto entero. Al señalarlo se crea una fila de ' +
+      'inventario por cada valor del grupo, arrancando en 0: el stock actual queda ' +
+      'como pendiente de repartir hasta que se cuente cuántas hay de cada uno.',
+  })
+  @IsOptional()
+  @IsString()
+  stockOptionId?: string | null;
 }
 
 export class UpdateRetailProductDto extends PartialType(

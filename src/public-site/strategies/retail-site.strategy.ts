@@ -149,6 +149,8 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
             stock: true,
             trackStock: true,
             options: true,
+            stockOptionId: true,
+            variants: { select: { optionValueId: true, stock: true } },
           },
         },
       },
@@ -159,13 +161,27 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
       .map((category) => ({
         ...category,
         products: category.products.map(
-          ({ trackStock, stock, options, ...product }) => ({
+          ({
+            trackStock,
+            stock,
+            options,
+            stockOptionId,
+            variants,
+            ...product
+          }) => ({
             ...product,
             // Sin control de stock (servicios) → siempre disponible.
             stock: trackStock ? stock : null,
             inStock: trackStock ? stock > 0 : true,
-            // Solo viaja si el admin configuró opciones para ese producto.
-            options: toPublicProductOptions(options),
+            // Solo viaja si el admin configuró opciones para ese producto. En
+            // productos que reparten, el aroma sin unidades sale marcado como
+            // agotado en vez de dejar que un cliente pida lo que no hay.
+            options: toPublicProductOptions(
+              options,
+              stockOptionId && trackStock
+                ? new Map(variants.map((v) => [v.optionValueId, v.stock]))
+                : undefined,
+            ),
           }),
         ),
       }));

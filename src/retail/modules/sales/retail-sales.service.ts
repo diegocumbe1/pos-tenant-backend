@@ -5,6 +5,23 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import { CreateRetailSaleDto, VoidRetailSaleDto } from './dto/retail-sale.dto';
 
+/**
+ * Clave de agrupación de stock: producto, y valor cuando el producto reparte.
+ * Se serializa a string porque `Map` compara por identidad y una tupla no sirve
+ * como clave.
+ */
+function stockKey(productId: string, variantId: string | null): string {
+  return `${productId}|${variantId ?? ''}`;
+}
+
+function splitStockKey(key: string): {
+  productId: string;
+  variantId: string | null;
+} {
+  const [productId, variantId] = key.split('|');
+  return { productId, variantId: variantId || null };
+}
+
 type SaleWithItems = Prisma.RetailSaleGetPayload<{
   include: {
     items: true;
@@ -183,15 +200,47 @@ export class RetailSalesService {
       }
       const byId = new Map(products.map((product) => [product.id, product]));
 
-      // Se agrupa por producto: dos líneas del mismo ítem deben validar el stock sumado.
+      const variants = await tx.retailProductVariant.findMany({
+        where: { productId: { in: productIds } },
+      });
+      const variantById = new Map(
+        variants.map((variant) => [variant.id, variant]),
+      );
+
+      // Un producto que reparte no se puede vender "en general": habría que
+      // adivinar de qué aroma descontar, y el reparto quedaría descuadrado
+      // contra el total sin forma de saber quién se movió.
+      for (const item of dto.items) {
+        const product = byId.get(item.productId)!;
+        if (!product.stockOptionId || !product.trackStock) continue;
+        if (!item.variantId) {
+          throw new BadRequestException(
+            `"${product.name}" reparte existencias por opción: indica cuál se vende`,
+          );
+        }
+        const variant = variantById.get(item.variantId);
+        if (!variant || variant.productId !== product.id) {
+          throw new BadRequestException(
+            `La opción elegida no pertenece a "${product.name}"`,
+          );
+        }
+      }
+
+      // Se agrupa por producto y valor: dos líneas del mismo ítem deben validar
+      // el stock sumado, y dos aromas distintos validan contra filas distintas.
       const requestedQty = new Map<string, number>();
       for (const item of dto.items) {
-        requestedQty.set(
-          item.productId,
-          (requestedQty.get(item.productId) ?? 0) + item.quantity,
-        );
+        const key = stockKey(item.productId, item.variantId ?? null);
+        requestedQty.set(key, (requestedQty.get(key) ?? 0) + item.quantity);
       }
-      for (const [productId, quantity] of requestedQty) {
+
+      const productQty = new Map<string, number>();
+      for (const [key, quantity] of requestedQty) {
+        const { productId } = splitStockKey(key);
+        productQty.set(productId, (productQty.get(productId) ?? 0) + quantity);
+      }
+
+      for (const [productId, quantity] of productQty) {
         const product = byId.get(productId)!;
         if (!product.isActive) {
           throw new BadRequestException(`"${product.name}" no está disponible`);
@@ -199,6 +248,18 @@ export class RetailSalesService {
         if (product.trackStock && product.stock < quantity) {
           throw new BadRequestException(
             `Stock insuficiente de "${product.name}": hay ${product.stock}, se piden ${quantity}`,
+          );
+        }
+      }
+
+      for (const [key, quantity] of requestedQty) {
+        const { productId, variantId } = splitStockKey(key);
+        if (!variantId || !byId.get(productId)!.trackStock) continue;
+        const variant = variantById.get(variantId)!;
+        if (variant.stock < quantity) {
+          const product = byId.get(productId)!;
+          throw new BadRequestException(
+            `Stock insuficiente de "${product.name} · ${variant.label}": hay ${variant.stock}, se piden ${quantity}`,
           );
         }
       }
@@ -213,8 +274,15 @@ export class RetailSalesService {
             `El descuento de "${product.name}" supera el valor de la línea`,
           );
         }
+        const variant = item.variantId
+          ? variantById.get(item.variantId)
+          : undefined;
         return {
           productId: product.id,
+          variantId: variant?.id ?? null,
+          // Congelada en la línea: el recibo tiene que seguir diciendo "Arrurú"
+          // aunque después se borre o renombre el aroma.
+          variantLabel: variant?.label ?? null,
           name: product.name,
           sku: product.sku,
           quantity: item.quantity,
@@ -302,15 +370,20 @@ export class RetailSalesService {
         throw new BadRequestException('La venta ya está anulada');
       }
 
+      // Se devuelve a la misma fila de la que salió: anular una venta de Arrurú
+      // no puede reingresar la unidad como Sandía.
       const returnedQty = new Map<string, number>();
       for (const item of existing.items) {
-        returnedQty.set(
-          item.productId,
-          (returnedQty.get(item.productId) ?? 0) + item.quantity,
-        );
+        const key = stockKey(item.productId, item.variantId);
+        returnedQty.set(key, (returnedQty.get(key) ?? 0) + item.quantity);
       }
+      const productIds = [
+        ...new Set(
+          [...returnedQty.keys()].map((key) => splitStockKey(key).productId),
+        ),
+      ];
       const products = await tx.retailProduct.findMany({
-        where: { id: { in: [...returnedQty.keys()] } },
+        where: { id: { in: productIds } },
       });
       const byId = new Map(products.map((product) => [product.id, product]));
 
@@ -344,8 +417,13 @@ export class RetailSalesService {
   }
 
   /**
-   * Mueve stock y escribe kardex para cada producto de una venta.
+   * Mueve stock y escribe kardex para cada línea de una venta.
    * `direction` = -1 al vender, +1 al anular.
+   *
+   * Agrupa por producto Y valor: dos líneas del mismo producto con aromas
+   * distintos son dos movimientos distintos, porque descuentan de filas de
+   * inventario distintas. El total del producto se mueve igual en ambos casos —
+   * la fila del aroma dice cuáles unidades salieron, no cuántas hay en total.
    */
   private async applyStockDelta(
     tx: Prisma.TransactionClient,
@@ -358,23 +436,49 @@ export class RetailSalesService {
     >,
     direction: 1 | -1,
   ) {
-    for (const [productId, quantity] of quantities) {
+    // Se acumula por producto para no pisar el `stock` con dos updates seguidos
+    // que hayan leído el mismo valor de partida.
+    const productDelta = new Map<string, number>();
+    for (const [key, quantity] of quantities) {
+      const { productId } = splitStockKey(key);
+      productDelta.set(
+        productId,
+        (productDelta.get(productId) ?? 0) + quantity * direction,
+      );
+    }
+
+    for (const [productId, delta] of productDelta) {
+      const product = products.get(productId);
+      if (!product?.trackStock) continue;
+      await tx.retailProduct.update({
+        where: { id: productId },
+        data: { stock: product.stock + delta },
+      });
+    }
+
+    for (const [key, quantity] of quantities) {
+      const { productId, variantId } = splitStockKey(key);
       const product = products.get(productId);
       if (!product?.trackStock) continue;
 
-      const stockAfter = product.stock + quantity * direction;
-      await tx.retailProduct.update({
-        where: { id: productId },
-        data: { stock: stockAfter },
-      });
+      if (variantId) {
+        await tx.retailProductVariant.update({
+          where: { id: variantId },
+          data: { stock: { increment: quantity * direction } },
+        });
+      }
+
       await tx.retailStockMovement.create({
         data: {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           productId,
+          variantId,
           type: direction === -1 ? 'SALE' : 'RETURN',
           quantity: quantity * direction,
-          stockAfter,
+          // El total del producto ya quedó movido arriba, así que este es el
+          // valor final para todas las líneas del mismo producto.
+          stockAfter: product.stock + (productDelta.get(productId) ?? 0),
           unitCostCOP: product.costCOP,
           reason: direction === -1 ? 'Venta' : 'Anulación de venta',
           reference: saleId,
@@ -436,6 +540,8 @@ export class RetailSalesService {
       items: sale.items.map((item) => ({
         id: item.id,
         productId: item.productId,
+        variantId: item.variantId,
+        variantLabel: item.variantLabel,
         name: item.name,
         sku: item.sku,
         quantity: item.quantity,

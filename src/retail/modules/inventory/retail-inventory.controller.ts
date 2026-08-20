@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
@@ -7,7 +16,10 @@ import { PasswordSetGuard } from '../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
-import { CreateRetailStockMovementDto } from './dto/retail-inventory.dto';
+import {
+  CreateRetailStockMovementDto,
+  SetVariantDistributionDto,
+} from './dto/retail-inventory.dto';
 import { RetailInventoryService } from './retail-inventory.service';
 
 @ApiTags('Retail')
@@ -47,5 +59,21 @@ export class RetailInventoryController {
     @Body() dto: CreateRetailStockMovementDto,
   ) {
     return this.inventory.createMovement(ctx, dto);
+  }
+
+  /**
+   * Reparte el total entre los valores del grupo que lleva existencias.
+   *
+   * PUT y no POST porque es idempotente: manda el conteo que debe quedar, no un
+   * delta. Reenviarlo dos veces deja el mismo resultado.
+   */
+  @Put('products/:productId/distribution')
+  @RequirePermissions('retail:inventory:write')
+  setDistribution(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('productId') productId: string,
+    @Body() dto: SetVariantDistributionDto,
+  ) {
+    return this.inventory.setDistribution(ctx, productId, dto);
   }
 }

@@ -14,6 +14,12 @@ import {
 } from '../../shared/retail-product-options';
 import { wholesaleTiersOf } from '../../shared/retail-pricing';
 import {
+  ProductVariantRow,
+  resolveStockOptionId,
+  syncProductVariants,
+  variantStockSummary,
+} from '../../shared/retail-product-variants';
+import {
   CreateRetailCategoryDto,
   CreateRetailProductDto,
   UpdateRetailCategoryDto,
@@ -141,7 +147,10 @@ export class RetailCatalogService {
           : {}),
       },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: { category: { select: { id: true, name: true, emoji: true } } },
+      include: {
+        category: { select: { id: true, name: true, emoji: true } },
+        variants: { orderBy: { createdAt: 'asc' } },
+      },
     });
     const visible = filters.lowStock
       ? products.filter((p) => p.trackStock && p.stock <= p.minStock)
@@ -159,7 +168,10 @@ export class RetailCatalogService {
         barcode,
         deletedAt: null,
       },
-      include: { category: { select: { id: true, name: true, emoji: true } } },
+      include: {
+        category: { select: { id: true, name: true, emoji: true } },
+        variants: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!product) {
       throw new NotFoundException(`Sin producto con código ${barcode}`);
@@ -179,6 +191,7 @@ export class RetailCatalogService {
     const initialStock = dto.trackStock === false ? 0 : (dto.stock ?? 0);
     const imageUrls = dto.imageUrls ?? [];
     const options = sanitizeProductOptions(dto.options, imageUrls);
+    const stockOptionId = resolveStockOptionId(dto.stockOptionId, options);
 
     try {
       const product = await this.prisma.$transaction(async (tx) => {
@@ -213,10 +226,23 @@ export class RetailCatalogService {
             options: (options ?? undefined) as
               | Prisma.InputJsonValue
               | undefined,
+            stockOptionId,
           },
           include: {
             category: { select: { id: true, name: true, emoji: true } },
+            variants: { orderBy: { createdAt: 'asc' } },
           },
+        });
+
+        // Materializa una fila por valor del grupo que reparte. Arrancan en 0:
+        // el stock inicial queda entero como pendiente de repartir, porque
+        // nadie dijo todavía cuántas son de cada aroma.
+        await syncProductVariants(tx, {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          productId: created.id,
+          stockOptionId,
+          options,
         });
 
         // El stock inicial entra al kardex: el inventario nunca cambia sin rastro.
@@ -236,7 +262,15 @@ export class RetailCatalogService {
           });
         }
 
-        return created;
+        // Se relee porque `created` se resolvió antes de materializar las
+        // variantes: ese objeto las traería vacías.
+        return tx.retailProduct.findUniqueOrThrow({
+          where: { id: created.id },
+          include: {
+            category: { select: { id: true, name: true, emoji: true } },
+            variants: { orderBy: { createdAt: 'asc' } },
+          },
+        });
       });
       return this.toProductDto(product);
     } catch (error) {
@@ -263,58 +297,91 @@ export class RetailCatalogService {
         'Category',
       );
     }
+    const current = await this.prisma.retailProduct.findUniqueOrThrow({
+      where: { id },
+      select: { imageUrls: true, options: true, stockOptionId: true },
+    });
+
     // Las opciones se revalidan contra las fotos que quedarán guardadas, no
     // contra las que llegan: si el admin borró una foto que un color usaba, la
     // referencia debe morir con ella aunque el cliente no reenvíe las opciones.
+    const effectiveOptions = sanitizeProductOptions(
+      dto.options ?? readProductOptions(current.options),
+      dto.imageUrls ?? current.imageUrls,
+    );
     let options: Prisma.InputJsonValue | typeof Prisma.DbNull | undefined;
     if (dto.options !== undefined || dto.imageUrls !== undefined) {
-      const current = await this.prisma.retailProduct.findUnique({
-        where: { id },
-        select: { imageUrls: true, options: true },
-      });
-      const sanitized = sanitizeProductOptions(
-        dto.options ?? readProductOptions(current?.options),
-        dto.imageUrls ?? current?.imageUrls ?? [],
-      );
-      options = (sanitized as Prisma.InputJsonValue | null) ?? Prisma.DbNull;
+      options =
+        (effectiveOptions as Prisma.InputJsonValue | null) ?? Prisma.DbNull;
     }
+
+    // El grupo que reparte se valida contra las opciones que van a quedar
+    // guardadas: si el admin borró el grupo de aromas en este mismo guardado,
+    // el producto deja de repartir en vez de apuntar a un grupo fantasma.
+    const stockOptionId = resolveStockOptionId(
+      dto.stockOptionId === undefined
+        ? current.stockOptionId
+        : dto.stockOptionId,
+      effectiveOptions,
+    );
 
     // El stock no se edita aquí: se mueve por /retail/inventory para dejar kardex.
     try {
-      const updated = await this.prisma.retailProduct.update({
-        where: { id },
-        data: {
-          categoryId: dto.categoryId,
-          name: dto.name?.trim(),
-          sku: dto.sku === undefined ? undefined : dto.sku.trim() || null,
-          barcode:
-            dto.barcode === undefined ? undefined : dto.barcode.trim() || null,
-          brand: dto.brand === undefined ? undefined : dto.brand.trim() || null,
-          description: dto.description,
-          costCOP: dto.costCOP,
-          priceCOP: dto.priceCOP,
-          saleMarginPct: dto.saleMarginPct,
-          minPriceCOP: dto.minPriceCOP,
-          minMarginPct: dto.minMarginPct,
-          // null apaga el escalón, undefined lo deja como estaba: Prisma ya
-          // distingue los dos casos, así que se pasan tal cual.
-          wholesalePrice6COP: dto.wholesalePrice6COP,
-          wholesalePrice12COP: dto.wholesalePrice12COP,
-          emoji: dto.emoji,
-          imageUrls: dto.imageUrls,
-          trackStock: dto.trackStock,
-          minStock: dto.minStock,
-          isActive: dto.isActive,
-          isPublished: dto.isPublished,
-          sortOrder: dto.sortOrder,
-          attributes: (dto.attributes ?? undefined) as
-            | Prisma.InputJsonValue
-            | undefined,
-          options,
-        },
-        include: {
-          category: { select: { id: true, name: true, emoji: true } },
-        },
+      const updated = await this.prisma.$transaction(async (tx) => {
+        await tx.retailProduct.update({
+          where: { id },
+          data: {
+            categoryId: dto.categoryId,
+            name: dto.name?.trim(),
+            sku: dto.sku === undefined ? undefined : dto.sku.trim() || null,
+            barcode:
+              dto.barcode === undefined
+                ? undefined
+                : dto.barcode.trim() || null,
+            brand:
+              dto.brand === undefined ? undefined : dto.brand.trim() || null,
+            description: dto.description,
+            costCOP: dto.costCOP,
+            priceCOP: dto.priceCOP,
+            saleMarginPct: dto.saleMarginPct,
+            minPriceCOP: dto.minPriceCOP,
+            minMarginPct: dto.minMarginPct,
+            // null apaga el escalón, undefined lo deja como estaba: Prisma ya
+            // distingue los dos casos, así que se pasan tal cual.
+            wholesalePrice6COP: dto.wholesalePrice6COP,
+            wholesalePrice12COP: dto.wholesalePrice12COP,
+            emoji: dto.emoji,
+            imageUrls: dto.imageUrls,
+            trackStock: dto.trackStock,
+            minStock: dto.minStock,
+            isActive: dto.isActive,
+            isPublished: dto.isPublished,
+            sortOrder: dto.sortOrder,
+            attributes: (dto.attributes ?? undefined) as
+              | Prisma.InputJsonValue
+              | undefined,
+            options,
+            stockOptionId,
+          },
+        });
+
+        // Crea las filas que falten, borra las de valores eliminados y refresca
+        // las etiquetas. El conteo de las que sobreviven no se toca.
+        await syncProductVariants(tx, {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          productId: id,
+          stockOptionId,
+          options: effectiveOptions,
+        });
+
+        return tx.retailProduct.findUniqueOrThrow({
+          where: { id },
+          include: {
+            category: { select: { id: true, name: true, emoji: true } },
+            variants: { orderBy: { createdAt: 'asc' } },
+          },
+        });
       });
       return this.toProductDto(updated);
     } catch (error) {
@@ -340,6 +407,7 @@ export class RetailCatalogService {
   private toProductDto(
     product: RetailProduct & {
       category?: { id: string; name: string; emoji: string | null } | null;
+      variants?: ProductVariantRow[];
     },
   ) {
     const margin = product.priceCOP - product.costCOP;
@@ -384,6 +452,19 @@ export class RetailCatalogService {
       stock: product.stock,
       minStock: product.minStock,
       isLowStock: product.trackStock && product.stock <= product.minStock,
+      // Reparto de existencias por opción. `stockOptionId` null y `variants`
+      // vacío = el producto cuenta entero, que es el caso por defecto.
+      stockOptionId: product.stockOptionId,
+      variants: (product.variants ?? []).map((variant) => ({
+        id: variant.id,
+        optionValueId: variant.optionValueId,
+        label: variant.label,
+        sku: variant.sku,
+        stock: variant.stock,
+        minStock: variant.minStock,
+        isLowStock: product.trackStock && variant.stock <= variant.minStock,
+      })),
+      ...variantStockSummary(product.stock, product.variants ?? []),
       isActive: product.isActive,
       isPublished: product.isPublished,
       sortOrder: product.sortOrder,

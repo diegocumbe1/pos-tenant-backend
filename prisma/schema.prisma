@@ -2077,68 +2077,118 @@ model RetailCategory {
 }
 
 model RetailProduct {
-  id            String         @id @default(cuid())
-  tenantId      String
-  tenant        Tenant         @relation(fields: [tenantId], references: [id])
-  branchId      String
-  branch        Branch         @relation(fields: [branchId], references: [id])
-  categoryId    String
-  category      RetailCategory @relation(fields: [categoryId], references: [id])
+  id                  String         @id @default(cuid())
+  tenantId            String
+  tenant              Tenant         @relation(fields: [tenantId], references: [id])
+  branchId            String
+  branch              Branch         @relation(fields: [branchId], references: [id])
+  categoryId          String
+  category            RetailCategory @relation(fields: [categoryId], references: [id])
   // Identificadores de retail: SKU interno y código de barras para el escáner.
-  sku           String?
-  barcode       String?
-  brand         String?
-  name          String
-  description   String?
+  sku                 String?
+  barcode             String?
+  brand               String?
+  name                String
+  description         String?
   // Costo de compra y precio de venta. El precio escrito es la fuente de verdad;
   // los % se guardan para poder recalcular y para el piso de negociación.
-  costCOP       Int            @default(0)
-  priceCOP      Int
+  costCOP             Int            @default(0)
+  priceCOP            Int
   // % de ganancia sobre el precio con el que se sugirió `priceCOP`.
-  saleMarginPct Float?
+  saleMarginPct       Float?
   // Piso de negociación: por debajo de este precio la venta pierde margen
   // aceptable. Solo lo ve/edita el admin, nunca el cajero.
-  minPriceCOP   Int?
-  minMarginPct  Float?
+  minPriceCOP         Int?
+  minMarginPct        Float?
   // Precios por volumen, opcionales y escritos a mano por el admin. NULL = el
   // escalón no está activo y esa cantidad se cobra al precio normal; nunca
   // significa "gratis". Enteros COP igual que costCOP/priceCOP: el margen y el
   // descuento se derivan (ver retail-pricing.ts), no se guardan.
   wholesalePrice6COP  Int?
   wholesalePrice12COP Int?
-  emoji         String?
-  imageUrls     String[]
+  emoji               String?
+  imageUrls           String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
-  trackStock    Boolean        @default(true)
-  stock         Int            @default(0)
-  minStock      Int            @default(0)
+  trackStock          Boolean        @default(true)
+  stock               Int            @default(0)
+  minStock            Int            @default(0)
+  // Grupo de `options` cuyo valor lleva el conteo de existencias — el `id` del
+  // grupo dentro del JSONB, no una FK. NULL = el stock es del producto entero,
+  // que es el comportamiento de siempre.
+  //
+  // Es opcional y por producto a propósito: en "Mantequilla Corporal" el grupo
+  // que divide el inventario es Aromas, pero un producto puede tener opciones
+  // que son pura presentación (color) y seguir contando por producto.
+  //
+  // `stock` sigue siendo el TOTAL físico: los `variants` reparten ese total, no
+  // lo reemplazan. Lo que no se ha repartido es `stock - Σ variants.stock`.
+  stockOptionId       String?
   // isActive = vendible en el POS. isPublished = visible en el sitio público.
-  isActive      Boolean        @default(true)
-  isPublished   Boolean        @default(true)
-  sortOrder     Int            @default(0)
+  isActive            Boolean        @default(true)
+  isPublished         Boolean        @default(true)
+  sortOrder           Int            @default(0)
   // Atributos libres del producto (modelo compatible, capacidad...).
-  attributes    Json?
+  attributes          Json?
   // Opciones de presentación que el cliente elige al pedir: color, talla, etc.
   // Cada grupo trae sus valores con copy propio y las fotos asociadas, así el
   // sitio público puede mostrar "Pijama color negro" y cambiar la galería al
   // elegir. Null / [] = el producto no ofrece opciones y no se muestra nada.
-  // Es configuración de catálogo, no una matriz de variantes: el stock y el SKU
-  // siguen siendo del producto (una variante con inventario propio sería otra
-  // tabla y cambiaría POS, kardex y ventas).
-  options       Json?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  deletedAt     DateTime?
+  // Por defecto son solo presentación. Un grupo pasa a llevar existencias
+  // cuando `stockOptionId` lo señala, y entonces sus valores se materializan en
+  // `RetailProductVariant`.
+  options             Json?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  deletedAt           DateTime?
 
   movements     RetailStockMovement[]
   saleItems     RetailSaleItem[]
   purchaseItems RetailPurchaseItem[]
+  variants      RetailProductVariant[]
 
   @@unique([tenantId, branchId, sku])
   @@index([tenantId, branchId, deletedAt])
   @@index([categoryId])
   @@index([tenantId, barcode])
   @@map("retail_products")
+}
+
+/**
+ * Existencias de UN valor del grupo que reparte el inventario.
+ * No es una matriz de variantes: hay una fila por valor del grupo señalado en
+ * `RetailProduct.stockOptionId`, no una por combinación de todos los grupos. Un
+ * producto con 6 aromas y 3 colores tiene 6 filas, no 18 — el color sigue
+ * siendo presentación.
+ * `RetailProduct.stock` sigue siendo el total físico y la fuente de verdad del
+ * número que se muestra en todas partes. Estas filas dicen CUÁLES son esas
+ * unidades. La diferencia (`stock - Σ variants.stock`) es lo que todavía no se
+ * ha contado por aroma, y se muestra como pendiente de repartir en vez de
+ * inventarse un reparto.
+ */
+model RetailProductVariant {
+  id            String        @id @default(cuid())
+  tenantId      String
+  branchId      String
+  productId     String
+  product       RetailProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // `id` del valor dentro de `RetailProduct.options`. No es FK: las opciones
+  // viven en JSONB. Si el admin borra el valor, la fila se borra con él.
+  optionValueId String
+  // Copia de la etiqueta ("Arrurú") para que el kardex y el histórico de ventas
+  // sigan siendo legibles aunque después se renombre o se borre la opción.
+  label         String
+  sku           String?
+  stock         Int           @default(0)
+  minStock      Int           @default(0)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  movements RetailStockMovement[]
+  saleItems RetailSaleItem[]
+
+  @@unique([productId, optionValueId])
+  @@index([tenantId, branchId])
+  @@map("retail_product_variants")
 }
 
 enum RetailStockMovementType {
@@ -2158,6 +2208,11 @@ model RetailStockMovement {
   branch      Branch                  @relation(fields: [branchId], references: [id])
   productId   String
   product     RetailProduct           @relation(fields: [productId], references: [id])
+  // Valor que movió las existencias, cuando el producto reparte por opción.
+  // NULL = movimiento del producto entero (todo lo anterior a este cambio, y
+  // todo producto que no reparte).
+  variantId   String?
+  variant     RetailProductVariant?   @relation(fields: [variantId], references: [id], onDelete: SetNull)
   type        RetailStockMovementType
   // Firmado: positivo entra, negativo sale. Kardex auditable.
   quantity    Int
@@ -2265,18 +2320,24 @@ model RetailSale {
 }
 
 model RetailSaleItem {
-  id           String        @id @default(cuid())
+  id           String                @id @default(cuid())
   saleId       String
-  sale         RetailSale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sale         RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
   productId    String
-  product      RetailProduct @relation(fields: [productId], references: [id])
+  product      RetailProduct         @relation(fields: [productId], references: [id])
+  // Valor vendido cuando el producto reparte existencias por opción.
+  variantId    String?
+  variant      RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
   // Snapshot: el recibo no debe cambiar si luego renombran o reprecian el producto.
   name         String
+  // Etiqueta del valor ("Arrurú") congelada en la venta. Sobrevive a que se
+  // borre la opción, que es justo cuando el histórico haría falta.
+  variantLabel String?
   sku          String?
   quantity     Int
   unitPriceCOP Int
-  unitCostCOP  Int           @default(0)
-  discountCOP  Int           @default(0)
+  unitCostCOP  Int                   @default(0)
+  discountCOP  Int                   @default(0)
   totalCOP     Int
 
   @@index([saleId])
@@ -2332,11 +2393,11 @@ model RetailPurchaseItem {
   deletedAt  DateTime?
 
   // Quién marcó cada paso (sin FK: User es transversal a las verticales).
-  createdById     String?
-  orderedById     String?
-  receivedById    String?
+  createdById       String?
+  orderedById       String?
+  receivedById      String?
   // Movimiento de inventario generado al recibir, si se enlazó al catálogo.
-  stockMovementId String?
+  stockMovementId   String?
   // Gastos de Finanzas que pagaron este pedido. Sin FK, igual que
   // stockMovementId: Expense es transversal a las verticales y un mismo gasto
   // cubre varias líneas de un pedido conjunto.

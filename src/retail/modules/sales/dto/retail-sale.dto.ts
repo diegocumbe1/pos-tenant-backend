@@ -38,6 +38,17 @@ export class CreateRetailSaleItemDto {
   @IsInt()
   @Min(0)
   discountCOP?: number;
+
+  @ApiPropertyOptional({
+    example: 'var_xxx',
+    description:
+      'Valor que se vende (aroma, sabor…) en productos que reparten existencias ' +
+      'por opción. Obligatorio en esos productos: sin él no se sabe de cuál fila ' +
+      'de inventario descontar.',
+  })
+  @IsOptional()
+  @IsString()
+  variantId?: string;
 }
 
 export class CreateRetailSaleDto {

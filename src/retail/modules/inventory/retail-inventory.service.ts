@@ -3,7 +3,11 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
-import { CreateRetailStockMovementDto } from './dto/retail-inventory.dto';
+import { setVariantDistribution } from '../../shared/retail-product-variants';
+import {
+  CreateRetailStockMovementDto,
+  SetVariantDistributionDto,
+} from './dto/retail-inventory.dto';
 
 @Injectable()
 export class RetailInventoryService {
@@ -117,7 +121,13 @@ export class RetailInventoryService {
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.retailProduct.findUniqueOrThrow({
         where: { id: dto.productId },
-        select: { stock: true, trackStock: true, name: true, costCOP: true },
+        select: {
+          stock: true,
+          trackStock: true,
+          name: true,
+          costCOP: true,
+          stockOptionId: true,
+        },
       });
       if (!product.trackStock) {
         throw new BadRequestException(
@@ -132,11 +142,39 @@ export class RetailInventoryService {
         );
       }
 
+      // Movimiento dirigido a un valor concreto (llegaron 6 de Arrurú). Mueve
+      // la fila del aroma Y el total del producto: el total sigue siendo la
+      // suma de lo que hay en la tienda, reparta o no.
+      let variant: { id: string; label: string; stock: number } | null = null;
+      if (dto.variantId) {
+        variant = await tx.retailProductVariant.findFirst({
+          where: { id: dto.variantId, productId: dto.productId },
+          select: { id: true, label: true, stock: true },
+        });
+        if (!variant) {
+          throw new BadRequestException(
+            `El valor indicado no pertenece a "${product.name}"`,
+          );
+        }
+        if (variant.stock + dto.quantity < 0) {
+          throw new BadRequestException(
+            `Stock insuficiente de "${product.name} · ${variant.label}": hay ${variant.stock}, se intentan sacar ${Math.abs(dto.quantity)}`,
+          );
+        }
+      } else if (product.stockOptionId && dto.quantity < 0) {
+        // Una salida sin decir de cuál aroma dejaría el total y el reparto
+        // descuadrados sin forma de saber a quién descontarle.
+        throw new BadRequestException(
+          `"${product.name}" reparte existencias por opción: indica de cuál valor sale la mercancía`,
+        );
+      }
+
       const movement = await tx.retailStockMovement.create({
         data: {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           productId: dto.productId,
+          variantId: variant?.id ?? null,
           type: dto.type,
           quantity: dto.quantity,
           stockAfter,
@@ -146,6 +184,13 @@ export class RetailInventoryService {
           userId: ctx.userId,
         },
       });
+
+      if (variant) {
+        await tx.retailProductVariant.update({
+          where: { id: variant.id },
+          data: { stock: { increment: dto.quantity } },
+        });
+      }
 
       await tx.retailProduct.update({
         where: { id: dto.productId },
@@ -159,6 +204,46 @@ export class RetailInventoryService {
       });
 
       return movement;
+    }, this.txOptions);
+  }
+
+  /**
+   * Reparte el total existente entre los valores del grupo que lleva stock.
+   *
+   * Es un CONTEO, no un movimiento: contar cuántas de las 11 mantequillas son
+   * de Arrurú no hace entrar ni salir mercancía de la tienda, así que no genera
+   * kardex y el total no cambia. Para que entre o salga está `createMovement`,
+   * que sí deja rastro.
+   */
+  async setDistribution(
+    ctx: TenantContext,
+    productId: string,
+    dto: SetVariantDistributionDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord(
+      'retailProduct',
+      ctx,
+      productId,
+      'Product',
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      const product = await tx.retailProduct.findUniqueOrThrow({
+        where: { id: productId },
+        select: { name: true, stock: true },
+      });
+
+      await setVariantDistribution(tx, {
+        productId,
+        productName: product.name,
+        productStock: product.stock,
+        items: dto.items,
+      });
+
+      return tx.retailProductVariant.findMany({
+        where: { productId },
+        orderBy: { createdAt: 'asc' },
+      });
     }, this.txOptions);
   }
 

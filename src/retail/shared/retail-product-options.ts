@@ -125,8 +125,25 @@ export function readProductOptions(value: unknown): RetailProductOption[] {
  */
 export function toPublicProductOptions(
   value: unknown,
+  /**
+   * Existencias por valor, en productos que reparten stock por opción. Cuando
+   * se pasa, un valor sin unidades se marca agotado aunque el admin lo tenga
+   * como disponible: contar el inventario por aroma no sirve de nada si el
+   * sitio sigue ofreciendo el que se acabó.
+   */
+  stockByOptionValueId?: Map<string, number>,
 ): RetailProductOption[] | undefined {
-  const options = readProductOptions(value).filter((option) =>
+  const withStock = readProductOptions(value).map((option) => ({
+    ...option,
+    values: option.values.map((optionValue) => {
+      const stock = stockByOptionValueId?.get(optionValue.id);
+      return stock === undefined
+        ? optionValue
+        : { ...optionValue, isAvailable: optionValue.isAvailable && stock > 0 };
+    }),
+  }));
+
+  const options = withStock.filter((option) =>
     option.values.some((optionValue) => optionValue.isAvailable),
   );
   return options.length > 0 ? options : undefined;
