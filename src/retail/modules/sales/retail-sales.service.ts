@@ -215,12 +215,20 @@ export class RetailSalesService {
         variants.map((variant) => [variant.id, variant]),
       );
 
+      // Una venta con entrega pendiente NO mueve inventario al cobrarse: la
+      // mercancía sigue en la estantería hasta que se entregue, y de hecho
+      // puede que ni haya llegado todavía. Por eso tampoco se valida stock ni
+      // se exige el aroma: el cliente compró "11 unidades", y de cuáles son se
+      // decide en cada entrega (ver `addDelivery`).
+      const isPending = dto.deliveryStatus === 'PENDING';
+
       // Un producto que reparte no se puede vender "en general": habría que
       // adivinar de qué aroma descontar, y el reparto quedaría descuadrado
       // contra el total sin forma de saber quién se movió.
       for (const item of dto.items) {
         const product = byId.get(item.productId)!;
-        if (!product.stockOptionId || !product.trackStock) continue;
+        if (isPending || !product.stockOptionId || !product.trackStock)
+          continue;
         if (!item.variantId) {
           throw new BadRequestException(
             `"${product.name}" reparte existencias por opción: indica cuál se vende`,
@@ -253,7 +261,7 @@ export class RetailSalesService {
         if (!product.isActive) {
           throw new BadRequestException(`"${product.name}" no está disponible`);
         }
-        if (product.trackStock && product.stock < quantity) {
+        if (!isPending && product.trackStock && product.stock < quantity) {
           throw new BadRequestException(
             `Stock insuficiente de "${product.name}": hay ${product.stock}, se piden ${quantity}`,
           );
@@ -262,7 +270,8 @@ export class RetailSalesService {
 
       for (const [key, quantity] of requestedQty) {
         const { productId, variantId } = splitStockKey(key);
-        if (!variantId || !byId.get(productId)!.trackStock) continue;
+        if (isPending || !variantId || !byId.get(productId)!.trackStock)
+          continue;
         const variant = variantById.get(variantId)!;
         if (variant.stock < quantity) {
           const product = byId.get(productId)!;
@@ -287,6 +296,8 @@ export class RetailSalesService {
           : undefined;
         return {
           productId: product.id,
+          // En una venta pendiente nada salió todavía; en una normal, todo.
+          deliveredQty: isPending ? 0 : item.quantity,
           variantId: variant?.id ?? null,
           // Congelada en la línea: el recibo tiene que seguir diciendo "Arrurú"
           // aunque después se borre o renombre el aroma.
@@ -351,7 +362,11 @@ export class RetailSalesService {
         },
       });
 
-      await this.applyStockDelta(tx, ctx, created.id, requestedQty, byId, -1);
+      // Solo la venta entregada en el acto mueve inventario aquí. La pendiente
+      // lo mueve entrega por entrega.
+      if (!isPending) {
+        await this.applyStockDelta(tx, ctx, created.id, requestedQty, byId, -1);
+      }
 
       if (dto.customerId) {
         await tx.retailCustomer.update({
@@ -371,44 +386,180 @@ export class RetailSalesService {
   }
 
   /**
-   * Cierra la entrega de una venta que quedó pendiente.
+   * Registra una entrega parcial y mueve el inventario.
    *
-   * No toca stock ni dinero: la mercancía salió del inventario al cobrar y los
-   * ingresos ya se contaron. Lo único que cambia es que la tienda dejó de
-   * deberle algo al cliente.
+   * Es AQUÍ donde sale la mercancía de una venta pendiente, no al cobrar: hasta
+   * este momento las unidades seguían en la estantería. Cada llamada puede
+   * entregar parte de una línea (1 de 11 hoy, 5 la semana que viene) y con el
+   * aroma que efectivamente salió, que es un dato que al cobrar no existía.
+   *
+   * La venta pasa a DELIVERED sola, cuando ya no queda nada por entregar.
    */
-  async deliverSale(ctx: TenantContext, id: string, dto: DeliverRetailSaleDto) {
+  async addDelivery(ctx: TenantContext, id: string, dto: DeliverRetailSaleDto) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
 
-    const existing = await this.prisma.retailSale.findUniqueOrThrow({
-      where: { id },
-      select: { status: true, deliveryStatus: true, deliveryNote: true },
-    });
-    if (existing.status === 'VOIDED') {
-      throw new BadRequestException(
-        'La venta está anulada: no hay nada que entregar',
-      );
-    }
-    if (existing.deliveryStatus === 'DELIVERED') {
-      throw new BadRequestException('Esta venta ya figura como entregada');
-    }
+    const sale = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.retailSale.findUniqueOrThrow({
+        where: { id },
+        include: { items: true },
+      });
+      if (existing.status === 'VOIDED') {
+        throw new BadRequestException(
+          'La venta está anulada: no hay nada que entregar',
+        );
+      }
+      if (existing.deliveryStatus === 'DELIVERED') {
+        throw new BadRequestException('Esta venta ya figura como entregada');
+      }
 
-    const sale = await this.prisma.retailSale.update({
-      where: { id },
-      data: {
-        deliveryStatus: 'DELIVERED',
-        deliveredAt: new Date(),
-        // La nota se acumula: lo que se anotó al vender (dónde, cuándo, a quién)
-        // sigue siendo el contexto de lo que se entregó, así que no se pisa.
-        deliveryNote: dto.note
-          ? [existing.deliveryNote, dto.note].filter(Boolean).join(' · ')
-          : existing.deliveryNote,
-      },
-      include: {
-        items: true,
-        customer: { select: { id: true, name: true, phone: true } },
-      },
-    });
+      const itemById = new Map(existing.items.map((item) => [item.id, item]));
+      const productIds = [
+        ...new Set(existing.items.map((item) => item.productId)),
+      ];
+      const products = await tx.retailProduct.findMany({
+        where: { id: { in: productIds } },
+      });
+      const productById = new Map(products.map((p) => [p.id, p]));
+      const variants = await tx.retailProductVariant.findMany({
+        where: { productId: { in: productIds } },
+      });
+      const variantById = new Map(variants.map((v) => [v.id, v]));
+
+      // Se valida TODO antes de mover nada: una entrega a medias dejaría stock
+      // descontado sin que la línea quede marcada, y eso no se puede deshacer
+      // desde la interfaz.
+      for (const line of dto.items) {
+        const item = itemById.get(line.saleItemId);
+        if (!item) {
+          throw new BadRequestException(
+            'Una de las líneas no pertenece a esta venta',
+          );
+        }
+        const remaining = item.quantity - item.deliveredQty;
+        if (line.quantity <= 0) {
+          throw new BadRequestException(
+            'La cantidad a entregar debe ser mayor a 0',
+          );
+        }
+        if (line.quantity > remaining) {
+          throw new BadRequestException(
+            `De "${item.name}" quedan ${remaining} por entregar, no ${line.quantity}`,
+          );
+        }
+
+        const product = productById.get(item.productId)!;
+        if (!product.trackStock) continue;
+
+        if (product.stockOptionId) {
+          if (!line.variantId) {
+            throw new BadRequestException(
+              `"${product.name}" reparte existencias por opción: indica cuál estás entregando`,
+            );
+          }
+          const variant = variantById.get(line.variantId);
+          if (!variant || variant.productId !== product.id) {
+            throw new BadRequestException(
+              `La opción elegida no pertenece a "${product.name}"`,
+            );
+          }
+          if (variant.stock < line.quantity) {
+            throw new BadRequestException(
+              `No hay suficiente "${product.name} · ${variant.label}": hay ${variant.stock}, se entregan ${line.quantity}`,
+            );
+          }
+        }
+        if (product.stock < line.quantity) {
+          throw new BadRequestException(
+            `No hay suficiente "${product.name}": hay ${product.stock}, se entregan ${line.quantity}`,
+          );
+        }
+      }
+
+      for (const line of dto.items) {
+        const item = itemById.get(line.saleItemId)!;
+        const product = productById.get(item.productId)!;
+
+        await tx.retailSaleDelivery.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            saleId: id,
+            saleItemId: item.id,
+            variantId: line.variantId ?? null,
+            quantity: line.quantity,
+            note: dto.note,
+            userId: ctx.userId,
+          },
+        });
+
+        await tx.retailSaleItem.update({
+          where: { id: item.id },
+          data: { deliveredQty: { increment: line.quantity } },
+        });
+
+        if (!product.trackStock) continue;
+
+        const stockAfter = product.stock - line.quantity;
+        await tx.retailProduct.update({
+          where: { id: product.id },
+          data: { stock: stockAfter },
+        });
+        // Se refresca en memoria porque dos líneas pueden ser del mismo
+        // producto y el `stockAfter` del kardex tiene que ir encadenado.
+        product.stock = stockAfter;
+
+        if (line.variantId) {
+          await tx.retailProductVariant.update({
+            where: { id: line.variantId },
+            data: { stock: { decrement: line.quantity } },
+          });
+        }
+
+        await tx.retailStockMovement.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            productId: product.id,
+            variantId: line.variantId ?? null,
+            type: 'SALE',
+            quantity: -line.quantity,
+            stockAfter,
+            unitCostCOP: item.unitCostCOP,
+            reason: 'Entrega de venta pendiente',
+            reference: id,
+            userId: ctx.userId,
+          },
+        });
+      }
+
+      // ¿Quedó algo pendiente? Se relee en vez de calcularlo a mano para no
+      // depender de que el mapa en memoria siga al día.
+      const remainingItems = await tx.retailSaleItem.findMany({
+        where: { saleId: id },
+        select: { quantity: true, deliveredQty: true },
+      });
+      const fullyDelivered = remainingItems.every(
+        (item) => item.deliveredQty >= item.quantity,
+      );
+
+      return tx.retailSale.update({
+        where: { id },
+        data: {
+          ...(fullyDelivered
+            ? { deliveryStatus: 'DELIVERED' as const, deliveredAt: new Date() }
+            : {}),
+          // La nota se acumula: lo que se anotó al vender sigue siendo el
+          // contexto de la entrega, así que no se pisa.
+          deliveryNote: dto.note
+            ? [existing.deliveryNote, dto.note].filter(Boolean).join(' · ')
+            : existing.deliveryNote,
+        },
+        include: {
+          items: true,
+          customer: { select: { id: true, name: true, phone: true } },
+        },
+      });
+    }, this.txOptions);
 
     return this.toSaleDto(sale);
   }
@@ -420,18 +571,42 @@ export class RetailSalesService {
     const sale = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.retailSale.findUniqueOrThrow({
         where: { id },
-        include: { items: true },
+        include: { items: true, deliveries: true },
       });
       if (existing.status === 'VOIDED') {
         throw new BadRequestException('La venta ya está anulada');
       }
 
-      // Se devuelve a la misma fila de la que salió: anular una venta de Arrurú
-      // no puede reingresar la unidad como Sandía.
+      // Solo vuelve al inventario lo que EFECTIVAMENTE salió. En una venta con
+      // entrega pendiente, lo no entregado nunca se descontó: reingresarlo aquí
+      // inflaría el stock con unidades que jamás se movieron.
+      //
+      // Se devuelve a la misma fila de la que salió: anular la entrega de un
+      // Arrurú no puede reingresar la unidad como Sandía. Por eso las entregas
+      // mandan sobre la línea — el aroma real está en cada entrega, no en la
+      // venta.
       const returnedQty = new Map<string, number>();
+      const itemById = new Map(existing.items.map((item) => [item.id, item]));
+
+      if (existing.deliveries.length > 0) {
+        for (const delivery of existing.deliveries) {
+          const item = itemById.get(delivery.saleItemId);
+          if (!item) continue;
+          const key = stockKey(item.productId, delivery.variantId);
+          returnedQty.set(key, (returnedQty.get(key) ?? 0) + delivery.quantity);
+        }
+      }
+
+      // Ventas de mostrador normales: no tienen filas de entrega porque salieron
+      // enteras al cobrarse.
       for (const item of existing.items) {
+        const alreadyCounted = existing.deliveries
+          .filter((delivery) => delivery.saleItemId === item.id)
+          .reduce((sum, delivery) => sum + delivery.quantity, 0);
+        const pendingReturn = item.deliveredQty - alreadyCounted;
+        if (pendingReturn <= 0) continue;
         const key = stockKey(item.productId, item.variantId);
-        returnedQty.set(key, (returnedQty.get(key) ?? 0) + item.quantity);
+        returnedQty.set(key, (returnedQty.get(key) ?? 0) + pendingReturn);
       }
       const productIds = [
         ...new Set(
@@ -601,6 +776,9 @@ export class RetailSalesService {
         productId: item.productId,
         variantId: item.variantId,
         variantLabel: item.variantLabel,
+        deliveredQty: item.deliveredQty,
+        /** Lo que la tienda todavía le debe al cliente de esta línea. */
+        pendingQty: Math.max(0, item.quantity - item.deliveredQty),
         name: item.name,
         sku: item.sku,
         quantity: item.quantity,

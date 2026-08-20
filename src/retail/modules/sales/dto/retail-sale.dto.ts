@@ -128,8 +128,45 @@ export class CreateRetailSaleDto {
   note?: string;
 }
 
-/** Cierra la entrega de una venta que quedó pendiente. */
+export class DeliverRetailSaleItemDto {
+  @ApiProperty({ example: 'item_xxx', description: 'Línea de la venta' })
+  @IsString()
+  saleItemId!: string;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'Cuántas unidades de esa línea se entregan ahora. Puede ser menos que lo ' +
+      'comprado: el resto queda pendiente.',
+  })
+  @IsInt()
+  @Min(1)
+  quantity!: number;
+
+  @ApiPropertyOptional({
+    example: 'var_xxx',
+    description:
+      'Aroma que se entrega, en productos que reparten existencias. Se define ' +
+      'AQUÍ y no al cobrar: el cliente compró unidades, no aromas concretos.',
+  })
+  @IsOptional()
+  @IsString()
+  variantId?: string;
+}
+
+/**
+ * Registra una entrega (total o parcial) de una venta pendiente.
+ *
+ * Es lo que mueve el inventario: al cobrar una venta pendiente no sale nada.
+ */
 export class DeliverRetailSaleDto {
+  @ApiProperty({ type: [DeliverRetailSaleItemDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => DeliverRetailSaleItemDto)
+  items!: DeliverRetailSaleItemDto[];
+
   @ApiPropertyOptional({
     example: 'Entregado a la mamá',
     description: 'Se agrega a la nota de entrega existente, no la reemplaza.',

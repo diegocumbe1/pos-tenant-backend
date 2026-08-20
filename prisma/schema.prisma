@@ -2183,8 +2183,9 @@ model RetailProductVariant {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  movements RetailStockMovement[]
-  saleItems RetailSaleItem[]
+  movements  RetailStockMovement[]
+  saleItems  RetailSaleItem[]
+  deliveries RetailSaleDelivery[]
 
   @@unique([productId, optionValueId])
   @@index([tenantId, branchId])
@@ -2324,7 +2325,8 @@ model RetailSale {
   voidedReason   String?
   createdAt      DateTime             @default(now())
 
-  items RetailSaleItem[]
+  items      RetailSaleItem[]
+  deliveries RetailSaleDelivery[]
 
   @@unique([tenantId, code])
   @@index([tenantId, branchId, soldAt])
@@ -2337,6 +2339,35 @@ model RetailSale {
   @@index([tenantId, branchId, deliveryStatus, soldAt])
   @@index([customerId])
   @@map("retail_sales")
+}
+
+/**
+ * Una entrega parcial de una línea de venta.
+ * El mayorista paga 11 y se lleva 1 hoy y 5 la semana que viene: cada salida es
+ * una fila con su cantidad, su aroma y su fecha. El aroma se define AQUÍ y no al
+ * cobrar, porque al momento de la venta el cliente compró "11 unidades", no
+ * aromas concretos.
+ * Es lo que mueve el stock en una venta pendiente: al cobrar no sale nada.
+ */
+model RetailSaleDelivery {
+  id          String                @id @default(cuid())
+  tenantId    String
+  branchId    String
+  saleId      String
+  sale        RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleItemId  String
+  saleItem    RetailSaleItem        @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  // Valor entregado, en productos que reparten existencias por opción.
+  variantId   String?
+  variant     RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity    Int
+  note        String?
+  userId      String?
+  deliveredAt DateTime              @default(now())
+
+  @@index([saleId])
+  @@index([tenantId, branchId, deliveredAt])
+  @@map("retail_sale_deliveries")
 }
 
 model RetailSaleItem {
@@ -2355,10 +2386,15 @@ model RetailSaleItem {
   variantLabel String?
   sku          String?
   quantity     Int
+  // Cuántas de `quantity` ya salieron físicamente. Igual a `quantity` en una
+  // venta de mostrador normal; menor mientras haya entrega pendiente.
+  deliveredQty Int                   @default(0)
   unitPriceCOP Int
   unitCostCOP  Int                   @default(0)
   discountCOP  Int                   @default(0)
   totalCOP     Int
+
+  deliveries RetailSaleDelivery[]
 
   @@index([saleId])
   @@index([productId])

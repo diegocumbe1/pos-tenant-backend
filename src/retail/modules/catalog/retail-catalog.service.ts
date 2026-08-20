@@ -155,7 +155,14 @@ export class RetailCatalogService {
     const visible = filters.lowStock
       ? products.filter((p) => p.trackStock && p.stock <= p.minStock)
       : products;
-    return visible.map((product) => this.toProductDto(product));
+
+    const committed = await this.committedByProduct(
+      ctx,
+      visible.map((product) => product.id),
+    );
+    return visible.map((product) =>
+      this.toProductDto(product, committed.get(product.id) ?? 0),
+    );
   }
 
   /** Búsqueda por código de barras para el escáner del POS. */
@@ -404,11 +411,54 @@ export class RetailCatalogService {
     return { ok: true };
   }
 
+  /**
+   * Unidades ya vendidas que todavía no se han entregado, por producto.
+   *
+   * En una venta con entrega pendiente el stock NO se descuenta al cobrar: la
+   * mercancía sigue en la estantería. Eso es correcto para el conteo físico,
+   * pero sin este dato el mostrador ofrecería como libres unas unidades que ya
+   * tienen dueño, y se venderían dos veces.
+   *
+   * No se resta del stock a propósito: `stock` tiene que seguir coincidiendo
+   * con lo que hay al contar. Este número va al lado, como advertencia.
+   */
+  private async committedByProduct(
+    ctx: TenantContext,
+    productIds: string[],
+  ): Promise<Map<string, number>> {
+    if (productIds.length === 0) return new Map();
+
+    const items = await this.prisma.retailSaleItem.findMany({
+      where: {
+        productId: { in: productIds },
+        sale: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          status: 'COMPLETED',
+          deliveryStatus: 'PENDING',
+        },
+      },
+      select: { productId: true, quantity: true, deliveredQty: true },
+    });
+
+    const byProduct = new Map<string, number>();
+    for (const item of items) {
+      const pending = Math.max(0, item.quantity - item.deliveredQty);
+      if (pending === 0) continue;
+      byProduct.set(
+        item.productId,
+        (byProduct.get(item.productId) ?? 0) + pending,
+      );
+    }
+    return byProduct;
+  }
+
   private toProductDto(
     product: RetailProduct & {
       category?: { id: string; name: string; emoji: string | null } | null;
       variants?: ProductVariantRow[];
     },
+    committedStock = 0,
   ) {
     const margin = product.priceCOP - product.costCOP;
     return {
@@ -452,6 +502,11 @@ export class RetailCatalogService {
       stock: product.stock,
       minStock: product.minStock,
       isLowStock: product.trackStock && product.stock <= product.minStock,
+      // Vendido y sin entregar. NO se resta de `stock`: ese número tiene que
+      // seguir coincidiendo con lo que hay al contar la estantería.
+      committedStock,
+      /** Lo que de verdad se puede vender hoy sin quedar mal con nadie. */
+      availableStock: Math.max(0, product.stock - committedStock),
       // Reparto de existencias por opción. `stockOptionId` null y `variants`
       // vacío = el producto cuenta entero, que es el caso por defecto.
       stockOptionId: product.stockOptionId,

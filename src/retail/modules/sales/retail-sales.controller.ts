@@ -107,20 +107,19 @@ export class RetailSalesController {
   }
 
   /**
-   * Cierra una entrega pendiente.
+   * Registra una entrega, total o parcial, de una venta pendiente.
    *
    * Va con permiso de escritura de ventas y no con el de anular: entregar lo que
-   * ya se cobró es trabajo de mostrador, no una corrección que deba quedar
-   * reservada al admin.
+   * ya se cobró es trabajo de mostrador, no una corrección reservada al admin.
    */
-  @Post(':id/deliver')
+  @Post(':id/deliveries')
   @RequirePermissions('retail:sales:write')
   deliver(
     @CurrentTenant() ctx: TenantContext,
     @Param('id') id: string,
     @Body() dto: DeliverRetailSaleDto,
   ) {
-    return this.sales.deliverSale(ctx, id, dto);
+    return this.sales.addDelivery(ctx, id, dto);
   }
 
   @Post(':id/void')
