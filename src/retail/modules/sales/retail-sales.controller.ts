@@ -10,7 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { RetailSaleType } from '@prisma/client';
+import { RetailDeliveryStatus, RetailSaleType } from '@prisma/client';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
@@ -18,7 +18,11 @@ import { PasswordSetGuard } from '../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
-import { CreateRetailSaleDto, VoidRetailSaleDto } from './dto/retail-sale.dto';
+import {
+  CreateRetailSaleDto,
+  DeliverRetailSaleDto,
+  VoidRetailSaleDto,
+} from './dto/retail-sale.dto';
 import { RetailSalesService } from './retail-sales.service';
 
 /**
@@ -29,6 +33,10 @@ import { RetailSalesService } from './retail-sales.service';
  */
 function parseSaleType(value?: string): RetailSaleType | undefined {
   return value === 'RETAIL' || value === 'WHOLESALE' ? value : undefined;
+}
+
+function parseDeliveryStatus(value?: string): RetailDeliveryStatus | undefined {
+  return value === 'DELIVERED' || value === 'PENDING' ? value : undefined;
 }
 
 @ApiTags('Retail')
@@ -46,18 +54,25 @@ export class RetailSalesController {
   @ApiQuery({ name: 'to', required: false, description: 'ISO date' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'saleType', required: false, enum: RetailSaleType })
+  @ApiQuery({
+    name: 'deliveryStatus',
+    required: false,
+    enum: RetailDeliveryStatus,
+  })
   list(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('limit') limit?: string,
     @Query('saleType') saleType?: RetailSaleType,
+    @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
   ) {
     return this.sales.listSales(ctx, {
       from,
       to,
       limit: limit ? Number(limit) : undefined,
       saleType: parseSaleType(saleType),
+      deliveryStatus: parseDeliveryStatus(deliveryStatus),
     });
   }
 
@@ -89,6 +104,23 @@ export class RetailSalesController {
     @Body() dto: CreateRetailSaleDto,
   ) {
     return this.sales.createSale(ctx, dto);
+  }
+
+  /**
+   * Cierra una entrega pendiente.
+   *
+   * Va con permiso de escritura de ventas y no con el de anular: entregar lo que
+   * ya se cobró es trabajo de mostrador, no una corrección que deba quedar
+   * reservada al admin.
+   */
+  @Post(':id/deliver')
+  @RequirePermissions('retail:sales:write')
+  deliver(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: DeliverRetailSaleDto,
+  ) {
+    return this.sales.deliverSale(ctx, id, dto);
   }
 
   @Post(':id/void')

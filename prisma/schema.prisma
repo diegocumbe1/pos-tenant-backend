@@ -2276,36 +2276,53 @@ enum RetailSaleType {
   WHOLESALE // escalones mayoristas del producto (6+, 12+)
 }
 
+// Si el cliente ya se llevó la mercancía o queda por entregar.
+//
+// Es independiente del cobro: la venta está cobrada y contabilizada en ambos
+// casos. Lo único abierto es la entrega, que es una tarea operativa — por eso
+// no toca ni ingresos ni stock, solo dice qué le debe la tienda a alguien.
+enum RetailDeliveryStatus {
+  DELIVERED // se lo llevó en el momento
+  PENDING // queda pendiente de entrega
+}
+
 model RetailSale {
-  id            String              @id @default(cuid())
-  tenantId      String
-  tenant        Tenant              @relation(fields: [tenantId], references: [id])
-  branchId      String
-  branch        Branch              @relation(fields: [branchId], references: [id])
+  id             String               @id @default(cuid())
+  tenantId       String
+  tenant         Tenant               @relation(fields: [tenantId], references: [id])
+  branchId       String
+  branch         Branch               @relation(fields: [branchId], references: [id])
   // Consecutivo legible por tienda (RS-000001) para el recibo.
-  code          String
-  customerId    String?
-  customer      RetailCustomer?     @relation(fields: [customerId], references: [id])
+  code           String
+  customerId     String?
+  customer       RetailCustomer?      @relation(fields: [customerId], references: [id])
   // Vendedor y caja abierta en el momento del cobro (sin FK: CashSession es transversal).
-  userId        String?
-  cashSessionId String?
-  status        RetailSaleStatus    @default(COMPLETED)
+  userId         String?
+  cashSessionId  String?
+  status         RetailSaleStatus     @default(COMPLETED)
   // Lista de precios con la que se cobró. Default RETAIL para que las ventas
   // que ya existen queden clasificadas como normales, que es lo que fueron.
-  saleType      RetailSaleType      @default(RETAIL)
-  subtotalCOP   Int
-  discountCOP   Int                 @default(0)
-  totalCOP      Int
+  saleType       RetailSaleType       @default(RETAIL)
+  // Default DELIVERED: todo lo vendido hasta ahora se entregó en el mostrador,
+  // que es lo que efectivamente pasó.
+  deliveryStatus RetailDeliveryStatus @default(DELIVERED)
+  // Cuándo se marcó entregada. NULL mientras siga pendiente.
+  deliveredAt    DateTime?
+  // Nota de la entrega: dirección, a quién se le deja, cuándo pasa a recoger.
+  deliveryNote   String?
+  subtotalCOP    Int
+  discountCOP    Int                  @default(0)
+  totalCOP       Int
   // Costo de la mercancía vendida, congelado al momento de la venta → margen real.
-  costCOP       Int                 @default(0)
-  paymentMethod RetailPaymentMethod @default(CASH)
-  receivedCOP   Int?
-  changeCOP     Int?
-  note          String?
-  soldAt        DateTime            @default(now())
-  voidedAt      DateTime?
-  voidedReason  String?
-  createdAt     DateTime            @default(now())
+  costCOP        Int                  @default(0)
+  paymentMethod  RetailPaymentMethod  @default(CASH)
+  receivedCOP    Int?
+  changeCOP      Int?
+  note           String?
+  soldAt         DateTime             @default(now())
+  voidedAt       DateTime?
+  voidedReason   String?
+  createdAt      DateTime             @default(now())
 
   items RetailSaleItem[]
 
@@ -2315,6 +2332,9 @@ model RetailSale {
   // Finanzas filtra por tipo dentro de un rango de fechas: sin este índice el
   // filtro "solo mayorista" recorre todas las ventas del período.
   @@index([tenantId, branchId, saleType, soldAt])
+  // La bandeja de entregas pendientes es una lectura constante y siempre filtra
+  // por estado; sin índice recorrería todo el histórico de ventas.
+  @@index([tenantId, branchId, deliveryStatus, soldAt])
   @@index([customerId])
   @@map("retail_sales")
 }

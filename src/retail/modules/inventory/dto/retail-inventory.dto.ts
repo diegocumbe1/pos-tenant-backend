@@ -76,9 +76,26 @@ export class CreateRetailStockMovementDto {
 }
 
 export class VariantDistributionItemDto {
-  @ApiProperty({ example: 'var_xxx' })
+  @ApiPropertyOptional({
+    example: 'var_xxx',
+    description:
+      'Fila a la que se le fija el conteo. Alternativa a `optionValueId`.',
+  })
+  @IsOptional()
   @IsString()
-  variantId!: string;
+  variantId?: string;
+
+  @ApiPropertyOptional({
+    example: 'v_arruru',
+    description:
+      'Valor de la opción, como alternativa a `variantId`. Existe para que el ' +
+      'admin pueda repartir en el mismo guardado en que marca el grupo: en ese ' +
+      'momento las filas todavía no existen, así que el cliente no puede conocer ' +
+      'sus ids, pero sí conoce el id del valor porque lo acaba de escribir.',
+  })
+  @IsOptional()
+  @IsString()
+  optionValueId?: string;
 
   @ApiProperty({
     example: 4,

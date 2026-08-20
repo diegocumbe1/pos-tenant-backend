@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { RetailPaymentMethod, RetailSaleType } from '@prisma/client';
+import {
+  RetailDeliveryStatus,
+  RetailPaymentMethod,
+  RetailSaleType,
+} from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -79,6 +83,27 @@ export class CreateRetailSaleDto {
   @IsEnum(RetailSaleType)
   saleType?: RetailSaleType;
 
+  @ApiPropertyOptional({
+    enum: RetailDeliveryStatus,
+    example: 'DELIVERED',
+    description:
+      'Omitido = DELIVERED (el cliente se la llevó). PENDING deja la venta en la ' +
+      'bandeja de entregas. No cambia el cobro ni el stock: la mercancía ya está ' +
+      'apartada para ese cliente.',
+  })
+  @IsOptional()
+  @IsEnum(RetailDeliveryStatus)
+  deliveryStatus?: RetailDeliveryStatus;
+
+  @ApiPropertyOptional({
+    example: 'Pasa el viernes · Cra 12 #3-45',
+    description: 'Dónde, cuándo o a quién se entrega.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  deliveryNote?: string;
+
   @ApiPropertyOptional({ example: 0, description: 'Descuento sobre el total' })
   @IsOptional()
   @IsInt()
@@ -97,6 +122,18 @@ export class CreateRetailSaleDto {
   cashSessionId?: string;
 
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}
+
+/** Cierra la entrega de una venta que quedó pendiente. */
+export class DeliverRetailSaleDto {
+  @ApiPropertyOptional({
+    example: 'Entregado a la mamá',
+    description: 'Se agrega a la nota de entrega existente, no la reemplaza.',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(300)

@@ -163,12 +163,18 @@ export async function setVariantDistribution(
     productId: string;
     productName: string;
     productStock: number;
-    items: Array<{ variantId: string; stock: number; minStock?: number }>;
+    items: Array<{
+      /** Identifica la fila por su id, o por el valor de opción al que pertenece. */
+      variantId?: string;
+      optionValueId?: string;
+      stock: number;
+      minStock?: number;
+    }>;
   },
 ): Promise<void> {
   const variants = await tx.retailProductVariant.findMany({
     where: { productId: params.productId },
-    select: { id: true, stock: true, label: true },
+    select: { id: true, optionValueId: true, stock: true, label: true },
   });
   if (variants.length === 0) {
     throw new BadRequestException(
@@ -177,24 +183,37 @@ export async function setVariantDistribution(
   }
 
   const byId = new Map(variants.map((row) => [row.id, row]));
-  for (const item of params.items) {
-    if (!byId.has(item.variantId)) {
+  const byOptionValueId = new Map(
+    variants.map((row) => [row.optionValueId, row]),
+  );
+
+  // Se resuelve cada renglón a una fila real ANTES de tocar nada: si un id no
+  // corresponde, el reparto entero se rechaza en vez de aplicarse a medias.
+  const resolved = params.items.map((item) => {
+    const row = item.variantId
+      ? byId.get(item.variantId)
+      : item.optionValueId
+        ? byOptionValueId.get(item.optionValueId)
+        : undefined;
+
+    if (!row) {
       throw new BadRequestException(
-        `La variante ${item.variantId} no pertenece a "${params.productName}"`,
+        `Uno de los valores del reparto no pertenece a "${params.productName}"`,
       );
     }
     if (item.stock < 0) {
       throw new BadRequestException(
-        `El conteo de "${byId.get(item.variantId)!.label}" no puede ser negativo`,
+        `El conteo de "${row.label}" no puede ser negativo`,
       );
     }
-  }
+    return { row, stock: item.stock, minStock: item.minStock };
+  });
 
   // Los valores que no vienen en el request conservan su conteo actual: así se
   // puede corregir un solo aroma sin tener que reenviar todos.
   const nextStockById = new Map(variants.map((row) => [row.id, row.stock]));
-  for (const item of params.items) {
-    nextStockById.set(item.variantId, item.stock);
+  for (const item of resolved) {
+    nextStockById.set(item.row.id, item.stock);
   }
 
   const assigned = [...nextStockById.values()].reduce((a, b) => a + b, 0);
@@ -205,9 +224,9 @@ export async function setVariantDistribution(
     );
   }
 
-  for (const item of params.items) {
+  for (const item of resolved) {
     await tx.retailProductVariant.update({
-      where: { id: item.variantId },
+      where: { id: item.row.id },
       data: {
         stock: item.stock,
         ...(item.minStock === undefined ? {} : { minStock: item.minStock }),

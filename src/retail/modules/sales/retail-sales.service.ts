@@ -1,9 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { Prisma, RetailSaleType } from '@prisma/client';
+import { Prisma, RetailDeliveryStatus, RetailSaleType } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
-import { CreateRetailSaleDto, VoidRetailSaleDto } from './dto/retail-sale.dto';
+import {
+  CreateRetailSaleDto,
+  DeliverRetailSaleDto,
+  VoidRetailSaleDto,
+} from './dto/retail-sale.dto';
 
 /**
  * Clave de agrupación de stock: producto, y valor cuando el producto reparte.
@@ -43,6 +47,7 @@ export class RetailSalesService {
       to?: string;
       limit?: number;
       saleType?: RetailSaleType;
+      deliveryStatus?: RetailDeliveryStatus;
     } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
@@ -51,6 +56,9 @@ export class RetailSalesService {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         ...(filters.saleType ? { saleType: filters.saleType } : {}),
+        ...(filters.deliveryStatus
+          ? { deliveryStatus: filters.deliveryStatus }
+          : {}),
         ...this.soldAtRange(filters.from, filters.to),
       },
       orderBy: { soldAt: 'desc' },
@@ -326,6 +334,11 @@ export class RetailSalesService {
           costCOP,
           paymentMethod: dto.paymentMethod ?? 'CASH',
           saleType: dto.saleType ?? 'RETAIL',
+          deliveryStatus: dto.deliveryStatus ?? 'DELIVERED',
+          // Se sella la fecha ya si sale entregada: así el histórico no tiene
+          // que adivinar cuándo se entregó lo que nunca estuvo pendiente.
+          deliveredAt: dto.deliveryStatus === 'PENDING' ? null : new Date(),
+          deliveryNote: dto.deliveryNote,
           receivedCOP: dto.receivedCOP,
           changeCOP:
             dto.receivedCOP !== undefined ? dto.receivedCOP - totalCOP : null,
@@ -353,6 +366,49 @@ export class RetailSalesService {
 
       return created;
     }, this.txOptions);
+
+    return this.toSaleDto(sale);
+  }
+
+  /**
+   * Cierra la entrega de una venta que quedó pendiente.
+   *
+   * No toca stock ni dinero: la mercancía salió del inventario al cobrar y los
+   * ingresos ya se contaron. Lo único que cambia es que la tienda dejó de
+   * deberle algo al cliente.
+   */
+  async deliverSale(ctx: TenantContext, id: string, dto: DeliverRetailSaleDto) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: { status: true, deliveryStatus: true, deliveryNote: true },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException(
+        'La venta está anulada: no hay nada que entregar',
+      );
+    }
+    if (existing.deliveryStatus === 'DELIVERED') {
+      throw new BadRequestException('Esta venta ya figura como entregada');
+    }
+
+    const sale = await this.prisma.retailSale.update({
+      where: { id },
+      data: {
+        deliveryStatus: 'DELIVERED',
+        deliveredAt: new Date(),
+        // La nota se acumula: lo que se anotó al vender (dónde, cuándo, a quién)
+        // sigue siendo el contexto de lo que se entregó, así que no se pisa.
+        deliveryNote: dto.note
+          ? [existing.deliveryNote, dto.note].filter(Boolean).join(' · ')
+          : existing.deliveryNote,
+      },
+      include: {
+        items: true,
+        customer: { select: { id: true, name: true, phone: true } },
+      },
+    });
 
     return this.toSaleDto(sale);
   }
@@ -520,6 +576,9 @@ export class RetailSalesService {
       branchId: sale.branchId,
       status: sale.status,
       saleType: sale.saleType,
+      deliveryStatus: sale.deliveryStatus,
+      deliveredAt: sale.deliveredAt,
+      deliveryNote: sale.deliveryNote,
       customerId: sale.customerId,
       customerName: sale.customer?.name ?? null,
       customerPhone: sale.customer?.phone ?? null,
