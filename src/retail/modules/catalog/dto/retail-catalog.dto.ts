@@ -182,7 +182,10 @@ export class CreateRetailProductDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
-  @Max(99)
+  // 100 es válido: un producto que llegó de regalo tiene costo 0 y margen 100%.
+  // El tope de 99 solo aplica cuando el % determina el precio (costo > 0), y esa
+  // es una regla del formulario, no del contrato.
+  @Max(100)
   saleMarginPct?: number;
 
   @ApiPropertyOptional({
@@ -198,7 +201,7 @@ export class CreateRetailProductDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
-  @Max(99)
+  @Max(100)
   minMarginPct?: number;
 
   // Precios por volumen. Opcionales y anulables: `null` apaga el escalón (se
