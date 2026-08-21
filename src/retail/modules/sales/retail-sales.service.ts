@@ -1,11 +1,17 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { Prisma, RetailDeliveryStatus, RetailSaleType } from '@prisma/client';
+import {
+  Prisma,
+  RetailDeliveryStatus,
+  RetailPaymentStatus,
+  RetailSaleType,
+} from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
   CreateRetailSaleDto,
   DeliverRetailSaleDto,
+  PayRetailSaleDto,
   VoidRetailSaleDto,
 } from './dto/retail-sale.dto';
 
@@ -48,6 +54,7 @@ export class RetailSalesService {
       limit?: number;
       saleType?: RetailSaleType;
       deliveryStatus?: RetailDeliveryStatus;
+      paymentStatus?: RetailPaymentStatus;
     } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
@@ -58,6 +65,9 @@ export class RetailSalesService {
         ...(filters.saleType ? { saleType: filters.saleType } : {}),
         ...(filters.deliveryStatus
           ? { deliveryStatus: filters.deliveryStatus }
+          : {}),
+        ...(filters.paymentStatus
+          ? { paymentStatus: filters.paymentStatus }
           : {}),
         ...this.soldAtRange(filters.from, filters.to),
       },
@@ -104,18 +114,31 @@ export class RetailSalesService {
         costCOP: true,
         paymentMethod: true,
         saleType: true,
+        paymentStatus: true,
         items: { select: { quantity: true } },
       },
     });
 
-    const revenueCOP = sales.reduce((sum, sale) => sum + sale.totalCOP, 0);
-    const costCOP = sales.reduce((sum, sale) => sum + sale.costCOP, 0);
-    const unitsSold = sales.reduce(
+    // BASE CAJA. Lo fiado no suma al ingreso: contar plata que no ha entrado
+    // infla las ventas del día y hace que la caja nunca cuadre contra el
+    // reporte. Se saca del ingreso, del costo y del margen —los tres, para que
+    // el margen siga siendo el de lo que efectivamente se cobró— y se reporta
+    // aparte en `pendingPayment`. La venta NO se esconde: sigue en el histórico.
+    const unpaid = sales.filter((sale) => sale.paymentStatus === 'PENDING');
+    const paid = sales.filter((sale) => sale.paymentStatus === 'PAID');
+    const pendingPayment = {
+      salesCount: unpaid.length,
+      amountCOP: unpaid.reduce((sum, sale) => sum + sale.totalCOP, 0),
+    };
+
+    const revenueCOP = paid.reduce((sum, sale) => sum + sale.totalCOP, 0);
+    const costCOP = paid.reduce((sum, sale) => sum + sale.costCOP, 0);
+    const unitsSold = paid.reduce(
       (sum, sale) => sum + sale.items.reduce((n, item) => n + item.quantity, 0),
       0,
     );
     const byPaymentMethod: Record<string, number> = {};
-    for (const sale of sales) {
+    for (const sale of paid) {
       byPaymentMethod[sale.paymentMethod] =
         (byPaymentMethod[sale.paymentMethod] ?? 0) + sale.totalCOP;
     }
@@ -127,7 +150,7 @@ export class RetailSalesService {
       RETAIL: this.emptyTypeBucket(),
       WHOLESALE: this.emptyTypeBucket(),
     };
-    for (const sale of sales) {
+    for (const sale of paid) {
       const bucket = bySaleType[sale.saleType];
       bucket.salesCount += 1;
       bucket.revenueCOP += sale.totalCOP;
@@ -143,17 +166,16 @@ export class RetailSalesService {
     }
 
     return {
-      salesCount: sales.length,
+      salesCount: paid.length,
       revenueCOP,
       costCOP,
       grossProfitCOP: revenueCOP - costCOP,
       marginPct: this.marginPct(revenueCOP, costCOP),
       unitsSold,
-      averageTicketCOP: sales.length
-        ? Math.round(revenueCOP / sales.length)
-        : 0,
+      averageTicketCOP: paid.length ? Math.round(revenueCOP / paid.length) : 0,
       byPaymentMethod,
       bySaleType,
+      pendingPayment,
     };
   }
 
@@ -346,6 +368,10 @@ export class RetailSalesService {
           paymentMethod: dto.paymentMethod ?? 'CASH',
           saleType: dto.saleType ?? 'RETAIL',
           deliveryStatus: dto.deliveryStatus ?? 'DELIVERED',
+          paymentStatus: dto.paymentStatus ?? 'PAID',
+          // Se sella ya si sale pagada: el histórico no tiene que adivinar
+          // cuándo entró plata que entró en el acto.
+          paidAt: dto.paymentStatus === 'PENDING' ? null : new Date(),
           // Se sella la fecha ya si sale entregada: así el histórico no tiene
           // que adivinar cuándo se entregó lo que nunca estuvo pendiente.
           deliveredAt: dto.deliveryStatus === 'PENDING' ? null : new Date(),
@@ -564,6 +590,95 @@ export class RetailSalesService {
     return this.toSaleDto(sale);
   }
 
+  /**
+   * Marca cobrada una venta fiada.
+   *
+   * No toca inventario: la mercancía salió cuando se entregó. Lo que cambia es
+   * que a partir de aquí la venta SÍ suma al ingreso del período, así que la
+   * fecha de pago es la que manda para la caja, no la de la venta.
+   */
+  async paySale(ctx: TenantContext, id: string, dto: PayRetailSaleDto) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: { status: true, paymentStatus: true, note: true },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException(
+        'La venta está anulada: no hay nada que cobrar',
+      );
+    }
+    if (existing.paymentStatus === 'PAID') {
+      throw new BadRequestException('Esta venta ya figura como cobrada');
+    }
+
+    const sale = await this.prisma.retailSale.update({
+      where: { id },
+      data: {
+        paymentStatus: 'PAID',
+        paidAt: new Date(),
+        // El método puede cambiar entre que se fía y se cobra: se anotó
+        // "efectivo" y terminó pagando por transferencia.
+        ...(dto.paymentMethod ? { paymentMethod: dto.paymentMethod } : {}),
+        note: dto.note
+          ? [existing.note, dto.note].filter(Boolean).join(' · ')
+          : existing.note,
+      },
+      include: {
+        items: true,
+        customer: { select: { id: true, name: true, phone: true } },
+      },
+    });
+
+    return this.toSaleDto(sale);
+  }
+
+  /**
+   * Devuelve una venta a "por cobrar".
+   *
+   * Es la corrección de un error de registro: se cobró en el sistema algo que
+   * en realidad se fió. No toca inventario ni la fecha de venta — solo saca esa
+   * plata del ingreso hasta que entre de verdad.
+   *
+   * Existe porque la alternativa sería anular y volver a crear la venta, y eso
+   * pierde el consecutivo, la fecha original y el histórico del cliente, además
+   * de mover stock dos veces sin motivo.
+   */
+  async unpaySale(ctx: TenantContext, id: string, dto: PayRetailSaleDto) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: { status: true, paymentStatus: true, note: true },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException('La venta está anulada');
+    }
+    if (existing.paymentStatus === 'PENDING') {
+      throw new BadRequestException(
+        'Esta venta ya figura como pendiente de cobro',
+      );
+    }
+
+    const sale = await this.prisma.retailSale.update({
+      where: { id },
+      data: {
+        paymentStatus: 'PENDING',
+        paidAt: null,
+        note: dto.note
+          ? [existing.note, dto.note].filter(Boolean).join(' · ')
+          : existing.note,
+      },
+      include: {
+        items: true,
+        customer: { select: { id: true, name: true, phone: true } },
+      },
+    });
+
+    return this.toSaleDto(sale);
+  }
+
   /** Anula una venta: devuelve el stock al inventario y la saca de finanzas. */
   async voidSale(ctx: TenantContext, id: string, dto: VoidRetailSaleDto) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
@@ -752,6 +867,8 @@ export class RetailSalesService {
       status: sale.status,
       saleType: sale.saleType,
       deliveryStatus: sale.deliveryStatus,
+      paymentStatus: sale.paymentStatus,
+      paidAt: sale.paidAt,
       deliveredAt: sale.deliveredAt,
       deliveryNote: sale.deliveryNote,
       customerId: sale.customerId,

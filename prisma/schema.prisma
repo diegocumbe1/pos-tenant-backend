@@ -2282,6 +2282,16 @@ enum RetailSaleType {
 // Es independiente del cobro: la venta está cobrada y contabilizada en ambos
 // casos. Lo único abierto es la entrega, que es una tarea operativa — por eso
 // no toca ni ingresos ni stock, solo dice qué le debe la tienda a alguien.
+// Si la tienda ya cobró o le fiaron al cliente.
+//
+// Es independiente de la entrega: se puede entregar y cobrar después (fiado), o
+// cobrar y entregar después (encargo). Lo que decide es el DINERO — mientras
+// esté en PENDING la venta no cuenta como ingreso, porque la plata no entró.
+enum RetailPaymentStatus {
+  PAID // el dinero entró
+  PENDING // queda por cobrar
+}
+
 enum RetailDeliveryStatus {
   DELIVERED // se lo llevó en el momento
   PENDING // queda pendiente de entrega
@@ -2307,6 +2317,10 @@ model RetailSale {
   // Default DELIVERED: todo lo vendido hasta ahora se entregó en el mostrador,
   // que es lo que efectivamente pasó.
   deliveryStatus RetailDeliveryStatus @default(DELIVERED)
+  // Default PAID: todo lo vendido hasta ahora se cobró en el mostrador.
+  paymentStatus  RetailPaymentStatus  @default(PAID)
+  // Cuándo entró la plata. NULL mientras siga por cobrar.
+  paidAt         DateTime?
   // Cuándo se marcó entregada. NULL mientras siga pendiente.
   deliveredAt    DateTime?
   // Nota de la entrega: dirección, a quién se le deja, cuándo pasa a recoger.
@@ -2337,6 +2351,9 @@ model RetailSale {
   // La bandeja de entregas pendientes es una lectura constante y siempre filtra
   // por estado; sin índice recorrería todo el histórico de ventas.
   @@index([tenantId, branchId, deliveryStatus, soldAt])
+  // La bandeja de cobros pendientes filtra siempre por estado, igual que la de
+  // entregas; sin índice recorrería todo el histórico.
+  @@index([tenantId, branchId, paymentStatus, soldAt])
   @@index([customerId])
   @@map("retail_sales")
 }

@@ -21,8 +21,17 @@
 -- AlterTable
 ALTER TABLE "retail_sale_items" ADD COLUMN     "deliveredQty" INTEGER NOT NULL DEFAULT 0;
 
--- Backfill: todo lo vendido hasta ahora salió del mostrador en el momento.
-UPDATE "retail_sale_items" SET "deliveredQty" = "quantity";
+-- Backfill: lo vendido y entregado salió del mostrador en el momento.
+--
+-- Va acotado a las ventas DELIVERED a propósito. Marcar todo como entregado
+-- dejaría las ventas que están en PENDING con sus líneas en "0 por entregar":
+-- la bandeja no mostraría nada que entregar y esas ventas quedarían imposibles
+-- de cerrar para siempre.
+UPDATE "retail_sale_items"
+SET "deliveredQty" = "quantity"
+WHERE "saleId" IN (
+  SELECT "id" FROM "retail_sales" WHERE "deliveryStatus" = 'DELIVERED'
+);
 
 -- CreateTable
 CREATE TABLE "retail_sale_deliveries" (

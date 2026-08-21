@@ -10,7 +10,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { RetailDeliveryStatus, RetailSaleType } from '@prisma/client';
+import {
+  RetailDeliveryStatus,
+  RetailPaymentStatus,
+  RetailSaleType,
+} from '@prisma/client';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
@@ -21,6 +25,7 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import {
   CreateRetailSaleDto,
   DeliverRetailSaleDto,
+  PayRetailSaleDto,
   VoidRetailSaleDto,
 } from './dto/retail-sale.dto';
 import { RetailSalesService } from './retail-sales.service';
@@ -37,6 +42,10 @@ function parseSaleType(value?: string): RetailSaleType | undefined {
 
 function parseDeliveryStatus(value?: string): RetailDeliveryStatus | undefined {
   return value === 'DELIVERED' || value === 'PENDING' ? value : undefined;
+}
+
+function parsePaymentStatus(value?: string): RetailPaymentStatus | undefined {
+  return value === 'PAID' || value === 'PENDING' ? value : undefined;
 }
 
 @ApiTags('Retail')
@@ -59,6 +68,11 @@ export class RetailSalesController {
     required: false,
     enum: RetailDeliveryStatus,
   })
+  @ApiQuery({
+    name: 'paymentStatus',
+    required: false,
+    enum: RetailPaymentStatus,
+  })
   list(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
@@ -66,6 +80,7 @@ export class RetailSalesController {
     @Query('limit') limit?: string,
     @Query('saleType') saleType?: RetailSaleType,
     @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
+    @Query('paymentStatus') paymentStatus?: RetailPaymentStatus,
   ) {
     return this.sales.listSales(ctx, {
       from,
@@ -73,6 +88,7 @@ export class RetailSalesController {
       limit: limit ? Number(limit) : undefined,
       saleType: parseSaleType(saleType),
       deliveryStatus: parseDeliveryStatus(deliveryStatus),
+      paymentStatus: parsePaymentStatus(paymentStatus),
     });
   }
 
@@ -120,6 +136,36 @@ export class RetailSalesController {
     @Body() dto: DeliverRetailSaleDto,
   ) {
     return this.sales.addDelivery(ctx, id, dto);
+  }
+
+  /**
+   * Marca cobrada una venta fiada. A partir de aquí suma al ingreso.
+   *
+   * Va con escritura de ventas: recibir la plata de un fiado es trabajo de
+   * mostrador, no una corrección reservada al admin.
+   */
+  @Post(':id/pay')
+  @RequirePermissions('retail:sales:write')
+  pay(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: PayRetailSaleDto,
+  ) {
+    return this.sales.paySale(ctx, id, dto);
+  }
+
+  /**
+   * Devuelve la venta a "por cobrar". Corrige un cobro registrado por error;
+   * no toca inventario ni la fecha de venta.
+   */
+  @Post(':id/unpay')
+  @RequirePermissions('retail:sales:write')
+  unpay(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: PayRetailSaleDto,
+  ) {
+    return this.sales.unpaySale(ctx, id, dto);
   }
 
   @Post(':id/void')

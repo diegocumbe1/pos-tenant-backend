@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   RetailDeliveryStatus,
   RetailPaymentMethod,
+  RetailPaymentStatus,
   RetailSaleType,
 } from '@prisma/client';
 import { Type } from 'class-transformer';
@@ -96,6 +97,17 @@ export class CreateRetailSaleDto {
   deliveryStatus?: RetailDeliveryStatus;
 
   @ApiPropertyOptional({
+    enum: RetailPaymentStatus,
+    example: 'PAID',
+    description:
+      'Omitido = PAID. PENDING deja la venta fiada: el stock SÍ sale, pero el ' +
+      'ingreso no se cuenta hasta marcarla pagada. Es independiente de la entrega.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPaymentStatus)
+  paymentStatus?: RetailPaymentStatus;
+
+  @ApiPropertyOptional({
     example: 'Pasa el viernes · Cra 12 #3-45',
     description: 'Dónde, cuándo o a quién se entrega.',
   })
@@ -171,6 +183,25 @@ export class DeliverRetailSaleDto {
     example: 'Entregado a la mamá',
     description: 'Se agrega a la nota de entrega existente, no la reemplaza.',
   })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}
+
+/** Marca cobrada una venta que estaba fiada. */
+export class PayRetailSaleDto {
+  @ApiPropertyOptional({
+    enum: RetailPaymentMethod,
+    example: 'CASH',
+    description:
+      'Con qué se pagó al final, si difiere de lo anotado al vender.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPaymentMethod)
+  paymentMethod?: RetailPaymentMethod;
+
+  @ApiPropertyOptional({ example: 'Pagó en efectivo el viernes' })
   @IsOptional()
   @IsString()
   @MaxLength(300)
