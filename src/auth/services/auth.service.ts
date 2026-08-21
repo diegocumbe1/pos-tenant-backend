@@ -19,6 +19,7 @@ import {
 } from '../dto/invite-user.dto';
 import { LoginDto } from '../dto/login.dto';
 import { RecoverPasswordDto } from '../dto/recover-password.dto';
+import { RefreshTokenDto } from '../dto/refresh-token.dto';
 import { ResendInvitationDto } from '../dto/resend-invitation.dto';
 import { ResetPasswordDto } from '../dto/reset-password.dto';
 import {
@@ -373,6 +374,38 @@ export class AuthService {
 
     this.logger.log(
       `login email=${dto.email} userId=${authUser.id} auth=${timings.auth.toFixed(1)}ms`,
+    );
+
+    return response;
+  }
+
+  /**
+   * Renueva la sesión a partir del refresh_token, sin contraseña.
+   *
+   * Devuelve la MISMA forma que `login` a propósito: el cliente reemplaza sus
+   * tokens y su perfil de una sola vez, y así los cambios de rol, permisos o
+   * sucursales entran en vigor sin que el usuario tenga que volver a entrar.
+   *
+   * Pasa por `buildLoginResponse`, así que también revalida el acceso: un tenant
+   * suspendido o un usuario desactivado pierden la sesión en el primer refresh
+   * en vez de seguir operando hasta que venza el access_token.
+   */
+  async refresh(dto: RefreshTokenDto, timings: Record<string, number> = {}) {
+    const authStart = performance.now();
+    const { session, user: authUser } = await this.supabase.refreshSession(
+      dto.refreshToken,
+    );
+    timings.auth = elapsedMs(authStart);
+
+    const response = await this.buildLoginResponse(
+      authUser.id,
+      session,
+      authUser,
+      timings,
+    );
+
+    this.logger.log(
+      `refresh userId=${authUser.id} auth=${timings.auth.toFixed(1)}ms`,
     );
 
     return response;

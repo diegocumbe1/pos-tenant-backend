@@ -20,6 +20,7 @@ import {
 } from './dto/invite-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { RecoverPasswordDto } from './dto/recover-password.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResendInvitationDto } from './dto/resend-invitation.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { AllowWithoutPassword } from './guards/password-set.guard';
@@ -90,6 +91,25 @@ export class AuthController {
     const totalStart = performance.now();
     const timings: Record<string, number> = {};
     const response = await this.authService.login(dto, timings);
+    timings.total = elapsedMs(totalStart);
+
+    res.setHeader('Server-Timing', toServerTimingHeader(timings));
+    return response;
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Exchange a refresh_token for a new session. Same response shape as login.',
+  })
+  async refresh(
+    @Body() dto: RefreshTokenDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const totalStart = performance.now();
+    const timings: Record<string, number> = {};
+    const response = await this.authService.refresh(dto, timings);
     timings.total = elapsedMs(totalStart);
 
     res.setHeader('Server-Timing', toServerTimingHeader(timings));

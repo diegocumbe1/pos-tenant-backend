@@ -68,7 +68,13 @@ const TO = Number(argValue('--to'));
 /** Por qué se corrige. Queda escrito en la nota de cada venta tocada. */
 const REASON = argValue('--reason') ?? 'costo mal registrado';
 
-const DB_URL = process.env.DATABASE_URL ?? '';
+// Se escribe por la conexión DIRECTA, no por el pooler.
+//
+// `DATABASE_URL` de Supabase apunta a pgBouncer en modo transacción, donde una
+// transacción interactiva de Prisma (la que agrupa las tres tablas de esta
+// corrección) puede cortarse a mitad. El respaldo ya está escrito, pero quedaría
+// una corrección aplicada a medias. `DIRECT_URL` es la misma base sin el pooler.
+const DB_URL = process.env.DIRECT_URL || process.env.DATABASE_URL || '';
 const DB_HOST =
   DB_URL.replace(/^.*@/, '').replace(/[/?].*$/, '') || '(desconocido)';
 const IS_LOCAL = /^(localhost|127\.0\.0\.1|host\.docker\.internal)(:|$)/.test(
@@ -91,7 +97,9 @@ if (APPLY && !IS_LOCAL && !ALLOW_PROD) {
   process.exit(1);
 }
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasources: { db: { url: DB_URL } },
+});
 const money = (n: number) =>
   new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
 

@@ -1,0 +1,51 @@
+{
+  "ejecutadoEn": "2026-08-21T04:36:46.822Z",
+  "base": "aws-1-us-east-1.pooler.supabase.com:5432",
+  "producto": "Mantequillas Mini",
+  "costoAnterior": 1800,
+  "costoNuevo": 0,
+  "motivo": "llegan de regalo por compra mayorista",
+  "utilidadCorregidaCOP": 16200,
+  "lineas": [
+    {
+      "saleItemId": "cmt27tixj000bo701xxetegs9",
+      "saleId": "cmt27tixj0009o7019x34mw1l",
+      "venta": "RS-000008",
+      "fecha": "2026-08-21T00:32:45.080Z",
+      "cantidad": 4,
+      "precioUnitario": 3000,
+      "costoAntes": 1800,
+      "costoDespues": 0
+    },
+    {
+      "saleItemId": "cmt2c2db6000oo7010ia2yrof",
+      "saleId": "cmt2c2db6000mo701nqt5w8jt",
+      "venta": "RS-000009",
+      "fecha": "2026-08-21T02:31:36.162Z",
+      "cantidad": 2,
+      "precioUnitario": 3000,
+      "costoAntes": 1800,
+      "costoDespues": 0
+    },
+    {
+      "saleItemId": "cmt2c3e19000uo701mjdmj161",
+      "saleId": "cmt2c3e19000so701m02aqnns",
+      "venta": "RS-000010",
+      "fecha": "2026-08-21T02:32:23.758Z",
+      "cantidad": 2,
+      "precioUnitario": 3000,
+      "costoAntes": 1800,
+      "costoDespues": 0
+    },
+    {
+      "saleItemId": "cmt2c5k0u0016o701wdps9zoc",
+      "saleId": "cmt2c5k0u0014o701l54ozx35",
+      "venta": "RS-000012",
+      "fecha": "2026-08-21T02:34:04.830Z",
+      "cantidad": 1,
+      "precioUnitario": 3000,
+      "costoAntes": 1800,
+      "costoDespues": 0
+    }
+  ]
+}

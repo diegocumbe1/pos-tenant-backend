@@ -183,6 +183,36 @@ export class SupabaseService {
     return { session: data.session, user: data.user };
   }
 
+  /**
+   * Canjea un refresh_token por una sesión nueva. Es lo que mantiene viva la
+   * sesión más allá del vencimiento del access_token (1 h por defecto en
+   * Supabase) sin volver a pedir contraseña.
+   *
+   * Cliente nuevo por llamada, igual que en `setSession`: el cliente público es
+   * compartido entre peticiones y `refreshSession` deja la sesión pegada en él,
+   * así que reutilizarlo mezclaría sesiones de usuarios distintos.
+   *
+   * Supabase ROTA el token en cada canje: el `refresh_token` que vuelve es el
+   * único válido de ahí en adelante, por eso la respuesta lo incluye.
+   */
+  async refreshSession(refreshToken: string) {
+    const client = this.createPublicClient();
+    const { data, error } = await client.auth.refreshSession({
+      refresh_token: refreshToken,
+    });
+
+    if (error) {
+      this.logger.warn(`Refresh session failed: ${error.message}`);
+      throw new UnauthorizedException(error.message || 'Invalid refresh token');
+    }
+
+    if (!data.session || !data.user) {
+      throw new UnauthorizedException('Refresh did not return a session');
+    }
+
+    return { session: data.session, user: data.user };
+  }
+
   async setSession(accessToken: string, refreshToken: string) {
     const client = this.createPublicClient();
     const { data, error } = await client.auth.setSession({
