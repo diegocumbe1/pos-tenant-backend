@@ -3,12 +3,13 @@ import { PrintingModule } from '../printing/printing.module';
 import {
   PublicReceiptsController,
   ReceiptsController,
+  SharedReceiptsController,
 } from './receipts.controller';
 import { ReceiptsService } from './receipts.service';
 
 @Module({
   imports: [PrintingModule],
-  controllers: [ReceiptsController, PublicReceiptsController],
+  controllers: [ReceiptsController, SharedReceiptsController, PublicReceiptsController],
   providers: [ReceiptsService],
   exports: [ReceiptsService],
 })
