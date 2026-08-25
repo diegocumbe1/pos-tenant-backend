@@ -10,7 +10,10 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { CurrentTenant } from '../auth/decorators/current-tenant.decorator';
-import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PasswordSetGuard } from '../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -60,8 +63,16 @@ export class TenantAdminController {
     return this.service.getBranch(ctx.tenantId, id);
   }
 
+  // Los datos de pago de la sede (llave Bre-B, billeteras, cuenta, QR) los edita
+  // el dueño de cualquier vertical: el dato vive en la sede, no en el módulo de
+  // restaurante. Exigir el permiso de restaurante dejaba a barbería y retail sin
+  // poder guardarlos.
   @Patch('branches/:id')
-  @RequirePermissions('restaurant:settings:write')
+  @RequireAnyPermission(
+    'restaurant:settings:write',
+    'barber:settings:write',
+    'retail:settings:write',
+  )
   updateBranch(
     @CurrentTenant() ctx: TenantContext,
     @Param('id') id: string,

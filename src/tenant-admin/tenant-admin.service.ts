@@ -7,6 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionsCacheService } from '../auth/services/permissions-cache.service';
 import { SupabaseService } from '../supabase/supabase.service';
@@ -62,12 +63,14 @@ export class TenantAdminService {
       throw new NotFoundException(`Branch ${branchId} not found`);
     }
     // paymentInfo se mergea sobre lo existente (no pisar campos no enviados).
+    // El cast a Prisma.InputJsonValue es necesario porque el DTO trae clases
+    // (BranchWalletDto[]) y Prisma solo tipa objetos JSON planos.
     const paymentInfo =
       dto.paymentInfo !== undefined
-        ? {
+        ? ({
             ...((branch.paymentInfo as Record<string, unknown> | null) ?? {}),
             ...dto.paymentInfo,
-          }
+          } as Prisma.InputJsonValue)
         : undefined;
     return this.prisma.branch.update({
       where: { id: branchId },

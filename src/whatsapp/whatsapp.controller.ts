@@ -20,6 +20,7 @@ import {
   NotifyAppointmentBodyDto,
   SendTestMessageDto,
 } from './dto/notify-appointment.dto';
+import { SendPaymentMethodsDto } from './dto/send-payment-methods.dto';
 
 interface StatusEvent {
   tenantId: string;
@@ -225,6 +226,19 @@ export class WhatsAppController {
   ) {
     const ctx = resolveCtx(tenantId, branchId);
     return this.whatsapp.sendAppointmentConfirmationToCustomer(ctx as any, dto);
+  }
+
+  // Medios de pago al cliente (Bre-B, Nequi, cuenta, QR) desde el WhatsApp del
+  // negocio. Lo usan los tres verticals: el dato vive en la sede.
+  @Post('payment-methods')
+  @HttpCode(HttpStatus.OK)
+  sendPaymentMethods(
+    @Body() dto: SendPaymentMethodsDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+  ) {
+    const ctx = resolveCtx(tenantId, branchId);
+    return this.whatsapp.sendPaymentMethods(ctx as any, dto);
   }
 
   @Post('test')
