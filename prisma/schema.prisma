@@ -2475,11 +2475,17 @@ model RetailPurchaseItem {
   // stockMovementId: Expense es transversal a las verticales y un mismo gasto
   // cubre varias líneas de un pedido conjunto.
   //
+  // Son listas porque un pedido se paga en varios giros: se abona al pedirlo y
+  // se completa al recibirlo, o se amplía y se gira lo nuevo. Cada pago es una
+  // salida de plata con su propia fecha, así que cada uno es un gasto aparte —
+  // meterlos todos en uno solo haría mentir al flujo de caja de ambos días.
+  //
   // Mercancía y envío van separados a propósito: el flete se paga aparte, se
   // conoce después y el negocio quiere verlo como línea propia en Finanzas.
-  // NULL = ese gasto todavía no se registró, que es distinto de "costó cero".
-  expenseId         String?
-  shippingExpenseId String?
+  // Lista vacía = todavía no se registró ningún pago, que es distinto de
+  // "costó cero".
+  expenseIds         String[] @default([])
+  shippingExpenseIds String[] @default([])
 
   @@index([tenantId, branchId, status, deletedAt])
   @@index([tenantId, branchId, createdAt])

@@ -21,6 +21,7 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { RetailPurchasesService } from './retail-purchases.service';
 import {
   CreateRetailPurchaseItemDto,
+  LinkPurchaseExpenseDto,
   ReceiveRetailPurchaseItemDto,
   UpdateRetailPurchaseItemDto,
 } from './dto/retail-purchases.dto';
@@ -79,6 +80,31 @@ export class RetailPurchasesController {
     @Body() dto: UpdateRetailPurchaseItemDto,
   ) {
     return this.purchases.update(ctx, id, dto);
+  }
+
+  /**
+   * Agrega un pago al pedido. Se llama una vez por giro: al abonar y al
+   * completar. No reemplaza los enlaces anteriores.
+   */
+  @Post(':id/expenses')
+  @RequirePermissions('retail:inventory:write')
+  linkExpense(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: LinkPurchaseExpenseDto,
+  ) {
+    return this.purchases.linkExpense(ctx, id, dto);
+  }
+
+  /** Corrige a qué pedido se atribuyó un pago. El gasto sigue en Finanzas. */
+  @Delete(':id/expenses/:expenseId')
+  @RequirePermissions('retail:inventory:write')
+  unlinkExpense(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Param('expenseId') expenseId: string,
+  ) {
+    return this.purchases.unlinkExpense(ctx, id, expenseId);
   }
 
   @Post(':id/ordered')

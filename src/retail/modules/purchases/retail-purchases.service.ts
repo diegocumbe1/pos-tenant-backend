@@ -9,6 +9,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
   CreateRetailPurchaseItemDto,
+  LinkPurchaseExpenseDto,
   ReceiveRetailPurchaseItemDto,
   UpdateRetailPurchaseItemDto,
 } from './dto/retail-purchases.dto';
@@ -155,9 +156,83 @@ export class RetailPurchasesService {
         estimatedCostCOP: dto.estimatedCostCOP,
         note: dto.note === undefined ? undefined : dto.note.trim() || null,
         isUrgent: dto.isUrgent,
-        // Prisma ya distingue null (desenlazar) de undefined (no tocar).
-        expenseId: dto.expenseId,
-        shippingExpenseId: dto.shippingExpenseId,
+      },
+      include: {
+        product: { select: { id: true, name: true, sku: true, stock: true } },
+      },
+    });
+    return this.toDto(item);
+  }
+
+  /**
+   * Enlaza un gasto de Finanzas a este pedido, como un pago más.
+   *
+   * Se agrega, nunca se reemplaza: un pedido se paga en varios giros (se abona
+   * al pedirlo, se completa al recibirlo) y cada giro es una salida de plata
+   * con su propia fecha. Pisar el enlace anterior dejaría el primer gasto
+   * huérfano en Finanzas y haría mentir al flujo de caja de los dos días.
+   *
+   * Idempotente a propósito: el frontend enlaza en paralelo todas las líneas de
+   * un pedido conjunto y reintenta si algo falla; el mismo gasto dos veces no
+   * puede contar doble.
+   */
+  async linkExpense(
+    ctx: TenantContext,
+    id: string,
+    dto: LinkPurchaseExpenseDto,
+  ) {
+    const current = await this.assertOwnItem(ctx, id);
+    const expenseId = dto.expenseId.trim();
+    if (!expenseId) {
+      throw new BadRequestException('El gasto a enlazar no puede ir vacío');
+    }
+
+    const expense = await this.prisma.expense.findUnique({
+      where: { id: expenseId },
+      select: { id: true, tenantId: true, branchId: true },
+    });
+    // Un id de gasto que no existe (o de otra sede) dejaría el pedido diciendo
+    // "pagado" contra algo que nadie puede abrir desde Finanzas.
+    if (
+      !expense ||
+      expense.tenantId !== ctx.tenantId ||
+      expense.branchId !== ctx.branchId
+    ) {
+      throw new NotFoundException(`Expense ${expenseId} not found`);
+    }
+
+    const field =
+      dto.kind === 'SHIPPING' ? 'shippingExpenseIds' : 'expenseIds';
+    if (current[field].includes(expenseId)) {
+      return this.toDto(await this.findWithProduct(id));
+    }
+
+    const item = await this.prisma.retailPurchaseItem.update({
+      where: { id },
+      data: { [field]: { push: expenseId } },
+      include: {
+        product: { select: { id: true, name: true, sku: true, stock: true } },
+      },
+    });
+    return this.toDto(item);
+  }
+
+  /**
+   * Quita el enlace a un gasto. No borra el gasto de Finanzas: la plata salió
+   * igual, lo que se corrige es a qué pedido se le atribuyó.
+   *
+   * Busca en las dos listas porque quien desenlaza está mirando un pago
+   * concreto, no pensando en si fue mercancía o flete.
+   */
+  async unlinkExpense(ctx: TenantContext, id: string, expenseId: string) {
+    const current = await this.assertOwnItem(ctx, id);
+    const item = await this.prisma.retailPurchaseItem.update({
+      where: { id },
+      data: {
+        expenseIds: current.expenseIds.filter((x) => x !== expenseId),
+        shippingExpenseIds: current.shippingExpenseIds.filter(
+          (x) => x !== expenseId,
+        ),
       },
       include: {
         product: { select: { id: true, name: true, sku: true, stock: true } },
@@ -326,6 +401,15 @@ export class RetailPurchasesService {
     return { ok: true };
   }
 
+  private findWithProduct(id: string) {
+    return this.prisma.retailPurchaseItem.findUniqueOrThrow({
+      where: { id },
+      include: {
+        product: { select: { id: true, name: true, sku: true, stock: true } },
+      },
+    });
+  }
+
   private async assertOwnItem(
     ctx: TenantContext,
     id: string,
@@ -382,9 +466,11 @@ export class RetailPurchasesService {
       receivedById: item.receivedById,
       // Deja ver si la entrada al inventario efectivamente se generó.
       stockMovementId: item.stockMovementId,
-      // …y si la plata que salió quedó registrada en Finanzas. null = falta.
-      expenseId: item.expenseId,
-      shippingExpenseId: item.shippingExpenseId,
+      // …y qué pagos quedaron registrados en Finanzas. Un pedido se paga en
+      // varios giros, así que son listas; vacía = falta registrar el pago,
+      // nunca "costó cero".
+      expenseIds: item.expenseIds,
+      shippingExpenseIds: item.shippingExpenseIds,
     };
   }
 
