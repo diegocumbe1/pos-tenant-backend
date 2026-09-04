@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { RetailPurchaseVarianceResolution } from '@prisma/client';
 import {
   IsBoolean,
+  IsEnum,
   IsIn,
   IsInt,
   IsOptional,
@@ -11,6 +13,15 @@ import {
 } from 'class-validator';
 
 export class CreateRetailPurchaseItemDto {
+  @ApiPropertyOptional({
+    description:
+      'Ficha del proveedor. Si se omite y viene `supplier`, se busca por ' +
+      'nombre y se crea la ficha si no existe.',
+  })
+  @IsOptional()
+  @IsString()
+  supplierId?: string;
+
   @ApiProperty({ example: 'Pijamas beige talla M' })
   @IsString()
   @MinLength(1)
@@ -134,4 +145,58 @@ export class ReceiveRetailPurchaseItemDto {
   @IsString()
   @MaxLength(80)
   reference?: string;
+
+  @ApiPropertyOptional({
+    example: 12,
+    description:
+      'Cuántas de las que llegaron DE MÁS se van a pagar. El resto se toma ' +
+      'como error del proveedor: entran al inventario con costo 0, en su propio ' +
+      'movimiento de kardex, y no generan deuda. Omitirlo = se pagan todas, que ' +
+      'era el comportamiento anterior. Va como cantidad y no como un sí/no ' +
+      'porque el reparto real no es todo-o-nada: de 16 de más se pueden acordar ' +
+      '12 y dejar 4 como error.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  overagePaidQty?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Qué pasó, cuando llegó una cantidad distinta a la pedida. Solo se ' +
+      'guarda si hay diferencia.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  varianceNote?: string;
+}
+
+/** Cierra la línea con lo que haya llegado: "no llega más". */
+export class CloseRetailPurchaseItemDto {
+  @ApiPropertyOptional({ example: 'El proveedor confirmó que no repone' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}
+
+/**
+ * En qué queda un faltante o un sobrante.
+ *
+ * Va aparte de recibir a propósito: al descargar las cajas todavía no se sabe si
+ * el proveedor va a reponer, descontar o nada. Se resuelve después, cuando el
+ * proveedor contesta, y hasta entonces la línea queda en PENDING — que es lo que
+ * hace que aparezca como cuenta abierta.
+ */
+export class ResolveRetailPurchaseVarianceDto {
+  @ApiProperty({ enum: RetailPurchaseVarianceResolution, example: 'REORDERED' })
+  @IsEnum(RetailPurchaseVarianceResolution)
+  resolution!: RetailPurchaseVarianceResolution;
+
+  @ApiPropertyOptional({ example: 'Lo reponen en el pedido de octubre' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
 }

@@ -252,8 +252,14 @@ export class RetailCatalogService {
           options,
         });
 
-        // El stock inicial entra al kardex: el inventario nunca cambia sin rastro.
+        // El stock inicial entra al kardex: el inventario nunca cambia sin
+        // rastro. Y establece el promedio: es la primera —y por ahora única—
+        // entrada, así que el promedio ES el costo con el que se cargó.
         if (initialStock > 0) {
+          await tx.retailProduct.update({
+            where: { id: created.id },
+            data: { avgCostCOP: created.costCOP },
+          });
           await tx.retailStockMovement.create({
             data: {
               tenantId: ctx.tenantId,
@@ -474,6 +480,11 @@ export class RetailCatalogService {
       brand: product.brand,
       description: product.description,
       costCOP: product.costCOP,
+      /**
+       * Costo promedio de lo que hay. Es el que se usa al medir la utilidad;
+       * `costCOP` es lo que cuesta reponer y es el que manda al poner precios.
+       */
+      avgCostCOP: product.avgCostCOP,
       priceCOP: product.priceCOP,
       marginCOP: margin,
       // Margen real derivado del precio guardado (no del % sugerido): si el

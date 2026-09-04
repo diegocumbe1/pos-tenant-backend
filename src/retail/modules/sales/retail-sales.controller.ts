@@ -28,6 +28,8 @@ import {
   PayRetailSaleDto,
   VoidRetailSaleDto,
 } from './dto/retail-sale.dto';
+import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
+import { RetailSaleReturnsService } from './retail-sale-returns.service';
 import { RetailSalesService } from './retail-sales.service';
 
 /**
@@ -55,7 +57,10 @@ function parsePaymentStatus(value?: string): RetailPaymentStatus | undefined {
 @UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard, PermissionsGuard)
 @Controller('retail/sales')
 export class RetailSalesController {
-  constructor(private readonly sales: RetailSalesService) {}
+  constructor(
+    private readonly sales: RetailSalesService,
+    private readonly returns: RetailSaleReturnsService,
+  ) {}
 
   @Get()
   @RequirePermissions('retail:sales:read')
@@ -73,11 +78,19 @@ export class RetailSalesController {
     required: false,
     enum: RetailPaymentStatus,
   })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description:
+      'Código de la venta, nombre o teléfono del cliente, o nombre de un ' +
+      'producto. "23", "rs-23" y "RS-000023" encuentran lo mismo.',
+  })
   list(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('limit') limit?: string,
+    @Query('search') search?: string,
     @Query('saleType') saleType?: RetailSaleType,
     @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
     @Query('paymentStatus') paymentStatus?: RetailPaymentStatus,
@@ -89,6 +102,7 @@ export class RetailSalesController {
       saleType: parseSaleType(saleType),
       deliveryStatus: parseDeliveryStatus(deliveryStatus),
       paymentStatus: parsePaymentStatus(paymentStatus),
+      search,
     });
   }
 
@@ -144,6 +158,27 @@ export class RetailSalesController {
    * Va con escritura de ventas: recibir la plata de un fiado es trabajo de
    * mostrador, no una corrección reservada al admin.
    */
+  /**
+   * Las devoluciones de una venta. Van en el detalle: sin ellas, una venta con
+   * mercancía devuelta se ve igual que una intacta.
+   */
+  @Get(':id/returns')
+  @RequirePermissions('retail:sales:read')
+  listReturns(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.returns.listBySale(ctx, id);
+  }
+
+  /** Devolución o cambio. NO anula la venta: es un hecho nuevo, de otro día. */
+  @Post(':id/returns')
+  @RequirePermissions('retail:sales:write')
+  createReturn(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CreateRetailSaleReturnDto,
+  ) {
+    return this.returns.create(ctx, id, dto);
+  }
+
   @Post(':id/pay')
   @RequirePermissions('retail:sales:write')
   pay(

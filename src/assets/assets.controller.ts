@@ -54,12 +54,23 @@ export class AssetsController {
           type: 'string',
           format: 'binary',
           description:
-            'Images for menu/product/payment QR, or application/pdf only for payment-qr (Nu/Bre-B PDF).',
+            'Images for menu/product/payment QR/shipment support, or ' +
+            'application/pdf for payment-qr (Nu/Bre-B) and shipment-support ' +
+            '(guía de la transportadora).',
         },
-        scope: { type: 'string', enum: ['menu', 'product', 'payment'] },
+        scope: {
+          type: 'string',
+          enum: ['menu', 'product', 'payment', 'shipment'],
+        },
         kind: {
           type: 'string',
-          enum: ['logo', 'banner', 'product-image', 'payment-qr'],
+          enum: [
+            'logo',
+            'banner',
+            'product-image',
+            'payment-qr',
+            'shipment-support',
+          ],
         },
         entityId: { type: 'string' },
       },

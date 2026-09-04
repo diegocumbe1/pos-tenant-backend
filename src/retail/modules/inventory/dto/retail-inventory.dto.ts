@@ -106,6 +106,19 @@ export class VariantDistributionItemDto {
   stock!: number;
 
   @ApiPropertyOptional({
+    example: 1,
+    description:
+      'Lo que el cliente creía que había cuando calculó `stock`. Si no ' +
+      'coincide con lo que hay ahora, el reparto se rechaza (409) en vez de ' +
+      'pisar un cambio hecho desde otro lado. Es lo que permite que la pantalla ' +
+      'ofrezca "sumar lo que llegó" sin arriesgarse a sobrescribir.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  expectedStock?: number;
+
+  @ApiPropertyOptional({
     example: 2,
     description: 'Alerta de stock bajo propia',
   })

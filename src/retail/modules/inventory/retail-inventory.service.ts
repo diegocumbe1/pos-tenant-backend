@@ -2,6 +2,10 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
+import {
+  costingCostCOP,
+  weightedAverageCost,
+} from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import { setVariantDistribution } from '../../shared/retail-product-variants';
 import {
@@ -65,6 +69,7 @@ export class RetailInventoryService {
         stock: true,
         minStock: true,
         costCOP: true,
+        avgCostCOP: true,
         priceCOP: true,
       },
     });
@@ -81,7 +86,9 @@ export class RetailInventoryService {
     }> = [];
 
     for (const product of products) {
-      stockValueAtCostCOP += product.stock * product.costCOP;
+      // Al PROMEDIO y no al costo de reposición: el inventario vale lo que se
+      // pagó por lo que hay, no lo que costaría volver a comprarlo.
+      stockValueAtCostCOP += product.stock * costingCostCOP(product);
       stockValueAtPriceCOP += product.stock * product.priceCOP;
       totalUnits += product.stock;
       if (product.stock <= product.minStock) {
@@ -126,6 +133,7 @@ export class RetailInventoryService {
           trackStock: true,
           name: true,
           costCOP: true,
+          avgCostCOP: true,
           stockOptionId: true,
         },
       });
@@ -196,7 +204,21 @@ export class RetailInventoryService {
         where: { id: dto.productId },
         data: {
           stock: stockAfter,
-          // Una compra con costo declarado actualiza el costo de referencia.
+          // Solo las ENTRADAS mueven el promedio, y solo si vienen con costo:
+          // un ajuste por conteo que suma unidades sin decir a cuánto entraron
+          // no aporta información de costo, así que el promedio se queda igual
+          // y esas unidades quedan valoradas al promedio vigente.
+          ...(dto.quantity > 0 && dto.unitCostCOP !== undefined
+            ? {
+                avgCostCOP: weightedAverageCost({
+                  stockBefore: product.stock,
+                  avgCostBefore: product.avgCostCOP ?? product.costCOP,
+                  quantity: dto.quantity,
+                  unitCostCOP: dto.unitCostCOP,
+                }),
+              }
+            : {}),
+          // Una compra con costo declarado actualiza el costo de reposición.
           ...(dto.type === 'PURCHASE' && dto.unitCostCOP !== undefined
             ? { costCOP: dto.unitCostCOP }
             : {}),

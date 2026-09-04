@@ -55,17 +55,25 @@ interface CogsAccumulator {
 }
 type DashboardBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: {
-    service: { select: { id: true; name: true; priceCOP: true; costCOP: true } };
+    service: {
+      select: { id: true; name: true; priceCOP: true; costCOP: true };
+    };
   };
 }>;
+/**
+ * Una devolución con sus líneas: hace falta el detalle para poder sacar el costo
+ * de lo que volvió y de lo que se llevó, que van en sentidos opuestos.
+ */
+type DashboardRetailReturn = Prisma.RetailSaleReturnGetPayload<{
+  include: { items: true };
+}>;
+
 type DashboardRetailSale = Prisma.RetailSaleGetPayload<{
   include: { items: true };
 }>;
 type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: { service: { select: { priceCOP: true } } };
 }>;
-
-
 
 @Injectable()
 export class FinanceService {
@@ -74,11 +82,12 @@ export class FinanceService {
   async dashboard(ctx: TenantContext, query: PeriodQueryDto) {
     const range = this.resolveRange(query);
     const vertical = await this.resolveTenantVertical(ctx);
-    const includeRestaurant = vertical === 'restaurant' || vertical === 'unknown';
+    const includeRestaurant =
+      vertical === 'restaurant' || vertical === 'unknown';
     const includeBarber = vertical === 'barber' || vertical === 'unknown';
     const includeRetail = vertical === 'retail' || vertical === 'unknown';
 
-    const [splits, expenses, barberAppointments, retailSales] =
+    const [splits, expenses, barberAppointments, retailSales, retailReturns] =
       await Promise.all([
         includeRestaurant
           ? this.prisma.paymentSplit.findMany({
@@ -111,7 +120,12 @@ export class FinanceService {
               },
               include: {
                 service: {
-                  select: { id: true, name: true, priceCOP: true, costCOP: true },
+                  select: {
+                    id: true,
+                    name: true,
+                    priceCOP: true,
+                    costCOP: true,
+                  },
                 },
               },
             })
@@ -127,6 +141,20 @@ export class FinanceService {
               include: { items: true },
             })
           : Promise.resolve([] as DashboardRetailSale[]),
+        // Las devoluciones del período. Restan el día en que OCURREN, no el de
+        // la venta: la venta del 2 de septiembre queda como fue y la devolución
+        // del 5 pesa en el 5. Es lo coherente con la base caja del resto del
+        // módulo — la plata sale el 5.
+        includeRetail
+          ? this.prisma.retailSaleReturn.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                returnedAt: { gte: range.from, lte: range.to },
+              },
+              include: { items: true },
+            })
+          : Promise.resolve([] as DashboardRetailReturn[]),
       ]);
 
     // El precio congelado en la cita manda sobre el del catálogo: reprecio o
@@ -137,10 +165,21 @@ export class FinanceService {
       0,
     );
 
-    const retailRevenue = retailSales.reduce(
-      (acc, sale) => acc + sale.totalCOP,
+    // VENTAS NETAS. Lo devuelto resta y lo que el cliente se llevó a cambio
+    // suma, así que un cambio parejo da cero y un cambio por algo más caro suma
+    // la diferencia. Sin esto, los ingresos quedan inflados en cuanto empiece a
+    // haber devoluciones: la venta original sigue contada entera.
+    //
+    // Lo que se lleva a cambio NO crea una venta nueva. Si algún día se decide
+    // que sí, hay que quitar `replacedCOP` de acá o se contaría dos veces.
+    const retailReturnsImpactCOP = retailReturns.reduce(
+      (acc, row) => acc + (row.replacedCOP - row.returnedCOP),
       0,
     );
+
+    const retailRevenue =
+      retailSales.reduce((acc, sale) => acc + sale.totalCOP, 0) +
+      retailReturnsImpactCOP;
 
     const revenue =
       splits.reduce((acc, s) => acc + s.totalCOP, 0) +
@@ -150,7 +189,23 @@ export class FinanceService {
 
     // ── Costo de lo vendido ────────────────────────────────────────────────
     const cogs = this.accumulateCogs(splits, barberAppointments, retailSales);
-    const cogsCOP = cogs.cogsCOP;
+    // El costo sigue al ingreso: el de lo devuelto sale del COGS y el de lo que
+    // el cliente se llevó entra. Si no, una devolución bajaría el ingreso
+    // dejando su costo adentro y la utilidad del período saldría hundida.
+    const returnsCogsCOP = retailReturns.reduce(
+      (acc, row) =>
+        acc +
+        row.items.reduce(
+          (sum, item) =>
+            sum +
+            item.unitCostCOP *
+              item.quantity *
+              (item.direction === 'IN' ? -1 : 1),
+          0,
+        ),
+      0,
+    );
+    const cogsCOP = cogs.cogsCOP + returnsCogsCOP;
     const grossProfitCOP = revenue - cogsCOP;
     const grossMarginPct =
       revenue > 0 ? Math.round((grossProfitCOP / revenue) * 1000) / 10 : 0;
@@ -706,7 +761,8 @@ export class FinanceService {
     to: Date,
     vertical: FinanceVertical = 'unknown',
   ): Promise<number> {
-    const includeRestaurant = vertical === 'restaurant' || vertical === 'unknown';
+    const includeRestaurant =
+      vertical === 'restaurant' || vertical === 'unknown';
     const includeBarber = vertical === 'barber' || vertical === 'unknown';
     const includeRetail = vertical === 'retail' || vertical === 'unknown';
 
@@ -770,7 +826,9 @@ export class FinanceService {
     return agg._sum.amountCOP ?? 0;
   }
 
-  private async resolveTenantVertical(ctx: TenantContext): Promise<FinanceVertical> {
+  private async resolveTenantVertical(
+    ctx: TenantContext,
+  ): Promise<FinanceVertical> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: ctx.tenantId },
       select: { vertical: { select: { code: true } } },

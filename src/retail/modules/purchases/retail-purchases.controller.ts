@@ -22,7 +22,9 @@ import { RetailPurchasesService } from './retail-purchases.service';
 import {
   CreateRetailPurchaseItemDto,
   LinkPurchaseExpenseDto,
+  CloseRetailPurchaseItemDto,
   ReceiveRetailPurchaseItemDto,
+  ResolveRetailPurchaseVarianceDto,
   UpdateRetailPurchaseItemDto,
 } from './dto/retail-purchases.dto';
 
@@ -127,6 +129,33 @@ export class RetailPurchasesController {
     @Body() dto: ReceiveRetailPurchaseItemDto,
   ) {
     return this.purchases.receive(ctx, id, dto);
+  }
+
+  /**
+   * "No llega más": cierra la línea con lo que haya llegado.
+   *
+   * Es lo que convierte un faltante en reclamo. Antes de cerrar, a una línea
+   * incompleta todavía le puede llegar mercancía.
+   */
+  @Post(':id/close')
+  @RequirePermissions('retail:inventory:write')
+  close(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CloseRetailPurchaseItemDto,
+  ) {
+    return this.purchases.closeLine(ctx, id, dto.note);
+  }
+
+  /** En qué queda un faltante o un sobrante frente al proveedor. */
+  @Post(':id/variance')
+  @RequirePermissions('retail:inventory:write')
+  resolveVariance(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: ResolveRetailPurchaseVarianceDto,
+  ) {
+    return this.purchases.resolveVariance(ctx, id, dto);
   }
 
   @Post(':id/cancel')

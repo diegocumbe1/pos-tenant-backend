@@ -78,10 +78,7 @@ export class FinanceController {
   }
 
   @Get('goals')
-  goals(
-    @CurrentTenant() ctx: TenantContext,
-    @Query() query: PeriodQueryDto,
-  ) {
+  goals(@CurrentTenant() ctx: TenantContext, @Query() query: PeriodQueryDto) {
     return this.financeService.goals(ctx, query);
   }
 
@@ -108,10 +105,7 @@ export class FinanceController {
 
   @Delete('expenses/:id')
   @RequirePermissions('restaurant:finance:write')
-  removeExpense(
-    @CurrentTenant() ctx: TenantContext,
-    @Param('id') id: string,
-  ) {
+  removeExpense(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.financeService.removeExpense(ctx, id);
   }
 
@@ -138,10 +132,7 @@ export class FinanceController {
 
   @Delete('payroll/:id')
   @RequirePermissions('restaurant:finance:write')
-  removePayroll(
-    @CurrentTenant() ctx: TenantContext,
-    @Param('id') id: string,
-  ) {
+  removePayroll(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.financeService.removePayroll(ctx, id);
   }
 
@@ -168,10 +159,7 @@ export class FinanceController {
 
   @Delete('goals/:id')
   @RequirePermissions('restaurant:finance:write')
-  removeGoal(
-    @CurrentTenant() ctx: TenantContext,
-    @Param('id') id: string,
-  ) {
+  removeGoal(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.financeService.removeGoal(ctx, id);
   }
 }

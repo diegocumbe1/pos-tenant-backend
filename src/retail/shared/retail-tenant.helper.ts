@@ -10,7 +10,9 @@ export type RetailScopedModel =
   | 'retailCategory'
   | 'retailProduct'
   | 'retailCustomer'
-  | 'retailSale';
+  | 'retailSale'
+  | 'retailShipment'
+  | 'retailSupplier';
 
 /**
  * Guarda de aislamiento del vertical retail: ningún endpoint de /retail/* puede
@@ -58,6 +60,10 @@ export class RetailTenantHelper {
         return this.prisma.retailCustomer.findUnique({ where: { id }, select });
       case 'retailSale':
         return this.prisma.retailSale.findUnique({ where: { id }, select });
+      case 'retailShipment':
+        return this.prisma.retailShipment.findUnique({ where: { id }, select });
+      case 'retailSupplier':
+        return this.prisma.retailSupplier.findUnique({ where: { id }, select });
     }
   }
 }

@@ -1,5 +1,12 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { IsIn, IsInt, IsOptional, IsPositive, Matches, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsPositive,
+  Matches,
+  Min,
+} from 'class-validator';
 
 export const GOAL_METRICS = ['revenue', 'profit'] as const;
 export const GOAL_PERIOD_TYPES = ['MONTHLY', 'WEEKLY', 'BIWEEKLY'] as const;

@@ -17,7 +17,7 @@
  * aroma, y se reporta como pendiente en vez de inventarse un reparto.
  */
 
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { RetailProductOption } from './retail-product-options';
 
@@ -169,6 +169,20 @@ export async function setVariantDistribution(
       optionValueId?: string;
       stock: number;
       minStock?: number;
+      /**
+       * Lo que el cliente creía que había cuando calculó `stock`.
+       *
+       * ES LO QUE HACE SEGURO MANDAR UN ABSOLUTO. La pantalla suma "lo que
+       * llegó" sobre lo que tenía cargado, así que manda un total calculado
+       * contra una foto que puede estar vieja: si entre medias entró mercancía
+       * por un pedido, o alguien repartió desde otro equipo, ese total pisaría
+       * el cambio ajeno sin que nadie se entere. Con esto el servidor compara
+       * contra lo que hay de verdad y rechaza en vez de sobrescribir.
+       *
+       * Omitirlo mantiene el comportamiento de antes (pisar), que es lo que
+       * necesita quien de verdad quiere fijar un conteo pase lo que pase.
+       */
+      expectedStock?: number;
     }>;
   },
 ): Promise<void> {
@@ -204,6 +218,12 @@ export async function setVariantDistribution(
     if (item.stock < 0) {
       throw new BadRequestException(
         `El conteo de "${row.label}" no puede ser negativo`,
+      );
+    }
+    if (item.expectedStock !== undefined && item.expectedStock !== row.stock) {
+      throw new ConflictException(
+        `"${row.label}" cambió mientras editabas: tenías ${item.expectedStock} y ahora hay ${row.stock}. ` +
+          `Vuelve a abrir el reparto para no pisar lo que se movió.`,
       );
     }
     return { row, stock: item.stock, minStock: item.minStock };

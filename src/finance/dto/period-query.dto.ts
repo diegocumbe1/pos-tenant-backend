@@ -10,13 +10,17 @@ export class PeriodQueryDto {
   @IsIn(PERIODS as unknown as string[])
   period?: Period;
 
-  @ApiPropertyOptional({ description: 'Timestamp ms (required if period=custom)' })
+  @ApiPropertyOptional({
+    description: 'Timestamp ms (required if period=custom)',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()
   dateFrom?: number;
 
-  @ApiPropertyOptional({ description: 'Timestamp ms (required if period=custom)' })
+  @ApiPropertyOptional({
+    description: 'Timestamp ms (required if period=custom)',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()

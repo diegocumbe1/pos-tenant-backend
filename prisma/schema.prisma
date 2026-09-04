@@ -2092,7 +2092,22 @@ model RetailProduct {
   description         String?
   // Costo de compra y precio de venta. El precio escrito es la fuente de verdad;
   // los % se guardan para poder recalcular y para el piso de negociación.
+  //
+  // DOS COSTOS, DOS TRABAJOS. Hasta 2026-09 `costCOP` hacía tres a la vez —base
+  // del precio, costo de la venta y valor del inventario— y eso solo funciona
+  // mientras todo se compre al mismo precio. Entra mercancía a otro costo (un
+  // sobrante que el proveedor mandó gratis, una compra más cara) y los tres
+  // dejan de coincidir. Ver `shared/retail-costing.ts`.
+  //
+  // COSTO DE REPOSICIÓN: lo que cuesta traer otra. Manda en la calculadora de
+  // precios, porque para decidir a cuánto vender importa lo que costará
+  // reemplazarla, no lo que costó la que está en el estante.
   costCOP             Int            @default(0)
+  // COSTO PROMEDIO PONDERADO de lo que hay en bodega. Manda al medir la utilidad
+  // y al valorar el inventario. Solo lo mueven las ENTRADAS: vender no cambia lo
+  // que costó lo que queda. NULL = todavía sin calcular (productos anteriores al
+  // cambio), y ahí se cae a `costCOP`.
+  avgCostCOP          Int?
   priceCOP            Int
   // % de ganancia sobre el precio con el que se sugirió `priceCOP`.
   saleMarginPct       Float?
@@ -2141,10 +2156,11 @@ model RetailProduct {
   updatedAt           DateTime       @updatedAt
   deletedAt           DateTime?
 
-  movements     RetailStockMovement[]
-  saleItems     RetailSaleItem[]
-  purchaseItems RetailPurchaseItem[]
-  variants      RetailProductVariant[]
+  movements             RetailStockMovement[]
+  saleItems             RetailSaleItem[]
+  purchaseItems         RetailPurchaseItem[]
+  variants              RetailProductVariant[]
+  retailSaleReturnItems RetailSaleReturnItem[]
 
   @@unique([tenantId, branchId, sku])
   @@index([tenantId, branchId, deletedAt])
@@ -2183,9 +2199,10 @@ model RetailProductVariant {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  movements  RetailStockMovement[]
-  saleItems  RetailSaleItem[]
-  deliveries RetailSaleDelivery[]
+  movements             RetailStockMovement[]
+  saleItems             RetailSaleItem[]
+  deliveries            RetailSaleDelivery[]
+  retailSaleReturnItems RetailSaleReturnItem[]
 
   @@unique([productId, optionValueId])
   @@index([tenantId, branchId])
@@ -2249,7 +2266,8 @@ model RetailCustomer {
   updatedAt      DateTime  @updatedAt
   deletedAt      DateTime?
 
-  sales RetailSale[]
+  sales     RetailSale[]
+  shipments RetailShipment[]
 
   @@unique([tenantId, phone])
   @@index([tenantId, branchId, deletedAt])
@@ -2339,8 +2357,10 @@ model RetailSale {
   voidedReason   String?
   createdAt      DateTime             @default(now())
 
-  items      RetailSaleItem[]
-  deliveries RetailSaleDelivery[]
+  items             RetailSaleItem[]
+  deliveries        RetailSaleDelivery[]
+  shipments         RetailShipmentSale[]
+  retailSaleReturns RetailSaleReturn[]
 
   @@unique([tenantId, code])
   @@index([tenantId, branchId, soldAt])
@@ -2381,10 +2401,264 @@ model RetailSaleDelivery {
   note        String?
   userId      String?
   deliveredAt DateTime              @default(now())
+  // Paquete en el que salió, cuando la entrega se hizo despachando un envío.
+  // NULL = se entregó en el mostrador, una venta a la vez. Es lo que permite
+  // decir "este paquete llevó 4 de las 10 unidades" cuando una misma venta se
+  // despacha en varios envíos.
+  shipmentId  String?
+  shipment    RetailShipment?       @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
   @@index([saleId])
   @@index([tenantId, branchId, deliveredAt])
+  @@index([shipmentId])
   @@map("retail_sale_deliveries")
+}
+
+/**
+ * En qué punto va el paquete.
+ * DRAFT es el paquete abierto sobre la mesa: se le van metiendo ventas y todavía
+ * no salió nada de la tienda. SENT es el momento en que se despacha, y es el
+ * único que mueve inventario. DELIVERED lo confirma el cliente al recibir.
+ */
+enum RetailShipmentStatus {
+  DRAFT
+  SENT
+  DELIVERED
+  CANCELLED
+}
+
+enum RetailShipmentAttachmentKind {
+  IMAGE
+  PDF
+}
+
+/**
+ * Un paquete: una o varias ventas que salen juntas hacia el mismo destino.
+ * POR QUÉ NO ES UN CAMPO DE `RetailSale`. Un mayorista pide hoy, vuelve a pedir
+ * el jueves y las dos cosas viajan en la misma caja con una sola guía. Ese costo
+ * de envío es del paquete, no de ninguna de las dos ventas, y repartirlo entre
+ * ellas sería inventar números. Por eso el envío es su propia entidad y las
+ * ventas se le cuelgan.
+ * DOS PLATAS DISTINTAS. `shippingCostCOP` es lo que cuesta la guía y
+ * `shippingChargedCOP` lo que se le cobra al cliente por ella. Lo normal es que
+ * sean el mismo número —el flete se traslada tal cual— y por eso el cobro se
+ * copia del costo cuando no se escribe. Se separan porque el caso que importa es
+ * el otro: el envío que se regala (0) o el que se cobra más caro. La diferencia
+ * entre los dos es lo que la tienda lleva puesto en envíos, y con un solo campo
+ * no se podría saber.
+ * NO TOCA FINANZAS. Igual que las compras a proveedor, el envío no crea ingreso
+ * ni gasto por su cuenta: queda registrado en el paquete y el movimiento lo
+ * encadena quien corresponda. La venta ya se contó cuando se cobró.
+ */
+model RetailShipment {
+  id       String               @id @default(cuid())
+  tenantId String
+  branchId String
+  // Consecutivo legible por tienda (EN-000001), como el de las ventas.
+  code     String
+  status   RetailShipmentStatus @default(DRAFT)
+
+  // El destinatario sale de las ventas agrupadas, pero se copia acá porque un
+  // envío puede ir a una dirección distinta a la del cliente (una encomienda a
+  // otra ciudad, la casa de un familiar) y porque las ventas de mostrador no
+  // siempre tienen cliente registrado.
+  customerId     String?
+  customer       RetailCustomer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  recipientName  String?
+  recipientPhone String?
+  address        String?
+  // Transportadora y número de guía, tal como los da la empresa de envíos.
+  carrier        String?
+  trackingCode   String?
+
+  // Lo que cuesta la guía.
+  shippingCostCOP    Int @default(0)
+  // Lo que se le cobra al cliente por el envío. 0 = envío regalado.
+  shippingChargedCOP Int @default(0)
+
+  note        String?
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  cancelledAt DateTime?
+  userId      String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sales       RetailShipmentSale[]
+  attachments RetailShipmentAttachment[]
+  // Lo que este paquete llevó de verdad, línea por línea. Es la traza fina:
+  // una venta puede repartirse entre varios envíos.
+  deliveries  RetailSaleDelivery[]
+
+  @@unique([tenantId, code])
+  // La bandeja de envíos siempre filtra por estado dentro de la sede.
+  @@index([tenantId, branchId, status, createdAt])
+  @@index([customerId])
+  @@map("retail_shipments")
+}
+
+/**
+ * Una venta dentro de un paquete.
+ * Sin `@@unique` sobre `saleId` a propósito: la regla real es "una venta no
+ * puede estar en dos paquetes SIN DESPACHAR a la vez". Una misma venta sí puede
+ * pasar por varios envíos a lo largo del tiempo —se despachan 4 unidades hoy y
+ * las otras 6 en otra caja la semana entrante—, y un envío cancelado tiene que
+ * dejar volver a despachar esa venta. Esa condición no se puede expresar en un
+ * índice, así que la valida el servicio.
+ */
+model RetailShipmentSale {
+  id         String         @id @default(cuid())
+  shipmentId String
+  shipment   RetailShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  saleId     String
+  sale       RetailSale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  addedAt    DateTime       @default(now())
+
+  @@unique([shipmentId, saleId])
+  @@index([saleId])
+  @@map("retail_shipment_sales")
+}
+
+/**
+ * Un soporte del envío: la foto de la guía, el comprobante del pago del flete,
+ * la foto del paquete armado antes de cerrarlo.
+ * `path` guarda la ruta dentro del bucket además de la URL pública: sin ella no
+ * se puede borrar el archivo cuando se quita el soporte.
+ */
+model RetailShipmentAttachment {
+  id          String                       @id @default(cuid())
+  shipmentId  String
+  shipment    RetailShipment               @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  kind        RetailShipmentAttachmentKind
+  url         String
+  path        String?
+  name        String?
+  sizeBytes   Int?
+  // Qué es lo que se está viendo. Opcional: una foto de la guía se explica sola.
+  description String?
+  userId      String?
+  uploadedAt  DateTime                     @default(now())
+
+  @@index([shipmentId])
+  @@map("retail_shipment_attachments")
+}
+
+/**
+ * Qué fue la operación, vista desde el cliente.
+ * Comparten tabla porque son la misma mecánica —entra mercancía, puede salir
+ * otra, y la diferencia se salda— y se distinguen porque el negocio las nombra
+ * distinto: en un reporte no es lo mismo "me devolvieron" que "cambiaron de
+ * aroma".
+ */
+enum RetailSaleReturnKind {
+  REFUND // devuelve mercancía y no se lleva nada
+  EXCHANGE // devuelve y se lleva otra cosa
+}
+
+/**
+ * En qué quedó la diferencia de plata.
+ * `balanceCOP` positivo = a favor del cliente (devolvió más de lo que se llevó).
+ * Negativo = el cliente debe la diferencia.
+ */
+enum RetailReturnSettlement {
+  NONE // cambio parejo: no hubo diferencia
+  REFUNDED // se le devolvió la plata: sale de caja hoy
+  CHARGED // pagó la diferencia: entra a caja hoy
+  PENDING_REFUND // se le queda debiendo el excedente
+  PENDING_CHARGE // queda debiendo la diferencia
+  WAIVED // el excedente no se devuelve y no se reclama
+}
+
+/**
+ * Hacia dónde se mueve una línea de la devolución.
+ */
+enum RetailReturnDirection {
+  IN // vuelve a la tienda
+  OUT // se lo lleva el cliente a cambio
+}
+
+/**
+ * Una devolución o un cambio del cliente.
+ * POR QUÉ NO ES ANULAR LA VENTA. Anular dice "esa venta nunca debió existir" y
+ * la borra del día en que se vendió; sirve para un error de digitación. Una
+ * devolución es un hecho NUEVO, de otro día, sobre una venta que SÍ ocurrió: se
+ * vendió el 2 de septiembre y el 5 devolvieron 2 de las 6. Con anular, el
+ * histórico mentiría hacia atrás — la venta del 2 desaparecería porque el 5
+ * pasó algo. Y anular tampoco sabe de devoluciones parciales ni de cambios.
+ * TODO CABE EN UN SOLO OBJETO. Cambiar un aroma por otro, cambiar por algo más
+ * caro pagando la diferencia, o devolver y que le regresen la plata, son la
+ * misma operación con la diferencia en cero, negativa o positiva. Tres modelos
+ * distintos serían tres caminos que hacen lo mismo y que se irían separando.
+ * LA MERCANCÍA SIEMPRE VUELVE AL INVENTARIO. Si llegó dañada se da de baja
+ * después, con un ajuste desde Inventario que deja su propio motivo. Son dos
+ * hechos distintos —el cliente devolvió, y la tienda perdió una unidad— y
+ * conviene poder mirarlos por separado.
+ */
+model RetailSaleReturn {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+  /// Consecutivo legible por tienda (DEV-000001), como RS- y EN-.
+  code     String
+
+  /// La venta original, que NO se toca: sigue contando en su propio día.
+  saleId     String
+  sale       RetailSale           @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  customerId String?
+  kind       RetailSaleReturnKind
+
+  /// Valor de lo que el cliente devolvió, al precio de la venta original.
+  returnedCOP   Int                    @default(0)
+  /// Valor de lo que se llevó a cambio, al precio de hoy.
+  replacedCOP   Int                    @default(0)
+  /// `returnedCOP − replacedCOP`. Positivo = a favor del cliente.
+  balanceCOP    Int                    @default(0)
+  settlement    RetailReturnSettlement @default(NONE)
+  /// Con qué se movió la plata, cuando se movió.
+  paymentMethod RetailPaymentMethod?
+
+  /// Por qué lo devolvió. Es el dato que explica todo lo demás.
+  reason     String?
+  note       String?
+  returnedAt DateTime @default(now())
+  userId     String?
+  createdAt  DateTime @default(now())
+
+  items RetailSaleReturnItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, branchId, returnedAt])
+  @@index([saleId])
+  @@map("retail_sale_returns")
+}
+
+model RetailSaleReturnItem {
+  id        String                @id @default(cuid())
+  returnId  String
+  return    RetailSaleReturn      @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  direction RetailReturnDirection
+
+  /// De qué línea de la venta viene. Solo en las que VUELVEN: lo que se lleva a
+  /// cambio no existía en la venta original.
+  saleItemId String?
+  saleItem   RetailSaleItem? @relation(fields: [saleItemId], references: [id], onDelete: SetNull)
+
+  productId String
+  product   RetailProduct         @relation(fields: [productId], references: [id])
+  variantId String?
+  variant   RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  /// Snapshot: el documento no debe cambiar si luego renombran el producto.
+  name         String
+  variantLabel String?
+  quantity     Int
+  unitPriceCOP Int
+  /// Con el que la mercancía vuelve al inventario, o sale de él.
+  unitCostCOP  Int     @default(0)
+
+  @@index([returnId])
+  @@index([saleItemId])
+  @@map("retail_sale_return_items")
 }
 
 model RetailSaleItem {
@@ -2406,12 +2680,16 @@ model RetailSaleItem {
   // Cuántas de `quantity` ya salieron físicamente. Igual a `quantity` en una
   // venta de mostrador normal; menor mientras haya entrega pendiente.
   deliveredQty Int                   @default(0)
+  // Cuántas devolvió el cliente. Es el tope de lo que se puede devolver
+  // después: sin esto se podrían devolver 6 de una venta de 6 tres veces.
+  returnedQty  Int                   @default(0)
   unitPriceCOP Int
   unitCostCOP  Int                   @default(0)
   discountCOP  Int                   @default(0)
   totalCOP     Int
 
-  deliveries RetailSaleDelivery[]
+  deliveries            RetailSaleDelivery[]
+  retailSaleReturnItems RetailSaleReturnItem[]
 
   @@index([saleId])
   @@index([productId])
@@ -2421,8 +2699,28 @@ model RetailSaleItem {
 enum RetailPurchaseStatus {
   PENDING // apuntado: falta pedirlo al proveedor
   ORDERED // ya se hizo el pedido, se espera que llegue
-  RECEIVED // llegó a la tienda
+  // Llegó una parte y puede seguir llegando. NO es un faltante: es mercancía en
+  // tránsito. La distinción importa porque un faltante es un reclamo al
+  // proveedor y esto todavía no lo es.
+  PARTIALLY_RECEIVED
+  RECEIVED // se cerró: no llega más, haya llegado todo o no
   CANCELLED // ya no se va a pedir
+}
+
+/**
+ * En qué queda la diferencia entre lo pedido y lo recibido.
+ * No basta con saber que faltaron 12 unidades: lo que el negocio necesita saber
+ * es si eso sigue siendo una cuenta abierta. Un faltante que el proveedor va a
+ * reponer y uno que ya se descontó de la factura son el mismo número y dos
+ * situaciones opuestas.
+ * PENDING es el que importa: mientras una línea esté ahí, hay algo que cobrar o
+ * que pagarle a ese proveedor. Los otros tres cierran la cuenta.
+ */
+enum RetailPurchaseVarianceResolution {
+  PENDING // cuenta abierta: o reponen lo que faltó, o hay que pagar lo que llegó de más
+  REORDERED // el faltante entra en el siguiente pedido
+  CREDITED // hicieron nota crédito o lo descontaron de la factura
+  ACCEPTED // se asume la diferencia y no se reclama
 }
 
 /**
@@ -2436,27 +2734,50 @@ enum RetailPurchaseStatus {
  * recibirlo puede generar el movimiento PURCHASE del inventario.
  */
 model RetailPurchaseItem {
-  id               String               @id @default(cuid())
-  tenantId         String
-  tenant           Tenant               @relation(fields: [tenantId], references: [id])
-  branchId         String
-  branch           Branch               @relation(fields: [branchId], references: [id])
+  id                  String               @id @default(cuid())
+  tenantId            String
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  branchId            String
+  branch              Branch               @relation(fields: [branchId], references: [id])
   // Enlace opcional al catálogo: null = todavía no es un producto de la tienda.
-  productId        String?
-  product          RetailProduct?       @relation(fields: [productId], references: [id])
+  productId           String?
+  product             RetailProduct?       @relation(fields: [productId], references: [id])
   // Lo que se apunta. Con producto enlazado arranca con su nombre, pero se
   // puede editar: "pijamas beige talla M" describe mejor el pedido.
-  name             String
-  quantity         Int                  @default(1)
+  name                String
+  // CUÁNTO SE PIDIÓ. Hasta 2026-09 esta columna hacía dos trabajos: al recibir
+  // se sobrescribía con lo que había llegado, y la cantidad pedida dejaba de
+  // existir. Con eso se perdía la única forma de saber que el proveedor quedó
+  // debiendo mercancía. Ahora solo significa lo pedido y no se toca al recibir.
+  quantity            Int                  @default(1)
+  // CUÁNTO LLEGÓ. NULL = todavía no se ha recibido, que es distinto de que
+  // llegaran 0 (eso es un faltante total, y ahí sí se escribe 0).
+  receivedQuantity    Int?
   // Unidad de compra tal como se le pide al proveedor (cajas, docenas, pares).
-  unit             String?
-  supplier         String?
-  // Costo unitario estimado al apuntarlo; al recibir se confirma y va al kardex.
-  estimatedCostCOP Int?
-  note             String?
-  status           RetailPurchaseStatus @default(PENDING)
+  unit                String?
+  // El nombre con el que se apuntó, tal cual se escribió. Se queda por dos
+  // razones: es el respaldo de los pedidos viejos y sirve para ver con qué
+  // nombre llegó algo que después se reasignó a otra ficha.
+  supplier            String?
+  // La ficha del proveedor. Sin esto, "crea con arte" y "Crea con Arte" son dos
+  // proveedores distintos y el saldo se parte en dos sin que nadie se entere.
+  supplierId          String?
+  supplierRef         RetailSupplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  // Costo unitario PACTADO al apuntarlo. Igual que `quantity`, se pisaba al
+  // recibir y ya no: si el proveedor factura a otro precio, eso va abajo.
+  estimatedCostCOP    Int?
+  // Costo unitario REAL de la factura. NULL = no se confirmó uno distinto.
+  receivedUnitCostCOP Int?
+  note                String?
+  status              RetailPurchaseStatus @default(PENDING)
+
+  // Cómo se salda la diferencia entre lo pedido y lo recibido. NULL = no hay
+  // diferencia, o el pedido todavía no se ha recibido. Ver el enum.
+  varianceResolution RetailPurchaseVarianceResolution?
+  // Qué dijo el proveedor, o qué se acordó. El "por qué" de la resolución.
+  varianceNote       String?
   // Prioridad simple para ordenar la lista: lo urgente primero.
-  isUrgent         Boolean              @default(false)
+  isUrgent           Boolean                           @default(false)
 
   // Fechas de cada marca: sin ellas la lista no dice si algo está atascado.
   createdAt  DateTime  @default(now())
@@ -2466,11 +2787,11 @@ model RetailPurchaseItem {
   deletedAt  DateTime?
 
   // Quién marcó cada paso (sin FK: User es transversal a las verticales).
-  createdById       String?
-  orderedById       String?
-  receivedById      String?
+  createdById        String?
+  orderedById        String?
+  receivedById       String?
   // Movimiento de inventario generado al recibir, si se enlazó al catálogo.
-  stockMovementId   String?
+  stockMovementId    String?
   // Gastos de Finanzas que pagaron este pedido. Sin FK, igual que
   // stockMovementId: Expense es transversal a las verticales y un mismo gasto
   // cubre varias líneas de un pedido conjunto.
@@ -2487,8 +2808,135 @@ model RetailPurchaseItem {
   expenseIds         String[] @default([])
   shippingExpenseIds String[] @default([])
 
+  // Cada tanda que llegó. Una línea de 24 puede llegar en dos viajes de 12.
+  receipts      RetailPurchaseReceipt[]
+  ledgerEntries RetailSupplierLedgerEntry[]
+
   @@index([tenantId, branchId, status, deletedAt])
   @@index([tenantId, branchId, createdAt])
   @@index([productId])
+  // El estado de cuenta con el proveedor busca las diferencias sin resolver:
+  // son pocas líneas dentro de un histórico que solo crece.
+  @@index([tenantId, branchId, varianceResolution])
+  @@index([supplierId])
   @@map("retail_purchase_items")
+}
+
+/**
+ * Una tanda de mercancía que llegó de un pedido.
+ * ESPEJO EXACTO de `RetailSaleDelivery`, que ya resuelve este mismo problema del
+ * otro lado: el mayorista paga 11 y se lleva 1 hoy y 5 la semana entrante. Acá
+ * es al revés —se piden 24 y llegan 12 hoy y 12 después— pero la forma es la
+ * misma, y por eso se modela igual en vez de inventar otra cosa.
+ * Es lo que mueve el inventario: la línea de pedido por sí sola no descuenta ni
+ * suma nada. Cada tanda deja su propio movimiento en el kardex, con la remisión
+ * de ESA entrega y no la del pedido completo, porque son papeles distintos.
+ */
+model RetailPurchaseReceipt {
+  id              String             @id @default(cuid())
+  tenantId        String
+  branchId        String
+  purchaseItemId  String
+  purchaseItem    RetailPurchaseItem @relation(fields: [purchaseItemId], references: [id], onDelete: Cascade)
+  quantity        Int
+  // Lo que costó ESTA tanda. Puede cambiar entre viajes: el proveedor sube
+  // precios entre el primer despacho y el segundo.
+  unitCostCOP     Int?
+  // La remisión de esta tanda, no la del pedido.
+  reference       String?
+  note            String?
+  // El kardex que generó, si la línea está enlazada a un producto.
+  stockMovementId String?
+  userId          String?
+  receivedAt      DateTime           @default(now())
+
+  @@index([purchaseItemId])
+  @@index([tenantId, branchId, receivedAt])
+  @@map("retail_purchase_receipts")
+}
+
+/**
+ * Qué mueve el saldo con un proveedor.
+ * El signo va SIEMPRE desde el lado de la tienda: positivo = le debo al
+ * proveedor, negativo = el proveedor me debe. Un solo eje con signo, y no dos
+ * columnas de debe/haber, porque la pregunta del negocio es una sola —"¿quién le
+ * debe a quién y cuánto?"— y con dos columnas hay que restarlas mentalmente cada
+ * vez.
+ */
+enum RetailSupplierLedgerKind {
+  PURCHASE // pedido confirmado: sube lo que le debo
+  PAYMENT // giro: baja lo que le debo
+  SHORTAGE // faltante definitivo de algo ya pagado: pasa a deberme
+  OVERAGE // llegó de más y me lo quedo: se lo debo
+  CREDIT_NOTE // nota crédito del proveedor
+  ADJUSTMENT // corrección a mano, con motivo
+}
+
+/**
+ * Un movimiento de la cuenta corriente con el proveedor.
+ * POR QUÉ UN LIBRO Y NO UN SALDO CALCULADO. Un saldo derivado (girado − total
+ * del pedido) responde "cuánto debo hoy" y nada más: no deja ver cómo se llegó
+ * al número, no tiene dónde recibir una nota crédito, y cuando entren las
+ * devoluciones habría que rehacerlo entero. Acá cada hecho es una fila con su
+ * fecha, y el saldo es la suma.
+ * LAS UNIDADES NO VIVEN ACÁ. Este libro es plata. Cuántas unidades faltan está
+ * en la línea del pedido (`quantity` vs `receivedQuantity`), porque una
+ * reposición se salda en producto y no en pesos: si el proveedor manda las 12
+ * que faltaban, no entra plata a ninguna parte y el faltante desaparece igual.
+ */
+model RetailSupplierLedgerEntry {
+  id             String                   @id @default(cuid())
+  tenantId       String
+  branchId       String
+  supplierId     String
+  supplier       RetailSupplier           @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  kind           RetailSupplierLedgerKind
+  // Positivo = le debo al proveedor. Negativo = el proveedor me debe.
+  amountCOP      Int
+  // De qué pedido salió, cuando salió de uno.
+  purchaseItemId String?
+  purchaseItem   RetailPurchaseItem?      @relation(fields: [purchaseItemId], references: [id], onDelete: SetNull)
+  // El gasto de Finanzas, cuando el movimiento es un giro. Sin FK, igual que
+  // `expenseIds`: Expense es transversal a las verticales.
+  expenseId      String?
+  note           String?
+  // Cuándo ocurrió de verdad, que no siempre es cuándo se registró.
+  occurredAt     DateTime                 @default(now())
+  createdAt      DateTime                 @default(now())
+  userId         String?
+
+  @@index([supplierId, occurredAt])
+  @@index([tenantId, branchId, occurredAt])
+  @@index([purchaseItemId])
+  @@map("retail_supplier_ledger_entries")
+}
+
+/**
+ * El proveedor como ficha, no como texto suelto.
+ * Hasta 2026-09 el proveedor era un `String?` escrito a mano en cada línea, y el
+ * "directorio" del frontend vivía en `localStorage`: se perdía al cambiar de
+ * equipo y no servía para llevarle cuenta a nadie.
+ */
+model RetailSupplier {
+  id          String    @id @default(cuid())
+  tenantId    String
+  branchId    String
+  name        String
+  contactName String?
+  phone       String?
+  email       String?
+  city        String?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  purchases RetailPurchaseItem[]
+  ledger    RetailSupplierLedgerEntry[]
+
+  // Un nombre por sede. Es lo que impide que "crea con arte" y "Crea con Arte"
+  // acaben siendo dos cuentas distintas del mismo proveedor.
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId, branchId, deletedAt])
+  @@map("retail_suppliers")
 }

@@ -42,7 +42,12 @@ export class AssetsService {
 
     this.validateScope(dto);
 
-    if (dto.scope === 'payment' && this.isPdf(file)) {
+    // Los dos scopes que aceptan PDF: el QR de pago que dan Nu/Bre-B y los
+    // soportes de un envío (la guía suele venir en PDF de la transportadora).
+    if (
+      (dto.scope === 'payment' || dto.scope === 'shipment') &&
+      this.isPdf(file)
+    ) {
       const uploaded = await this.imageUpload.uploadPdf({
         file,
         pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
@@ -64,8 +69,10 @@ export class AssetsService {
       file,
       pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
       // El QR debe quedar nítido para escanear → 'section' (1600px). Menú por kind, producto thumbnail.
+      // El QR debe quedar nítido para escanear y la foto de una guía tiene que
+      // dejar leer el número → 'section' (1600px) en los dos.
       kind:
-        dto.scope === 'payment'
+        dto.scope === 'payment' || dto.scope === 'shipment'
           ? 'section'
           : dto.scope === 'menu'
             ? this.menuKind(dto.kind)
@@ -169,6 +176,12 @@ export class AssetsService {
       throw new BadRequestException('Payment assets must use payment-qr');
     }
 
+    if (dto.scope === 'shipment' && dto.kind !== 'shipment-support') {
+      throw new BadRequestException(
+        'Shipment assets must use shipment-support',
+      );
+    }
+
     if (dto.kind === 'product-image' && !dto.entityId) {
       throw new BadRequestException('entityId is required for product images');
     }
@@ -182,6 +195,15 @@ export class AssetsService {
 
     if (dto.scope === 'payment') {
       return `tenants/${tenantId}/payment/qr`;
+    }
+
+    if (dto.scope === 'shipment') {
+      // Por envío cuando se sabe cuál: así los soportes de un paquete quedan
+      // juntos en el bucket y se pueden barrer de una si se borra el envío.
+      const shipmentId = dto.entityId
+        ? this.cleanPathSegment(dto.entityId)
+        : 'unassigned';
+      return `tenants/${tenantId}/shipments/${shipmentId}`;
     }
 
     const entityId = this.cleanPathSegment(dto.entityId!);

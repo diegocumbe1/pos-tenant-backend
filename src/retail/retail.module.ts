@@ -4,19 +4,23 @@ import { RetailCustomersModule } from './modules/customers/retail-customers.modu
 import { RetailInventoryModule } from './modules/inventory/retail-inventory.module';
 import { RetailPurchasesModule } from './modules/purchases/retail-purchases.module';
 import { RetailSalesModule } from './modules/sales/retail-sales.module';
+import { RetailShipmentsModule } from './modules/shipments/retail-shipments.module';
+import { RetailSuppliersModule } from './modules/suppliers/retail-suppliers.module';
 
 /**
  * [VERTICAL_RETAIL] Vertical de tienda: lista de pedidos al proveedor, catálogo,
- * inventario, POS de mostrador y clientes. No importa nada de restaurant/ ni de
+ * inventario, POS de mostrador, envíos y clientes. No importa nada de restaurant/ ni de
  * barber/ — lo transversal (finanzas, nómina, usuarios, assets, sitio público)
  * vive en sus propios módulos.
  */
 @Module({
   imports: [
     RetailPurchasesModule,
+    RetailSuppliersModule,
     RetailCatalogModule,
     RetailInventoryModule,
     RetailSalesModule,
+    RetailShipmentsModule,
     RetailCustomersModule,
   ],
 })

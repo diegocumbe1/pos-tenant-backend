@@ -1,0 +1,11 @@
+-- Estado "llegó una parte y puede seguir llegando".
+--
+-- Va en su propia migración, como los otros valores de enum del repo: en
+-- PostgreSQL un valor nuevo no se puede USAR en la misma transacción que lo
+-- crea, así que separarlo evita que cualquier backfill futuro tropiece con eso.
+--
+-- Es la distinción que faltaba: hoy recibir es todo-o-nada, y por eso el caso
+-- «ya está pago y quedó faltando, así que no lo marco como recibido» no tenía
+-- cómo registrarse. PARTIALLY_RECEIVED es mercancía en tránsito y NO un
+-- faltante; el faltante solo aparece cuando alguien cierra la línea.
+ALTER TYPE "RetailPurchaseStatus" ADD VALUE IF NOT EXISTS 'PARTIALLY_RECEIVED' BEFORE 'RECEIVED';
