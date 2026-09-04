@@ -2,7 +2,9 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   Prisma,
   RetailDeliveryStatus,
+  RetailPaymentMethod,
   RetailPaymentStatus,
+  RetailSaleEventKind,
   RetailSaleType,
 } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
@@ -13,11 +15,37 @@ import {
 } from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
+  CO_UTC_OFFSET,
+  calendarDayCO,
+  clockTimeCO,
+  formatCOP,
+} from '../../../common/date.util';
+import {
   CreateRetailSaleDto,
+  CreateRetailSaleNoteDto,
+  CreateRetailSalePaymentDto,
   DeliverRetailSaleDto,
   PayRetailSaleDto,
+  UpdateRetailSaleDateDto,
+  VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
 } from './dto/retail-sale.dto';
+
+/** 'YYYY-MM-DD' suelto, sin hora. */
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Cómo se nombra cada medio en el histórico. Va acá y no en la pantalla porque
+ * el resumen del evento se congela escrito: si el nombre lo pusiera el frontend,
+ * un histórico viejo cambiaría de texto al cambiar la pantalla.
+ */
+const PAYMENT_METHOD_LABEL: Record<RetailPaymentMethod, string> = {
+  CASH: 'efectivo',
+  CARD: 'tarjeta',
+  TRANSFER: 'transferencia',
+  MIXED: 'mixto',
+  OTHER: 'otro medio',
+};
 
 /**
  * Clave de agrupación de stock: producto, y valor cuando el producto reparte.
@@ -55,6 +83,11 @@ const SALE_INCLUDE = {
       shipment: { select: { id: true, code: true, status: true } },
     },
   },
+  // Los abonos viajan con la venta y no en una llamada aparte: la bandeja de
+  // cobros necesita decir "abonó 50.000, faltan 250.000" en cada tarjeta, y son
+  // pocas filas por venta. Los anulados VIENEN TAMBIÉN —el histórico no se
+  // filtra— y la pantalla los muestra tachados.
+  payments: { orderBy: { paidAt: 'asc' as const } },
 } satisfies Prisma.RetailSaleInclude;
 
 type SaleWithItems = Prisma.RetailSaleGetPayload<{
@@ -76,7 +109,12 @@ export class RetailSalesService {
       limit?: number;
       saleType?: RetailSaleType;
       deliveryStatus?: RetailDeliveryStatus;
-      paymentStatus?: RetailPaymentStatus;
+      /**
+       * 'OPEN' = todo lo que no está cobrado completo. Existe porque con abonos
+       * "por cobrar" dejó de ser un solo estado: filtrar por 'PENDING' escondería
+       * justo las ventas a medio pagar, que son las que hay que ir a cobrar.
+       */
+      paymentStatus?: RetailPaymentStatus | 'OPEN';
       search?: string;
     } = {},
   ) {
@@ -91,7 +129,12 @@ export class RetailSalesService {
           ? { deliveryStatus: filters.deliveryStatus }
           : {}),
         ...(filters.paymentStatus
-          ? { paymentStatus: filters.paymentStatus }
+          ? {
+              paymentStatus:
+                filters.paymentStatus === 'OPEN'
+                  ? { not: 'PAID' as const }
+                  : filters.paymentStatus,
+            }
           : {}),
         ...this.soldAtRange(filters.from, filters.to),
       },
@@ -123,34 +166,66 @@ export class RetailSalesService {
     saleType?: RetailSaleType,
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
-    const sales = await this.prisma.retailSale.findMany({
+
+    // BASE CAJA DE VERDAD: EL INGRESO SON LOS ABONOS DEL PERÍODO.
+    //
+    // Una venta de 45.000 abonada 25.000 el 31 de julio y 20.000 el 5 de agosto
+    // reparte su ingreso entre esos dos días, que es cuando entró la plata y lo
+    // que el dueño cuadra contra la gaveta. Antes se contaba entera el día en que
+    // se vendió —o no se contaba, si estaba fiada—, y ninguno de los dos días
+    // decía la verdad.
+    //
+    // Por eso se piden ABONOS y no ventas. Los anulados no cuentan, y los de una
+    // venta anulada tampoco: esa plata volvió.
+    const payments = await this.prisma.retailSalePayment.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        voidedAt: null,
+        ...this.paidAtRange(from, to),
+        sale: {
+          status: 'COMPLETED',
+          ...(saleType ? { saleType } : {}),
+        },
+      },
+      include: {
+        sale: {
+          select: {
+            id: true,
+            totalCOP: true,
+            costCOP: true,
+            saleType: true,
+            items: { select: { quantity: true } },
+          },
+        },
+      },
+      orderBy: [{ paidAt: 'asc' }, { id: 'asc' }],
+    });
+    const recognized = await this.recognizePayments(payments);
+
+    // LO QUE FALTA POR ENTRAR. Se mira sobre las ventas del rango, no sobre los
+    // abonos: la pregunta es "de lo que vendí, cuánto me deben", y una venta sin
+    // un solo abono no aparecería en la lista de abonos.
+    //
+    // Lo que se debe es el SALDO, no el total: decir que un pedido de 300.000 con
+    // 250.000 abonados son 300.000 por cobrar es tres veces la deuda real.
+    const open = await this.prisma.retailSale.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         status: 'COMPLETED',
+        paymentStatus: { not: 'PAID' },
         ...(saleType ? { saleType } : {}),
         ...this.soldAtRange(from, to),
       },
-      select: {
-        totalCOP: true,
-        costCOP: true,
-        paymentMethod: true,
-        saleType: true,
-        paymentStatus: true,
-        items: { select: { quantity: true } },
-      },
+      select: { totalCOP: true, paidCOP: true },
     });
-
-    // BASE CAJA. Lo fiado no suma al ingreso: contar plata que no ha entrado
-    // infla las ventas del día y hace que la caja nunca cuadre contra el
-    // reporte. Se saca del ingreso, del costo y del margen —los tres, para que
-    // el margen siga siendo el de lo que efectivamente se cobró— y se reporta
-    // aparte en `pendingPayment`. La venta NO se esconde: sigue en el histórico.
-    const unpaid = sales.filter((sale) => sale.paymentStatus === 'PENDING');
-    const paid = sales.filter((sale) => sale.paymentStatus === 'PAID');
     const pendingPayment = {
-      salesCount: unpaid.length,
-      amountCOP: unpaid.reduce((sum, sale) => sum + sale.totalCOP, 0),
+      salesCount: open.length,
+      amountCOP: open.reduce(
+        (sum, sale) => sum + Math.max(0, sale.totalCOP - sale.paidCOP),
+        0,
+      ),
     };
 
     // DEVOLUCIONES: restan el día en que ocurren, no el de la venta. Se piden
@@ -188,19 +263,17 @@ export class RetailSalesService {
       0,
     );
 
-    const revenueCOP =
-      paid.reduce((sum, sale) => sum + sale.totalCOP, 0) + returnsRevenueCOP;
-    const costCOP =
-      paid.reduce((sum, sale) => sum + sale.costCOP, 0) + returnsCostCOP;
-    const unitsSold = paid.reduce(
-      (sum, sale) => sum + sale.items.reduce((n, item) => n + item.quantity, 0),
-      0,
-    );
-    const byPaymentMethod: Record<string, number> = {};
-    for (const sale of paid) {
-      byPaymentMethod[sale.paymentMethod] =
-        (byPaymentMethod[sale.paymentMethod] ?? 0) + sale.totalCOP;
-    }
+    const revenueCOP = recognized.revenueCOP + returnsRevenueCOP;
+    const costCOP = recognized.cogsCOP + returnsCostCOP;
+    // Unidades y conteo de ventas se cuentan sobre las ventas CERRADAS en el
+    // período, no sobre los abonos: una unidad no se vende por partes, y
+    // repartir media unidad entre dos meses no le sirve a nadie.
+    const unitsSold = recognized.closedUnits;
+    // Por medio de pago: el del ABONO, no el de la venta. Es la pregunta de la
+    // gaveta —cuánto entró en efectivo hoy— y una venta fiada que se cobró por
+    // transferencia no puede seguir figurando como efectivo porque así se
+    // registró en el mostrador.
+    const byPaymentMethod = recognized.byMethod;
 
     // Desglose normal vs mayorista. Va con costo y margen propios, no solo con
     // ingresos: el punto de separarlos es poder ver que el mayorista factura
@@ -209,12 +282,13 @@ export class RetailSalesService {
       RETAIL: this.emptyTypeBucket(),
       WHOLESALE: this.emptyTypeBucket(),
     };
-    for (const sale of paid) {
-      const bucket = bySaleType[sale.saleType];
-      bucket.salesCount += 1;
-      bucket.revenueCOP += sale.totalCOP;
-      bucket.costCOP += sale.costCOP;
-      bucket.unitsSold += sale.items.reduce((n, item) => n + item.quantity, 0);
+    for (const type of ['RETAIL', 'WHOLESALE'] as const) {
+      const bucket = bySaleType[type];
+      const row = recognized.byType[type];
+      bucket.salesCount = row.closedSales;
+      bucket.revenueCOP = row.revenueCOP;
+      bucket.costCOP = row.cogsCOP;
+      bucket.unitsSold = row.closedUnits;
     }
     for (const bucket of Object.values(bySaleType)) {
       bucket.grossProfitCOP = bucket.revenueCOP - bucket.costCOP;
@@ -225,16 +299,27 @@ export class RetailSalesService {
     }
 
     return {
-      salesCount: paid.length,
+      /** Ventas que se CERRARON en el período (recibieron su último abono). */
+      salesCount: recognized.closedSales,
+      /** Plata que ENTRÓ en el período, venga de la venta de hoy o de un fiado. */
       revenueCOP,
       costCOP,
       grossProfitCOP: revenueCOP - costCOP,
       marginPct: this.marginPct(revenueCOP, costCOP),
       unitsSold,
-      averageTicketCOP: paid.length ? Math.round(revenueCOP / paid.length) : 0,
+      averageTicketCOP: recognized.closedSales
+        ? Math.round(revenueCOP / recognized.closedSales)
+        : 0,
       byPaymentMethod,
       bySaleType,
       pendingPayment,
+      /**
+       * De lo que entró, cuánto fue abono de una venta que sigue abierta. YA
+       * ESTÁ DENTRO de `revenueCOP` —la plata entró— y viaja aparte para poder
+       * decir "de los 800.000 de hoy, 200.000 son abonos de pedidos que todavía
+       * no se cierran".
+       */
+      partialPaymentsCOP: recognized.openPaymentsCOP,
       /**
        * Lo que las devoluciones del período le quitaron (o sumaron) al ingreso.
        * Ya está aplicado en `revenueCOP`; viaja aparte para poder mostrarlo como
@@ -426,11 +511,17 @@ export class RetailSalesService {
         );
       }
 
+      // La venta de ayer digitada hoy lleva la fecha de ayer: es el día en que
+      // pasó, y finanzas cuenta por `soldAt`. Los sellos de cobro y entrega van
+      // con ella —si se vendió y se entregó ayer, no se entregó hoy—.
+      const soldAt = this.resolveSoldAt(dto.soldAt);
+
       const created = await tx.retailSale.create({
         data: {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           code: await this.nextSaleCode(tx, ctx.tenantId),
+          soldAt,
           customerId: dto.customerId,
           userId: ctx.userId,
           cashSessionId: dto.cashSessionId,
@@ -444,10 +535,10 @@ export class RetailSalesService {
           paymentStatus: dto.paymentStatus ?? 'PAID',
           // Se sella ya si sale pagada: el histórico no tiene que adivinar
           // cuándo entró plata que entró en el acto.
-          paidAt: dto.paymentStatus === 'PENDING' ? null : new Date(),
+          paidAt: dto.paymentStatus === 'PENDING' ? null : soldAt,
           // Se sella la fecha ya si sale entregada: así el histórico no tiene
           // que adivinar cuándo se entregó lo que nunca estuvo pendiente.
-          deliveredAt: dto.deliveryStatus === 'PENDING' ? null : new Date(),
+          deliveredAt: dto.deliveryStatus === 'PENDING' ? null : soldAt,
           deliveryNote: dto.deliveryNote,
           receivedCOP: dto.receivedCOP,
           changeCOP:
@@ -477,10 +568,47 @@ export class RetailSalesService {
         });
       }
 
+      // La venta cobrada en el acto nace con su abono. No es burocracia: si el
+      // cobro de mostrador no dejara fila, esa venta figuraría con 0 abonado y
+      // el saldo diría que el cliente debe todo. Todo lo que entra, entra por
+      // acá — una sola forma de contestar "¿cuánto ya pagó?".
+      const paidInFull = (dto.paymentStatus ?? 'PAID') !== 'PENDING';
+      if (paidInFull && totalCOP > 0) {
+        await tx.retailSalePayment.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            saleId: created.id,
+            amountCOP: totalCOP,
+            method: dto.paymentMethod ?? 'CASH',
+            paidAt: soldAt,
+            userId: ctx.userId,
+            userName: ctx.name,
+            cashSessionId: dto.cashSessionId,
+          },
+        });
+        await this.syncSalePayment(tx, created.id);
+      }
+
+      await this.logSaleEvent(tx, ctx, created.id, {
+        kind: 'CREATED',
+        summary: paidInFull
+          ? `Venta registrada por ${formatCOP(totalCOP)}, cobrada (${PAYMENT_METHOD_LABEL[dto.paymentMethod ?? 'CASH']})`
+          : `Venta registrada por ${formatCOP(totalCOP)}, sin cobrar`,
+        note: dto.note,
+        detail: {
+          totalCOP,
+          discountCOP: saleDiscountCOP,
+          units: items.reduce((sum, item) => sum + item.quantity, 0),
+          paid: paidInFull,
+        },
+        occurredAt: soldAt,
+      });
+
       return created;
     }, this.txOptions);
 
-    return this.toSaleDto(sale);
+    return this.getSale(ctx, sale.id);
   }
 
   /**
@@ -703,6 +831,27 @@ export class RetailSalesService {
       (item) => item.deliveredQty >= item.quantity,
     );
 
+    const deliveredUnits = [...byItem.values()].reduce(
+      (sum, quantity) => sum + quantity,
+      0,
+    );
+    const pendingUnits = remainingItems.reduce(
+      (sum, item) => sum + Math.max(0, item.quantity - item.deliveredQty),
+      0,
+    );
+    await this.logSaleEvent(tx, ctx, id, {
+      kind: 'DELIVERY',
+      summary: fullyDelivered
+        ? `Entrega de ${deliveredUnits} unidad(es): queda entregada completa`
+        : `Entrega de ${deliveredUnits} unidad(es): faltan ${pendingUnits}`,
+      note: dto.note,
+      detail: {
+        deliveredUnits,
+        pendingUnits,
+        ...(shipmentId ? { shipmentId } : {}),
+      },
+    });
+
     return tx.retailSale.update({
       where: { id },
       data: {
@@ -722,90 +871,502 @@ export class RetailSalesService {
   }
 
   /**
-   * Marca cobrada una venta fiada.
+   * Registra un abono: plata que entró por esta venta.
    *
-   * No toca inventario: la mercancía salió cuando se entregó. Lo que cambia es
-   * que a partir de aquí la venta SÍ suma al ingreso del período, así que la
-   * fecha de pago es la que manda para la caja, no la de la venta.
+   * EL CASO. El cliente manda 50.000 de un pedido de 300.000 y el resto
+   * después. Antes esto no se podía anotar —la venta estaba cobrada o no— y lo
+   * que se hacía era bajarle el precio a mano, dejando el histórico diciendo que
+   * se vendió más barato en vez de que el cliente ya había abonado.
+   *
+   * NO PUEDE PASARSE DEL SALDO. Cobrar de más no es un abono, es otra cosa (una
+   * propina, un anticipo del siguiente pedido) y meterla aquí dejaría la venta
+   * diciendo que se pagó más de lo que valía.
+   *
+   * NO MUEVE FINANZAS. El ingreso se cuenta por la venta entera en su día, como
+   * siempre; el abono responde cuánto de esa venta ya entró.
+   */
+  async addPayment(
+    ctx: TenantContext,
+    id: string,
+    dto: CreateRetailSalePaymentDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: {
+        status: true,
+        totalCOP: true,
+        paidCOP: true,
+        paymentMethod: true,
+      },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException(
+        'La venta está anulada: no hay nada que abonar',
+      );
+    }
+
+    const balanceCOP = existing.totalCOP - existing.paidCOP;
+    if (balanceCOP <= 0) {
+      throw new BadRequestException('Esta venta ya está cobrada completa');
+    }
+    if (dto.amountCOP > balanceCOP) {
+      throw new BadRequestException(
+        `El abono (${dto.amountCOP}) es mayor que el saldo (${balanceCOP})`,
+      );
+    }
+
+    const method = dto.paymentMethod ?? existing.paymentMethod;
+    const paidAt = this.resolveSoldAt(dto.paidAt);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.retailSalePayment.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          saleId: id,
+          amountCOP: dto.amountCOP,
+          method,
+          paidAt,
+          note: dto.note,
+          userId: ctx.userId,
+          userName: ctx.name,
+          cashSessionId: dto.cashSessionId,
+        },
+      });
+
+      const { paidCOP, totalCOP } = await this.syncSalePayment(tx, id);
+      const complete = paidCOP >= totalCOP;
+
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'PAYMENT',
+        summary: complete
+          ? `Cobro completo de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]})`
+          : `Abono de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]}) · quedan ${formatCOP(totalCOP - paidCOP)}`,
+        note: dto.note,
+        detail: {
+          amountCOP: dto.amountCOP,
+          method,
+          paidCOP,
+          balanceCOP: totalCOP - paidCOP,
+        },
+        occurredAt: paidAt,
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * Anula un abono mal digitado.
+   *
+   * NO LO BORRA. La plata entró un día y eso no se reescribe; lo que se corrige
+   * es el error de digitación, y el error también es parte del histórico. El
+   * abono anulado deja de contar para el saldo pero sigue estando, con el motivo
+   * y con quién lo anuló.
+   */
+  async voidPayment(
+    ctx: TenantContext,
+    id: string,
+    paymentId: string,
+    dto: VoidRetailSalePaymentDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const payment = await this.prisma.retailSalePayment.findFirst({
+      where: { id: paymentId, saleId: id, tenantId: ctx.tenantId },
+      select: { id: true, amountCOP: true, method: true, voidedAt: true },
+    });
+    if (!payment) {
+      throw new BadRequestException('Ese abono no es de esta venta');
+    }
+    if (payment.voidedAt) {
+      throw new BadRequestException('Ese abono ya está anulado');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.retailSalePayment.update({
+        where: { id: paymentId },
+        data: {
+          voidedAt: new Date(),
+          voidedReason: dto.reason,
+          voidedBy: ctx.userId,
+        },
+      });
+
+      const { paidCOP, totalCOP } = await this.syncSalePayment(tx, id);
+
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'PAYMENT_VOIDED',
+        summary: `Abono anulado de ${formatCOP(payment.amountCOP)} · quedan ${formatCOP(totalCOP - paidCOP)}`,
+        note: dto.reason,
+        detail: {
+          paymentId,
+          amountCOP: payment.amountCOP,
+          paidCOP,
+          balanceCOP: totalCOP - paidCOP,
+        },
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * Marca cobrada una venta: abona TODO el saldo que quede de una vez.
+   *
+   * Sigue existiendo con este nombre porque es la acción del mostrador —"ya me
+   * pagó"— y no tiene por qué obligar a escribir el monto cuando paga completo.
+   * Por dentro es un abono más, así que queda con su medio, su fecha y su nota
+   * en el mismo histórico que los demás.
    */
   async paySale(ctx: TenantContext, id: string, dto: PayRetailSaleDto) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
 
     const existing = await this.prisma.retailSale.findUniqueOrThrow({
       where: { id },
-      select: { status: true, paymentStatus: true, note: true },
+      select: { status: true, totalCOP: true, paidCOP: true },
     });
     if (existing.status === 'VOIDED') {
       throw new BadRequestException(
         'La venta está anulada: no hay nada que cobrar',
       );
     }
-    if (existing.paymentStatus === 'PAID') {
+    const balanceCOP = existing.totalCOP - existing.paidCOP;
+    if (balanceCOP <= 0) {
       throw new BadRequestException('Esta venta ya figura como cobrada');
     }
 
-    const sale = await this.prisma.retailSale.update({
-      where: { id },
-      data: {
-        paymentStatus: 'PAID',
-        paidAt: new Date(),
-        // El método puede cambiar entre que se fía y se cobra: se anotó
-        // "efectivo" y terminó pagando por transferencia.
-        ...(dto.paymentMethod ? { paymentMethod: dto.paymentMethod } : {}),
-        note: dto.note
-          ? [existing.note, dto.note].filter(Boolean).join(' · ')
-          : existing.note,
-      },
-      include: {
-        ...SALE_INCLUDE,
-      },
-    });
+    // El método puede cambiar entre que se fía y se cobra: se anotó "efectivo" y
+    // terminó pagando por transferencia. Se guarda también en la venta porque es
+    // lo que el recibo afirma.
+    if (dto.paymentMethod) {
+      await this.prisma.retailSale.update({
+        where: { id },
+        data: { paymentMethod: dto.paymentMethod },
+      });
+    }
 
-    return this.toSaleDto(sale);
+    return this.addPayment(ctx, id, {
+      amountCOP: balanceCOP,
+      paymentMethod: dto.paymentMethod,
+      note: dto.note,
+    });
   }
 
   /**
-   * Devuelve una venta a "por cobrar".
+   * Devuelve una venta a "por cobrar": anula TODOS sus abonos vigentes.
    *
-   * Es la corrección de un error de registro: se cobró en el sistema algo que
-   * en realidad se fió. No toca inventario ni la fecha de venta — solo saca esa
-   * plata del ingreso hasta que entre de verdad.
+   * Es la corrección de un error de registro: se cobró en el sistema algo que en
+   * realidad se fió. No toca inventario ni la fecha de venta.
    *
    * Existe porque la alternativa sería anular y volver a crear la venta, y eso
    * pierde el consecutivo, la fecha original y el histórico del cliente, además
-   * de mover stock dos veces sin motivo.
+   * de mover stock dos veces sin motivo. Para deshacer UN abono de varios está
+   * `voidPayment`: esto los tumba todos.
    */
   async unpaySale(ctx: TenantContext, id: string, dto: PayRetailSaleDto) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
 
     const existing = await this.prisma.retailSale.findUniqueOrThrow({
       where: { id },
-      select: { status: true, paymentStatus: true, note: true },
+      select: { status: true, paidCOP: true },
     });
     if (existing.status === 'VOIDED') {
       throw new BadRequestException('La venta está anulada');
     }
-    if (existing.paymentStatus === 'PENDING') {
+    if (existing.paidCOP <= 0) {
       throw new BadRequestException(
         'Esta venta ya figura como pendiente de cobro',
       );
     }
 
-    const sale = await this.prisma.retailSale.update({
+    await this.prisma.$transaction(async (tx) => {
+      const live = await tx.retailSalePayment.findMany({
+        where: { saleId: id, voidedAt: null },
+        select: { id: true, amountCOP: true },
+      });
+      await tx.retailSalePayment.updateMany({
+        where: { saleId: id, voidedAt: null },
+        data: {
+          voidedAt: new Date(),
+          voidedReason: dto.note ?? 'Se devolvió a por cobrar',
+          voidedBy: ctx.userId,
+        },
+      });
+
+      await this.syncSalePayment(tx, id);
+
+      const total = live.reduce((sum, row) => sum + row.amountCOP, 0);
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'PAYMENT_VOIDED',
+        summary:
+          live.length === 1
+            ? `Vuelve a por cobrar: se anuló el abono de ${formatCOP(total)}`
+            : `Vuelve a por cobrar: se anularon ${live.length} abonos por ${formatCOP(total)}`,
+        note: dto.note,
+        detail: { voidedCount: live.length, amountCOP: total },
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, id);
+  }
+
+  /** Una anotación a mano en el histórico. No cambia ningún número. */
+  async addSaleNote(
+    ctx: TenantContext,
+    id: string,
+    dto: CreateRetailSaleNoteDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+    await this.prisma.$transaction(
+      (tx) =>
+        this.logSaleEvent(tx, ctx, id, {
+          kind: 'NOTE',
+          summary: 'Anotación',
+          note: dto.note,
+        }),
+      this.txOptions,
+    );
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * El histórico de la venta, del hecho más viejo al más nuevo.
+   *
+   * En orden ascendente porque se lee como una historia —se registró, se abonó,
+   * se corrigió la fecha— y al revés obliga a leer de abajo hacia arriba para
+   * entender qué pasó primero.
+   */
+  async listEvents(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+    const events = await this.prisma.retailSaleEvent.findMany({
+      where: { saleId: id },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+    });
+    return events.map((event) => ({
+      id: event.id,
+      kind: event.kind,
+      summary: event.summary,
+      note: event.note,
+      detail: event.detail,
+      userName: event.userName,
+      occurredAt: event.occurredAt,
+    }));
+  }
+
+  /**
+   * Recalcula lo abonado y el estado de cobro desde los abonos vigentes.
+   *
+   * EL ESTADO NO SE ESCRIBE A MANO EN NINGÚN LADO. Es la conclusión de sumar los
+   * abonos: si estado y plata se escribieran por separado terminarían
+   * contradiciéndose, y una venta diría "cobrada" con saldo pendiente. Los
+   * anulados no cuentan; siguen en el histórico, no en la suma.
+   *
+   * Es público porque el envío también lo necesita: cargarle o quitarle el flete
+   * a una venta le cambia el TOTAL, y con el total cambia si lo abonado alcanza
+   * o no. Sin volver a pasar por aquí, una venta con abonos podría quedar
+   * diciendo "cobrada" después de que le subieran el precio.
+   */
+  async syncSalePayment(tx: Prisma.TransactionClient, id: string) {
+    const sale = await tx.retailSale.findUniqueOrThrow({
       where: { id },
-      data: {
-        paymentStatus: 'PENDING',
-        paidAt: null,
-        note: dto.note
-          ? [existing.note, dto.note].filter(Boolean).join(' · ')
-          : existing.note,
-      },
-      include: {
-        ...SALE_INCLUDE,
+      select: {
+        totalCOP: true,
+        payments: {
+          where: { voidedAt: null },
+          orderBy: { paidAt: 'asc' },
+          select: { amountCOP: true, paidAt: true },
+        },
       },
     });
 
-    return this.toSaleDto(sale);
+    const paidCOP = sale.payments.reduce((sum, row) => sum + row.amountCOP, 0);
+    const complete = paidCOP >= sale.totalCOP && sale.totalCOP > 0;
+
+    await tx.retailSale.update({
+      where: { id },
+      data: {
+        paidCOP,
+        paymentStatus: complete ? 'PAID' : paidCOP > 0 ? 'PARTIAL' : 'PENDING',
+        // La fecha de cobro es la del abono que lo COMPLETÓ: es el día en que la
+        // venta terminó de entrar. Mientras quede saldo no hay fecha de cobro.
+        paidAt: complete
+          ? (sale.payments[sale.payments.length - 1]?.paidAt ?? new Date())
+          : null,
+      },
+    });
+
+    return { paidCOP, totalCOP: sale.totalCOP };
+  }
+
+  /**
+   * Escribe un hecho en el histórico de la venta.
+   *
+   * El resumen se congela ya escrito: el histórico de una venta vieja tiene que
+   * seguir diciendo lo que decía aunque la lógica cambie después. Y el autor se
+   * guarda por nombre además de por id, porque el histórico no puede depender de
+   * que el usuario siga existiendo.
+   */
+  private logSaleEvent(
+    tx: Prisma.TransactionClient,
+    ctx: TenantContext,
+    saleId: string,
+    event: {
+      kind: RetailSaleEventKind;
+      summary: string;
+      note?: string | null;
+      detail?: Prisma.InputJsonValue;
+      occurredAt?: Date;
+    },
+  ) {
+    return tx.retailSaleEvent.create({
+      data: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        saleId,
+        kind: event.kind,
+        summary: event.summary,
+        note: event.note ?? null,
+        ...(event.detail !== undefined ? { detail: event.detail } : {}),
+        userId: ctx.userId,
+        userName: ctx.name,
+        ...(event.occurredAt ? { occurredAt: event.occurredAt } : {}),
+      },
+    });
+  }
+
+  /**
+   * Corrige el día de una venta ya registrada.
+   *
+   * EL CASO. Se vendió ayer y no hubo tiempo de meterla; se digita hoy y queda
+   * pesando en el día equivocado, porque finanzas cuenta las ventas por
+   * `soldAt`. Sin esto la única salida era anular y volver a digitar, que mueve
+   * el inventario dos veces y le cambia el consecutivo al cliente.
+   *
+   * SE PUEDE AUNQUE LA VENTA ESTÉ COBRADA Y ENTREGADA. Corregir la fecha no es
+   * deshacer nada: la venta ocurrió igual, lo único que estaba mal era el día
+   * anotado. Bloquearlo al cerrar dejaría el error escrito para siempre, que es
+   * justo lo contrario de tener claridad.
+   *
+   * QUÉ SE MUEVE CON ELLA. El sello de cobro y el de entrega, cuando estaban
+   * puestos EL MISMO DÍA que la venta: eran el reflejo de "se vendió, se cobró y
+   * se entregó de una", así que si el día era otro, era otro para los tres. Un
+   * fiado que se cobró después mantiene su fecha de cobro: esa plata sí entró
+   * ese otro día.
+   *
+   * LO QUE NO SE MUEVE: los movimientos de inventario ya escritos en el kardex y
+   * el arqueo de caja en el que se digitó. El stock salió el día que se digitó
+   * —eso pasó de verdad— y el arqueo cuadra contra lo que hubo en la gaveta ese
+   * día. Corregir la fecha de la venta no puede reescribir esos dos hechos.
+   */
+  async updateSaleDate(
+    ctx: TenantContext,
+    id: string,
+    dto: UpdateRetailSaleDateDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: {
+        status: true,
+        note: true,
+        soldAt: true,
+        paidAt: true,
+        deliveredAt: true,
+        customerId: true,
+      },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException(
+        'La venta está anulada: no hay fecha que corregir',
+      );
+    }
+
+    const soldAt = this.resolveSoldAt(dto.soldAt);
+    if (calendarDayCO(soldAt) === calendarDayCO(existing.soldAt)) {
+      throw new BadRequestException('La venta ya está en ese día');
+    }
+
+    const sameDay = (stamp: Date | null) =>
+      stamp !== null && calendarDayCO(stamp) === calendarDayCO(existing.soldAt);
+
+    const trace = [
+      `Fecha corregida: ${calendarDayCO(existing.soldAt)} → ${calendarDayCO(soldAt)}`,
+      dto.reason,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.retailSale.update({
+        where: { id },
+        data: {
+          soldAt,
+          ...(sameDay(existing.paidAt) ? { paidAt: soldAt } : {}),
+          ...(sameDay(existing.deliveredAt) ? { deliveredAt: soldAt } : {}),
+          note: [existing.note, trace].filter(Boolean).join(' · '),
+        },
+      });
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'DATE_CHANGED',
+        summary: `Fecha corregida: ${calendarDayCO(existing.soldAt)} → ${calendarDayCO(soldAt)}`,
+        note: dto.reason,
+        detail: {
+          fromDay: calendarDayCO(existing.soldAt),
+          toDay: calendarDayCO(soldAt),
+        },
+      });
+    }, this.txOptions);
+
+    // La última compra del cliente es la fecha de la venta, no la de digitación.
+    if (existing.customerId) {
+      const last = await this.prisma.retailSale.findFirst({
+        where: { customerId: existing.customerId, status: 'COMPLETED' },
+        orderBy: { soldAt: 'desc' },
+        select: { soldAt: true },
+      });
+      await this.prisma.retailCustomer.update({
+        where: { id: existing.customerId },
+        data: { lastPurchaseAt: last?.soldAt ?? null },
+      });
+    }
+
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * El instante en que se vendió, a partir de lo que mandó la pantalla.
+   *
+   * Una cadena 'YYYY-MM-DD' se parsea como UTC por spec, así que "3 de
+   * septiembre" en Colombia se volvería el 2 a las 7 de la noche y la venta
+   * caería en el día anterior. Por eso el día suelto se ancla a la HORA ACTUAL
+   * en Colombia: cae dentro del día que se pidió y conserva un orden razonable
+   * frente a las otras ventas de ese día.
+   *
+   * El futuro se rechaza: una venta que todavía no ocurrió no tiene por qué
+   * estar en el sistema, y como el ingreso pesa por esta fecha, dejarla pasar
+   * escondería plata en un día que nadie mira.
+   */
+  private resolveSoldAt(value?: string): Date {
+    if (!value) return new Date();
+
+    const now = new Date();
+    const parsed = DATE_ONLY_RE.test(value)
+      ? new Date(`${value}T${clockTimeCO(now)}${CO_UTC_OFFSET}`)
+      : new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(`Fecha inválida: ${value}`);
+    }
+    if (calendarDayCO(parsed) > calendarDayCO(now)) {
+      throw new BadRequestException(
+        'No se puede fechar una venta en el futuro',
+      );
+    }
+    return parsed;
   }
 
   /** Anula una venta: devuelve el stock al inventario y la saca de finanzas. */
@@ -900,6 +1461,13 @@ export class RetailSalesService {
           },
         });
       }
+
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'VOIDED',
+        summary: `Venta anulada por ${formatCOP(existing.totalCOP)}: la mercancía volvió al inventario`,
+        note: dto.reason,
+        detail: { totalCOP: existing.totalCOP, paidCOP: existing.paidCOP },
+      });
 
       return tx.retailSale.update({
         where: { id },
@@ -1099,6 +1667,140 @@ export class RetailSalesService {
     };
   }
 
+  /** Mismo rango, pero por la fecha en que ENTRÓ la plata. */
+  private paidAtRange(from?: string, to?: string) {
+    if (!from && !to) return {};
+    return {
+      paidAt: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to ? { lte: new Date(to) } : {}),
+      },
+    };
+  }
+
+  /**
+   * Reparte los abonos del período: ingreso, costo, y qué ventas se cerraron.
+   *
+   * EL COSTO SIGUE AL INGRESO, PROPORCIONALMENTE. Si de una venta de 45.000 con
+   * 30.000 de costo entraron 25.000, el período reconoce 25.000 de ingreso y la
+   * parte del costo que le toca. Cargar el costo entero en el primer abono
+   * dejaría el primer mes en pérdida y el segundo con margen del 100%: dos meses
+   * mintiendo por la misma venta.
+   *
+   * EL REPARTO NO PIERDE NI INVENTA PESOS. Cada abono se lleva la diferencia
+   * entre el costo acumulado hasta él y el del anterior, así que los redondeos
+   * se compensan y la suma de todos los abonos de una venta cobrada da EXACTO su
+   * costo. Prorratear cada uno por separado dejaría un peso suelto por venta.
+   *
+   * VENTA CERRADA = la que recibió su último abono dentro del período, y con él
+   * completó el total. Lo que se cuenta una sola vez —unidades, número de
+   * ventas— se cuenta ahí, en la fecha en que la orden se cierra.
+   */
+  private async recognizePayments(
+    payments: Array<{
+      id: string;
+      saleId: string;
+      amountCOP: number;
+      method: RetailPaymentMethod;
+      sale: {
+        totalCOP: number;
+        costCOP: number;
+        saleType: RetailSaleType;
+        items: Array<{ quantity: number }>;
+      };
+    }>,
+  ) {
+    const emptyType = () => ({
+      revenueCOP: 0,
+      cogsCOP: 0,
+      closedSales: 0,
+      closedUnits: 0,
+    });
+    const result = {
+      revenueCOP: 0,
+      cogsCOP: 0,
+      closedSales: 0,
+      closedUnits: 0,
+      /** De lo que entró, cuánto es de ventas que siguen abiertas. */
+      openPaymentsCOP: 0,
+      byMethod: {} as Record<string, number>,
+      byType: {
+        RETAIL: emptyType(),
+        WHOLESALE: emptyType(),
+      },
+    };
+    if (payments.length === 0) return result;
+
+    // El libro completo de cada venta tocada, no solo los abonos del período:
+    // sin lo anterior no se sabe en qué punto del costo va cada uno.
+    const saleIds = [...new Set(payments.map((row) => row.saleId))];
+    const ledger = await this.prisma.retailSalePayment.findMany({
+      where: { saleId: { in: saleIds }, voidedAt: null },
+      orderBy: [{ paidAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, saleId: true, amountCOP: true },
+    });
+
+    const position = new Map<
+      string,
+      { before: number; after: number; last: boolean }
+    >();
+    const bySale = new Map<string, typeof ledger>();
+    for (const row of ledger) {
+      bySale.set(row.saleId, [...(bySale.get(row.saleId) ?? []), row]);
+    }
+    for (const rows of bySale.values()) {
+      let running = 0;
+      rows.forEach((row, index) => {
+        const before = running;
+        running += row.amountCOP;
+        position.set(row.id, {
+          before,
+          after: running,
+          last: index === rows.length - 1,
+        });
+      });
+    }
+
+    for (const payment of payments) {
+      const { sale } = payment;
+      const spot = position.get(payment.id);
+      const total = sale.totalCOP;
+      // Una venta en 0 no reparte costo: no hay contra qué prorratear.
+      const costShare =
+        spot && total > 0
+          ? Math.round((sale.costCOP * spot.after) / total) -
+            Math.round((sale.costCOP * spot.before) / total)
+          : 0;
+      // Cierra si es el último abono Y alcanzó el total. Un último abono que
+      // deja saldo es una venta abierta, no una cerrada.
+      const closes = Boolean(spot?.last && spot.after >= total && total > 0);
+      const units = closes
+        ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
+        : 0;
+
+      result.revenueCOP += payment.amountCOP;
+      result.cogsCOP += costShare;
+      if (closes) {
+        result.closedSales += 1;
+        result.closedUnits += units;
+      } else {
+        result.openPaymentsCOP += payment.amountCOP;
+      }
+      result.byMethod[payment.method] =
+        (result.byMethod[payment.method] ?? 0) + payment.amountCOP;
+
+      const bucket = result.byType[sale.saleType];
+      bucket.revenueCOP += payment.amountCOP;
+      bucket.cogsCOP += costShare;
+      if (closes) {
+        bucket.closedSales += 1;
+        bucket.closedUnits += units;
+      }
+    }
+
+    return result;
+  }
+
   private toSaleDto(sale: SaleWithItems) {
     return {
       id: sale.id,
@@ -1125,9 +1827,30 @@ export class RetailSalesService {
       cashSessionId: sale.cashSessionId,
       subtotalCOP: sale.subtotalCOP,
       discountCOP: sale.discountCOP,
+      // Flete del envío cargado a esta venta. Está DENTRO de `totalCOP`: es lo
+      // que hace que el cobro y el ingreso incluyan lo que se cobró por mandar
+      // el paquete. 0 en toda venta de mostrador.
+      shippingCOP: sale.shippingCOP,
       totalCOP: sale.totalCOP,
+      // Cuánto lleva abonado y cuánto falta. La bandeja de cobros los necesita
+      // en cada tarjeta: con abonos, "pendiente" ya no significa "debe todo".
+      paidCOP: sale.paidCOP,
+      balanceCOP: Math.max(0, sale.totalCOP - sale.paidCOP),
+      // Los anulados VIAJAN TAMBIÉN, marcados: son parte del histórico y la
+      // pantalla los muestra tachados. Filtrarlos acá los escondería.
+      payments: sale.payments.map((payment) => ({
+        id: payment.id,
+        amountCOP: payment.amountCOP,
+        method: payment.method,
+        paidAt: payment.paidAt,
+        note: payment.note,
+        userName: payment.userName,
+        voidedAt: payment.voidedAt,
+        voidedReason: payment.voidedReason,
+      })),
       costCOP: sale.costCOP,
-      grossProfitCOP: sale.totalCOP - sale.costCOP,
+      // El flete no es margen: lo que se cobra por él se va en pagar la guía.
+      grossProfitCOP: sale.totalCOP - sale.shippingCOP - sale.costCOP,
       paymentMethod: sale.paymentMethod,
       receivedCOP: sale.receivedCOP,
       changeCOP: sale.changeCOP,

@@ -7,6 +7,7 @@ import {
   weightedAverageCost,
 } from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
+import { formatCOP } from '../../../common/date.util';
 import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
 
 const RETURN_INCLUDE = {
@@ -392,6 +393,26 @@ export class RetailSaleReturnsService {
       });
       await tx.retailSaleReturnItem.createMany({
         data: itemRows.map((row) => ({ ...row, returnId: created.id })),
+      });
+
+      // Queda en el histórico de la VENTA, no solo en el documento de la
+      // devolución: cuando el dueño abre la venta y ve que el total no cuadra
+      // con lo que recuerda, la respuesta tiene que estar ahí mismo.
+      await tx.retailSaleEvent.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          saleId,
+          kind: 'RETURN',
+          summary:
+            replacements.length > 0
+              ? `Cambio: devolvió ${formatCOP(returnedCOP)} y se llevó ${formatCOP(replacedCOP)}`
+              : `Devolución de ${formatCOP(returnedCOP)}`,
+          note: dto.reason?.trim() || dto.note?.trim() || null,
+          detail: { returnedCOP, replacedCOP, balanceCOP, settlement },
+          userId: ctx.userId,
+          userName: ctx.name,
+        },
       });
 
       return tx.retailSaleReturn.findUniqueOrThrow({

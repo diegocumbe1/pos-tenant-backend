@@ -20,6 +20,10 @@ const BUCKET_BY_CATEGORY: Record<string, ExpenseBucket> = {
   // va al mismo bucket que la compra para que la estructura de costos y el
   // punto de equilibrio no lo pierdan.
   INVENTORY_SHIPPING: 'supplies',
+  // Flete de SALIDA: lo que cuesta mandarle el pedido al cliente. No es costo de
+  // adquirir mercancía —la mercancía ya estaba comprada— sino costo de vender,
+  // así que no va al bucket de insumos aunque se llame parecido al de arriba.
+  SALES_SHIPPING: 'other',
   PAYROLL: 'payroll',
   RENT: 'rent',
   UTILITIES: 'utilities',

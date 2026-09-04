@@ -2306,8 +2306,9 @@ enum RetailSaleType {
 // cobrar y entregar después (encargo). Lo que decide es el DINERO — mientras
 // esté en PENDING la venta no cuenta como ingreso, porque la plata no entró.
 enum RetailPaymentStatus {
-  PAID // el dinero entró
-  PENDING // queda por cobrar
+  PAID // el dinero entró completo
+  PARTIAL // abonó una parte y queda saldo
+  PENDING // no ha entrado nada
 }
 
 enum RetailDeliveryStatus {
@@ -2336,8 +2337,14 @@ model RetailSale {
   // que es lo que efectivamente pasó.
   deliveryStatus RetailDeliveryStatus @default(DELIVERED)
   // Default PAID: todo lo vendido hasta ahora se cobró en el mostrador.
+  // NO SE ESCRIBE A MANO cuando hay abonos: lo deriva `syncSalePayment` de la
+  // suma de los abonos vigentes, para que estado y plata no se contradigan.
   paymentStatus  RetailPaymentStatus  @default(PAID)
-  // Cuándo entró la plata. NULL mientras siga por cobrar.
+  // Cuánto de esta venta ya entró, sumando los abonos no anulados. Se guarda
+  // aunque sea derivable: la bandeja de cobros lista cientos de ventas y
+  // recalcular el saldo de cada una a punta de agregados la vuelve lenta.
+  paidCOP        Int                  @default(0)
+  // Cuándo se completó el pago. NULL mientras quede saldo.
   paidAt         DateTime?
   // Cuándo se marcó entregada. NULL mientras siga pendiente.
   deliveredAt    DateTime?
@@ -2345,6 +2352,12 @@ model RetailSale {
   deliveryNote   String?
   subtotalCOP    Int
   discountCOP    Int                  @default(0)
+  // Flete que se le traslada al cliente. Lo pone el envío, no el mostrador: el
+  // costo de la guía no se sabe al vender. VA DENTRO DE `totalCOP` porque es
+  // plata que el cliente debe igual que la mercancía — si viviera solo en el
+  // envío, la bandeja de cobros y finanzas (que suman `totalCOP`) no lo verían
+  // nunca y el flete se perdería. `totalCOP = subtotalCOP - discountCOP + shippingCOP`.
+  shippingCOP    Int                  @default(0)
   totalCOP       Int
   // Costo de la mercancía vendida, congelado al momento de la venta → margen real.
   costCOP        Int                  @default(0)
@@ -2361,6 +2374,8 @@ model RetailSale {
   deliveries        RetailSaleDelivery[]
   shipments         RetailShipmentSale[]
   retailSaleReturns RetailSaleReturn[]
+  payments          RetailSalePayment[]
+  events            RetailSaleEvent[]
 
   @@unique([tenantId, code])
   @@index([tenantId, branchId, soldAt])
@@ -2594,6 +2609,117 @@ enum RetailReturnDirection {
  * hechos distintos —el cliente devolvió, y la tienda perdió una unidad— y
  * conviene poder mirarlos por separado.
  */
+/**
+ * Un abono: plata que entró por una venta, en un momento concreto.
+ * POR QUÉ EXISTE. `RetailSale.paymentStatus` solo sabía decir PAID o PENDING, y
+ * el mostrador no funciona así: el cliente manda 50.000 de un pedido de 300.000
+ * y después el resto. Sin abonos eso no se podía anotar, y lo que se hacía era
+ * bajarle el precio a la venta a mano —el caso real del flete de EN-000001, que
+ * se cobró en 8.400 porque el cliente ya había mandado 27.500—. Esa
+ * compensación deja el histórico mintiendo: dice que se vendió más barato, no
+ * que el cliente ya había abonado.
+ * UN ABONO NO SE EDITA NI SE BORRA. Se anula (`voidedAt`) y se registra otro.
+ * La plata entró un día y eso no se puede reescribir: lo que se corrige es un
+ * error de digitación, y el error también es parte del histórico. Un abono
+ * anulado deja de contar para el saldo pero sigue estando.
+ * NO CREA INGRESO POR SU CUENTA. Finanzas cuenta la venta entera en su día
+ * (`soldAt`), como siempre; el abono responde otra pregunta —cuánto de esa
+ * venta ya entró— que antes no tenía dónde vivir.
+ */
+model RetailSalePayment {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  saleId String
+  sale   RetailSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  /// Cuánto entró. Siempre positivo: un reverso se hace anulando, no restando.
+  amountCOP Int
+  /// Con qué pagó ESTE abono. Puede ser distinto en cada uno.
+  method    RetailPaymentMethod @default(CASH)
+  /// Cuándo entró la plata. Puede no ser hoy: se abonó ayer y se digita hoy.
+  paidAt    DateTime            @default(now())
+
+  /// Siempre opcional, siempre disponible: "mandó por Nequi", "le faltaron 2.000".
+  note          String?
+  userId        String?
+  /// Quién lo registró, congelado. El histórico no puede depender de que el
+  /// usuario siga existiendo ni de que no le hayan cambiado el nombre.
+  userName      String?
+  /// Caja abierta en la que se recibió, cuando la hubo.
+  cashSessionId String?
+
+  /// Anulado: sigue en el histórico pero deja de contar para el saldo.
+  voidedAt     DateTime?
+  voidedReason String?
+  voidedBy     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, branchId, paidAt])
+  @@index([saleId])
+  @@map("retail_sale_payments")
+}
+
+/**
+ * Qué le pasó a una venta, en orden. El histórico que el admin abre para
+ * entender por qué un número es el que es.
+ * POR QUÉ UNA TABLA Y NO LA NOTA DE LA VENTA. La nota es un campo de texto que
+ * se va acumulando y se puede sobreescribir; no tiene autor, ni hora, ni forma
+ * de filtrar. Cuando el dueño pregunta "¿quién le cambió la fecha a esta venta y
+ * cuándo?", la nota no responde.
+ * EL RESUMEN VIENE ESCRITO. `summary` llega listo para leer ('Abono de $50.000
+ * en efectivo') en vez de armarse en la pantalla: así el histórico de una venta
+ * vieja sigue diciendo lo que decía aunque la lógica cambie después, que es todo
+ * el punto de un histórico. `detail` guarda los números crudos para cuando haga
+ * falta algo más que leerlos.
+ * NUNCA SE BORRA NI SE EDITA. Un hecho equivocado se corrige con otro hecho.
+ */
+model RetailSaleEvent {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  saleId String
+  sale   RetailSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  kind    RetailSaleEventKind
+  /// Frase lista para mostrar, congelada en el momento en que pasó.
+  summary String
+  /// La nota que escribió quien lo hizo. Siempre opcional.
+  note    String?
+  /// Números crudos del hecho (montos, fechas anterior y nueva, ids).
+  detail  Json?
+
+  userId   String?
+  /// Nombre congelado de quien lo hizo, por la misma razón que en los abonos.
+  userName String?
+
+  occurredAt DateTime @default(now())
+
+  @@index([saleId, occurredAt])
+  @@index([tenantId, branchId, occurredAt])
+  @@map("retail_sale_events")
+}
+
+/**
+ * Los hechos que le pueden pasar a una venta. Es una lista cerrada a propósito:
+ * si aparece uno nuevo tiene que nombrarse aquí, y así el histórico no se llena
+ * de cadenas sueltas que nadie puede filtrar después.
+ */
+enum RetailSaleEventKind {
+  CREATED // se registró la venta
+  PAYMENT // entró un abono (o el pago completo)
+  PAYMENT_VOIDED // se anuló un abono mal digitado
+  DELIVERY // salió mercancía, total o parcial
+  RETURN // el cliente devolvió o cambió
+  DATE_CHANGED // se corrigió el día de la venta
+  SHIPPING_CHARGED // el envío le cargó el flete a esta venta
+  VOIDED // se anuló la venta entera
+  NOTE // una anotación a mano, sin más consecuencia
+}
+
 model RetailSaleReturn {
   id       String @id @default(cuid())
   tenantId String

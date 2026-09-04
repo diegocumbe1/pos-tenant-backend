@@ -71,6 +71,19 @@ type DashboardRetailReturn = Prisma.RetailSaleReturnGetPayload<{
 type DashboardRetailSale = Prisma.RetailSaleGetPayload<{
   include: { items: true };
 }>;
+
+/**
+ * Un abono con su venta. ES LA UNIDAD DE INGRESO DE TIENDA, no la venta.
+ *
+ * BASE CAJA DE VERDAD. Una venta de 45.000 que se abonó 25.000 el 31 de julio y
+ * 20.000 el 5 de agosto reparte su ingreso en esos dos días: son los días en que
+ * la plata entró, que es lo que el dueño cuadra contra la gaveta y contra el
+ * banco. Contarla entera el día en que se vendió ponía 45.000 en un día en el
+ * que no entraron 45.000.
+ */
+type DashboardRetailPayment = Prisma.RetailSalePaymentGetPayload<{
+  include: { sale: { include: { items: true } } };
+}>;
 type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: { service: { select: { priceCOP: true } } };
 }>;
@@ -87,75 +100,85 @@ export class FinanceService {
     const includeBarber = vertical === 'barber' || vertical === 'unknown';
     const includeRetail = vertical === 'retail' || vertical === 'unknown';
 
-    const [splits, expenses, barberAppointments, retailSales, retailReturns] =
-      await Promise.all([
-        includeRestaurant
-          ? this.prisma.paymentSplit.findMany({
-              where: {
-                tenantId: ctx.tenantId,
-                order: { branchId: ctx.branchId },
-                paidAt: { gte: range.from, lte: range.to },
-              },
-              include: {
-                items: true,
-                order: { select: { waiterId: true } },
-              },
-            })
-          : Promise.resolve([] as DashboardSplit[]),
-        this.prisma.expense.aggregate({
-          where: {
-            tenantId: ctx.tenantId,
-            branchId: ctx.branchId,
-            incurredAt: { gte: range.from, lte: range.to },
-          },
-          _sum: { amountCOP: true },
-        }),
-        includeBarber
-          ? this.prisma.barberAppointment.findMany({
-              where: {
-                tenantId: ctx.tenantId,
-                branchId: ctx.branchId,
-                status: { in: COMPLETED_STATUS_VARIANTS },
-                scheduledAt: { gte: range.from, lte: range.to },
-              },
-              include: {
-                service: {
-                  select: {
-                    id: true,
-                    name: true,
-                    priceCOP: true,
-                    costCOP: true,
-                  },
+    const [
+      splits,
+      expenses,
+      barberAppointments,
+      retailPayments,
+      retailReturns,
+    ] = await Promise.all([
+      includeRestaurant
+        ? this.prisma.paymentSplit.findMany({
+            where: {
+              tenantId: ctx.tenantId,
+              order: { branchId: ctx.branchId },
+              paidAt: { gte: range.from, lte: range.to },
+            },
+            include: {
+              items: true,
+              order: { select: { waiterId: true } },
+            },
+          })
+        : Promise.resolve([] as DashboardSplit[]),
+      this.prisma.expense.aggregate({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          incurredAt: { gte: range.from, lte: range.to },
+        },
+        _sum: { amountCOP: true },
+      }),
+      includeBarber
+        ? this.prisma.barberAppointment.findMany({
+            where: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              status: { in: COMPLETED_STATUS_VARIANTS },
+              scheduledAt: { gte: range.from, lte: range.to },
+            },
+            include: {
+              service: {
+                select: {
+                  id: true,
+                  name: true,
+                  priceCOP: true,
+                  costCOP: true,
                 },
               },
-            })
-          : Promise.resolve([] as DashboardBarberAppointment[]),
-        includeRetail
-          ? this.prisma.retailSale.findMany({
-              where: {
-                tenantId: ctx.tenantId,
-                branchId: ctx.branchId,
-                status: 'COMPLETED',
-                soldAt: { gte: range.from, lte: range.to },
-              },
-              include: { items: true },
-            })
-          : Promise.resolve([] as DashboardRetailSale[]),
-        // Las devoluciones del período. Restan el día en que OCURREN, no el de
-        // la venta: la venta del 2 de septiembre queda como fue y la devolución
-        // del 5 pesa en el 5. Es lo coherente con la base caja del resto del
-        // módulo — la plata sale el 5.
-        includeRetail
-          ? this.prisma.retailSaleReturn.findMany({
-              where: {
-                tenantId: ctx.tenantId,
-                branchId: ctx.branchId,
-                returnedAt: { gte: range.from, lte: range.to },
-              },
-              include: { items: true },
-            })
-          : Promise.resolve([] as DashboardRetailReturn[]),
-      ]);
+            },
+          })
+        : Promise.resolve([] as DashboardBarberAppointment[]),
+      // TIENDA: SE PIDEN LOS ABONOS, NO LAS VENTAS. El ingreso del período es
+      // la plata que entró en el período. Los anulados no cuentan y los de una
+      // venta anulada tampoco: esa plata volvió.
+      includeRetail
+        ? this.prisma.retailSalePayment.findMany({
+            where: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              voidedAt: null,
+              paidAt: { gte: range.from, lte: range.to },
+              sale: { status: 'COMPLETED' },
+            },
+            include: { sale: { include: { items: true } } },
+            orderBy: { paidAt: 'asc' },
+          })
+        : Promise.resolve([] as DashboardRetailPayment[]),
+      // Las devoluciones del período. Restan el día en que OCURREN, no el de
+      // la venta: la venta del 2 de septiembre queda como fue y la devolución
+      // del 5 pesa en el 5. Es lo coherente con la base caja del resto del
+      // módulo — la plata sale el 5.
+      includeRetail
+        ? this.prisma.retailSaleReturn.findMany({
+            where: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              returnedAt: { gte: range.from, lte: range.to },
+            },
+            include: { items: true },
+          })
+        : Promise.resolve([] as DashboardRetailReturn[]),
+    ]);
 
     // El precio congelado en la cita manda sobre el del catálogo: reprecio o
     // renombrar un servicio no debe reescribir el histórico. Las citas
@@ -177,9 +200,10 @@ export class FinanceService {
       0,
     );
 
-    const retailRevenue =
-      retailSales.reduce((acc, sale) => acc + sale.totalCOP, 0) +
-      retailReturnsImpactCOP;
+    // Reparte cada abono: cuánto ingreso reconoce y cuánto costo se lleva.
+    const retail = await this.recognizeRetailPayments(retailPayments);
+
+    const retailRevenue = retail.revenueCOP + retailReturnsImpactCOP;
 
     const revenue =
       splits.reduce((acc, s) => acc + s.totalCOP, 0) +
@@ -188,7 +212,7 @@ export class FinanceService {
     const expensesTotal = expenses._sum.amountCOP ?? 0;
 
     // ── Costo de lo vendido ────────────────────────────────────────────────
-    const cogs = this.accumulateCogs(splits, barberAppointments, retailSales);
+    const cogs = this.accumulateCogs(splits, barberAppointments, retail);
     // El costo sigue al ingreso: el de lo devuelto sale del COGS y el de lo que
     // el cliente se llevó entra. Si no, una devolución bajaría el ingreso
     // dejando su costo adentro y la utilidad del período saldría hundida.
@@ -225,11 +249,13 @@ export class FinanceService {
     const profitMarginPct =
       revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0;
 
-    // "Órdenes" = tickets de restaurante + citas de barber + ventas de tienda.
+    // "Órdenes" = tickets de restaurante + citas de barber + ventas de tienda
+    // CERRADAS en el período. Una venta a medio abonar todavía no es una venta
+    // cerrada, y contarla en los dos períodos en que recibió plata la duplicaría.
     const ordersCount =
       new Set(splits.map((s) => s.orderId)).size +
       barberAppointments.length +
-      retailSales.length;
+      retail.closedSales.length;
     const averageOrderValue =
       ordersCount > 0 ? Math.round(revenue / ordersCount) : 0;
 
@@ -261,8 +287,11 @@ export class FinanceService {
       entry.quantity += 1;
       productMap.set(appt.service.id, entry);
     }
-    // Productos vendidos en tienda: el snapshot de la línea manda sobre el catálogo.
-    for (const sale of retailSales) {
+    // Productos vendidos en tienda: el snapshot de la línea manda sobre el
+    // catálogo. Se cuentan sobre las ventas CERRADAS en el período —no sobre los
+    // abonos— porque una unidad no se vende por partes: prorratear medias
+    // unidades entre dos meses no le sirve a nadie para saber qué se vende.
+    for (const sale of retail.closedSales) {
       for (const item of sale.items) {
         const entry = productMap.get(item.productId) ?? {
           name: item.name,
@@ -348,9 +377,11 @@ export class FinanceService {
     for (const appt of barberAppointments) {
       bumpDay(appt.scheduledAt, appt.service?.priceCOP ?? 0, appt.id, 1);
     }
-    for (const sale of retailSales) {
-      const units = sale.items.reduce((a, i) => a + i.quantity, 0);
-      bumpDay(sale.soldAt, sale.totalCOP, sale.id, units);
+    // La serie diaria es de PLATA: cada abono pesa el día en que entró. Las
+    // unidades solo se cuentan el día en que la venta se cierra, para no
+    // repartir mercancía entre días.
+    for (const row of retail.recognized) {
+      bumpDay(row.paidAt, row.amountCOP, row.saleId, row.closedUnits);
     }
     const revenueByDay = [...dayAgg.entries()]
       .map(([date, v]) => ({
@@ -405,10 +436,113 @@ export class FinanceService {
    * sin receta cargada no aporta al COGS y su ingreso se marca como no costeado,
    * para que el margen resultante se pueda leer junto a su cobertura.
    */
+  /**
+   * Reparte los abonos de tienda: cuánto ingreso reconoce cada uno, cuánto costo
+   * se lleva, y qué ventas quedaron CERRADAS dentro del período.
+   *
+   * EL COSTO SIGUE AL INGRESO, PROPORCIONALMENTE. Si de una venta de 45.000 con
+   * 30.000 de costo entraron 25.000, el período reconoce 25.000 de ingreso y la
+   * parte del costo que le corresponde. Cargar el costo entero en el primer
+   * abono dejaría el primer mes en pérdida y el segundo con margen del 100%: dos
+   * meses mintiendo por la misma venta.
+   *
+   * EL REPARTO NO PIERDE NI INVENTA PESOS. Cada abono se lleva la diferencia
+   * entre el costo acumulado hasta él y el acumulado hasta el anterior, así que
+   * los redondeos se compensan y la suma de todos los abonos de una venta
+   * cobrada da EXACTAMENTE su costo. Prorratear cada abono por separado dejaría
+   * un peso suelto por cada venta.
+   *
+   * VENTA CERRADA = la que recibió su último abono dentro del período. Es la
+   * fecha en que la orden se cierra: lo que se cuenta una sola vez —unidades,
+   * número de órdenes, top de productos— se cuenta ahí.
+   */
+  private async recognizeRetailPayments(payments: DashboardRetailPayment[]) {
+    const empty = {
+      revenueCOP: 0,
+      cogsCOP: 0,
+      closedSales: [] as DashboardRetailSale[],
+      recognized: [] as Array<{
+        paidAt: Date;
+        amountCOP: number;
+        saleId: string;
+        closedUnits: number;
+      }>,
+    };
+    if (payments.length === 0) return empty;
+
+    // El libro completo de cada venta tocada, no solo los abonos del período:
+    // sin lo anterior no se sabe en qué punto del costo va cada uno.
+    const saleIds = [...new Set(payments.map((row) => row.saleId))];
+    const ledger = await this.prisma.retailSalePayment.findMany({
+      where: { saleId: { in: saleIds }, voidedAt: null },
+      orderBy: [{ paidAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, saleId: true, amountCOP: true },
+    });
+
+    /** Acumulado antes y después de cada abono, y si es el que cierra la venta. */
+    const position = new Map<
+      string,
+      { before: number; after: number; last: boolean }
+    >();
+    const bySale = new Map<string, typeof ledger>();
+    for (const row of ledger) {
+      bySale.set(row.saleId, [...(bySale.get(row.saleId) ?? []), row]);
+    }
+    for (const rows of bySale.values()) {
+      let running = 0;
+      rows.forEach((row, index) => {
+        const before = running;
+        running += row.amountCOP;
+        position.set(row.id, {
+          before,
+          after: running,
+          last: index === rows.length - 1,
+        });
+      });
+    }
+
+    const result = {
+      ...empty,
+      closedSales: [],
+      recognized: [],
+    } as typeof empty;
+    for (const payment of payments) {
+      const sale = payment.sale;
+      const spot = position.get(payment.id);
+      const total = sale.totalCOP;
+
+      // Una venta en 0 no reparte costo: no hay contra qué prorratear.
+      const costShare =
+        spot && total > 0
+          ? Math.round((sale.costCOP * spot.after) / total) -
+            Math.round((sale.costCOP * spot.before) / total)
+          : 0;
+
+      // Cierra si es el último abono Y alcanzó el total. Un último abono que
+      // deja saldo es una venta abierta, no una cerrada.
+      const closes = Boolean(spot?.last && spot.after >= total && total > 0);
+      const units = closes
+        ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
+        : 0;
+
+      result.revenueCOP += payment.amountCOP;
+      result.cogsCOP += costShare;
+      if (closes) result.closedSales.push(sale);
+      result.recognized.push({
+        paidAt: payment.paidAt,
+        amountCOP: payment.amountCOP,
+        saleId: payment.saleId,
+        closedUnits: units,
+      });
+    }
+
+    return result;
+  }
+
   private accumulateCogs(
     splits: DashboardSplit[],
     appointments: DashboardBarberAppointment[],
-    retailSales: DashboardRetailSale[],
+    retail: { revenueCOP: number; cogsCOP: number },
   ): CogsAccumulator {
     const acc: CogsAccumulator = {
       cogsCOP: 0,
@@ -441,11 +575,10 @@ export class FinanceService {
     }
 
     // Tiendas: el costo ya venía congelado desde que existe el modelo, así que
-    // esta vertical siempre tiene cobertura completa.
-    for (const sale of retailSales) {
-      acc.cogsCOP += sale.costCOP;
-      acc.knownRevenueCOP += sale.totalCOP;
-    }
+    // esta vertical siempre tiene cobertura completa. Llega ya repartido por
+    // abono —el costo sigue al ingreso— desde `recognizeRetailPayments`.
+    acc.cogsCOP += retail.cogsCOP;
+    acc.knownRevenueCOP += retail.revenueCOP;
 
     return acc;
   }

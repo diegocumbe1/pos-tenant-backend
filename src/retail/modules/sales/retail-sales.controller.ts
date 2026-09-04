@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -24,8 +25,12 @@ import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import {
   CreateRetailSaleDto,
+  CreateRetailSaleNoteDto,
+  CreateRetailSalePaymentDto,
   DeliverRetailSaleDto,
   PayRetailSaleDto,
+  UpdateRetailSaleDateDto,
+  VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
 } from './dto/retail-sale.dto';
 import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
@@ -46,8 +51,20 @@ function parseDeliveryStatus(value?: string): RetailDeliveryStatus | undefined {
   return value === 'DELIVERED' || value === 'PENDING' ? value : undefined;
 }
 
-function parsePaymentStatus(value?: string): RetailPaymentStatus | undefined {
-  return value === 'PAID' || value === 'PENDING' ? value : undefined;
+/**
+ * 'OPEN' no es un estado de la base: significa "todo lo que no está cobrado
+ * completo". Con abonos, filtrar por 'PENDING' esconde las ventas a medio pagar,
+ * que son justamente las que hay que ir a cobrar.
+ */
+function parsePaymentStatus(
+  value?: string,
+): RetailPaymentStatus | 'OPEN' | undefined {
+  return value === 'PAID' ||
+    value === 'PENDING' ||
+    value === 'PARTIAL' ||
+    value === 'OPEN'
+    ? value
+    : undefined;
 }
 
 @ApiTags('Retail')
@@ -93,7 +110,7 @@ export class RetailSalesController {
     @Query('search') search?: string,
     @Query('saleType') saleType?: RetailSaleType,
     @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
-    @Query('paymentStatus') paymentStatus?: RetailPaymentStatus,
+    @Query('paymentStatus') paymentStatus?: string,
   ) {
     return this.sales.listSales(ctx, {
       from,
@@ -179,6 +196,65 @@ export class RetailSalesController {
     return this.returns.create(ctx, id, dto);
   }
 
+  /**
+   * Registra un abono: plata que entró por esta venta, sin que tenga que ser
+   * todo el saldo.
+   *
+   * Va con escritura de ventas y no con el de anular: recibir un abono es
+   * trabajo de mostrador, igual que cobrar.
+   */
+  @Post(':id/payments')
+  @RequirePermissions('retail:sales:write')
+  addPayment(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CreateRetailSalePaymentDto,
+  ) {
+    return this.sales.addPayment(ctx, id, dto);
+  }
+
+  /**
+   * Anula un abono mal digitado. No lo borra: sigue en el histórico con el
+   * motivo y con quién lo anuló.
+   *
+   * Va con el permiso de anular: deshacer plata registrada es una corrección de
+   * dueño, no trabajo de mostrador.
+   */
+  @Post(':id/payments/:paymentId/void')
+  @RequirePermissions('retail:sales:void')
+  voidPayment(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+    @Body() dto: VoidRetailSalePaymentDto,
+  ) {
+    return this.sales.voidPayment(ctx, id, paymentId, dto);
+  }
+
+  /**
+   * El histórico de la venta: todo lo que le pasó, en orden, con autor y hora.
+   *
+   * Va aparte del detalle y no dentro de él porque solo se pide al abrirlo: la
+   * bandeja lista cientos de ventas y ninguna necesita su historia para
+   * dibujarse.
+   */
+  @Get(':id/events')
+  @RequirePermissions('retail:sales:read')
+  events(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.sales.listEvents(ctx, id);
+  }
+
+  /** Una anotación a mano en el histórico. No cambia ningún número. */
+  @Post(':id/notes')
+  @RequirePermissions('retail:sales:write')
+  addNote(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CreateRetailSaleNoteDto,
+  ) {
+    return this.sales.addSaleNote(ctx, id, dto);
+  }
+
   @Post(':id/pay')
   @RequirePermissions('retail:sales:write')
   pay(
@@ -201,6 +277,24 @@ export class RetailSalesController {
     @Body() dto: PayRetailSaleDto,
   ) {
     return this.sales.unpaySale(ctx, id, dto);
+  }
+
+  /**
+   * Corrige el día de la venta. Se permite aunque ya esté cobrada y entregada:
+   * corregir la fecha no deshace nada, y bloquearlo al cerrar dejaría el error
+   * escrito para siempre.
+   *
+   * Va con el permiso de anular y no con el de escritura: mueve un ingreso de un
+   * día a otro, que es una corrección de dueño, no trabajo de mostrador.
+   */
+  @Patch(':id/date')
+  @RequirePermissions('retail:sales:void')
+  updateDate(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateRetailSaleDateDto,
+  ) {
+    return this.sales.updateSaleDate(ctx, id, dto);
   }
 
   @Post(':id/void')

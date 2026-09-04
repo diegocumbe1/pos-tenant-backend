@@ -87,6 +87,28 @@ export function formatDateTimeCO(value: Date | string): string {
 }
 
 /**
+ * Hora del reloj colombiano de un instante, como 'HH:mm:ss' de 24 horas.
+ *
+ * Sirve para anclar un día suelto ('2026-09-03') a una hora concreta: una
+ * cadena date-only se parsea como UTC por spec, así que sin hora ni offset el
+ * "3 de septiembre" colombiano cae en el 2 a las 7 de la noche.
+ */
+export function clockTimeCO(value: Date | string = new Date()): string {
+  // `hourCycle: 'h23'` y no `hour12: false`: con hour12 el ciclo lo elige el
+  // locale y varios resuelven a h24, que escribe la medianoche como '24:30:00'.
+  // Esa cadena no es una hora válida en un ISO y correría la fecha un día.
+  return formatter(
+    {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    },
+    'en-GB',
+  ).format(new Date(value));
+}
+
+/**
  * Diferencia en días CALENDARIO colombianos entre dos instantes, ignorando la
  * hora. Positivo si `to` es posterior.
  *
