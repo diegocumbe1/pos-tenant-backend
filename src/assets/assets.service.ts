@@ -68,15 +68,20 @@ export class AssetsService {
     const uploaded = await this.imageUpload.uploadImage({
       file,
       pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
-      // El QR debe quedar nítido para escanear → 'section' (1600px). Menú por kind, producto thumbnail.
-      // El QR debe quedar nítido para escanear y la foto de una guía tiene que
-      // dejar leer el número → 'section' (1600px) en los dos.
+      // El QR debe quedar nítido para escanear → 'section' (1600px, con mínimo).
+      //
+      // El soporte de un envío va como 'document': mismo tope alto para que se
+      // lea el número de la guía, pero SIN mínimo. Un soporte es la foto o el
+      // pantallazo que le mandaron, del tamaño que sea; exigirle dimensiones
+      // dejaba al dueño sin poder guardar su único respaldo del flete.
       kind:
-        dto.scope === 'payment' || dto.scope === 'shipment'
-          ? 'section'
-          : dto.scope === 'menu'
-            ? this.menuKind(dto.kind)
-            : PRODUCT_IMAGE_KIND,
+        dto.scope === 'shipment'
+          ? 'document'
+          : dto.scope === 'payment'
+            ? 'section'
+            : dto.scope === 'menu'
+              ? this.menuKind(dto.kind)
+              : PRODUCT_IMAGE_KIND,
     });
 
     return {

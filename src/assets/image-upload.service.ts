@@ -31,6 +31,7 @@ export type ImageKind =
   | 'thumbnail'
   | 'service'
   | 'section'
+  | 'document'
   | 'default';
 
 export type ImageUploadInput = {
@@ -68,11 +69,7 @@ export type FileUploadResult = {
 
 const MAX_INPUT_SIZE_BYTES = 5 * 1024 * 1024;
 const PDF_HEADER = '%PDF-';
-const ALLOWED_INPUT_MIMES = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-]);
+const ALLOWED_INPUT_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 const MIN_DIMENSIONS: Record<ImageKind, { width: number; height: number }> = {
   logo: { width: 128, height: 128 },
@@ -82,6 +79,13 @@ const MIN_DIMENSIONS: Record<ImageKind, { width: number; height: number }> = {
   thumbnail: { width: 320, height: 240 },
   service: { width: 640, height: 480 },
   section: { width: 640, height: 480 },
+  // SIN MÍNIMO A PROPÓSITO. Un soporte es la foto de una guía, el pantallazo de
+  // un chat o el recorte de un comprobante: nace del tamaño que sea, y ese
+  // tamaño no es negociable con quien lo mandó. Exigirle 640x480 rechazaba
+  // pantallazos perfectamente legibles —el caso real fue uno de 603x414— y
+  // dejaba al dueño sin poder guardar el único respaldo que tenía del flete.
+  // Que se vea borroso es su problema; que no se pueda guardar es el nuestro.
+  document: { width: 1, height: 1 },
   default: { width: 480, height: 320 },
 };
 
@@ -93,6 +97,9 @@ const MAX_WIDTHS: Record<ImageKind, number> = {
   thumbnail: 640,
   service: 1600,
   section: 1600,
+  // El tope alto sí se mantiene: el número de una guía tiene que poder leerse.
+  // Reescalar nunca agranda, así que un pantallazo chico entra tal cual.
+  document: 1600,
   default: 1600,
 };
 
@@ -164,7 +171,9 @@ export class ImageUploadService {
     };
   }
 
-  async uploadPdf(input: Omit<ImageUploadInput, 'kind' | 'maxWidth'>): Promise<FileUploadResult> {
+  async uploadPdf(
+    input: Omit<ImageUploadInput, 'kind' | 'maxWidth'>,
+  ): Promise<FileUploadResult> {
     const file = input.file;
     this.assertPdfFile(file);
 
@@ -193,17 +202,17 @@ export class ImageUploadService {
 
   private assertInputFile(file: UploadedImageFile) {
     if (!file?.buffer?.length) {
-      throw new BadRequestException('Image file is required');
+      throw new BadRequestException('Falta el archivo de imagen');
     }
     // Multer corta el archivo en vez de rechazarlo cuando excede `limits.fileSize`.
     // Si llega truncado, sharp ve un stream incompleto y falla con "Invalid input".
     if (file.truncated) {
       throw new BadRequestException(
-        'Image file exceeds 5 MB limit (upload was truncated)',
+        'La imagen pesa más de 5 MB. Mándala más liviana o toma la foto en menor calidad.',
       );
     }
     if (file.size && file.size > MAX_INPUT_SIZE_BYTES) {
-      throw new BadRequestException('Image file must be 5 MB or smaller');
+      throw new BadRequestException('La imagen debe pesar 5 MB o menos');
     }
     if (file.buffer.length > MAX_INPUT_SIZE_BYTES) {
       throw new BadRequestException('Image file must be 5 MB or smaller');
@@ -211,24 +220,22 @@ export class ImageUploadService {
     const declared = file.mimetype?.split(';')[0];
     if (!declared || !ALLOWED_INPUT_MIMES.has(declared)) {
       throw new BadRequestException(
-        `Unsupported image type "${declared ?? 'unknown'}". Allowed: ${[
-          ...ALLOWED_INPUT_MIMES,
-        ].join(', ')}`,
+        `Ese tipo de archivo no se puede subir ("${declared ?? 'desconocido'}"). Se aceptan JPG, PNG y WebP.`,
       );
     }
   }
 
   private assertPdfFile(file: UploadedImageFile) {
     if (!file?.buffer?.length) {
-      throw new BadRequestException('PDF file is required');
+      throw new BadRequestException('Falta el archivo PDF');
     }
     if (file.truncated) {
       throw new BadRequestException(
-        'PDF file exceeds 5 MB limit (upload was truncated)',
+        'El PDF pesa más de 5 MB. Mándalo más liviano.',
       );
     }
     if (file.size && file.size > MAX_INPUT_SIZE_BYTES) {
-      throw new BadRequestException('PDF file must be 5 MB or smaller');
+      throw new BadRequestException('El PDF debe pesar 5 MB o menos');
     }
     if (file.buffer.length > MAX_INPUT_SIZE_BYTES) {
       throw new BadRequestException('PDF file must be 5 MB or smaller');
@@ -239,8 +246,10 @@ export class ImageUploadService {
         `Unsupported payment QR file type "${declared ?? 'unknown'}". Allowed: image/jpeg, image/png, image/webp, application/pdf`,
       );
     }
-    if (file.buffer.subarray(0, PDF_HEADER.length).toString('utf8') !== PDF_HEADER) {
-      throw new BadRequestException('Invalid PDF file');
+    if (
+      file.buffer.subarray(0, PDF_HEADER.length).toString('utf8') !== PDF_HEADER
+    ) {
+      throw new BadRequestException('El archivo no es un PDF válido');
     }
   }
 
@@ -256,7 +265,7 @@ export class ImageUploadService {
           .toString('hex')} reason=${reason}`,
       );
       throw new BadRequestException(
-        `Invalid or unsupported image file (${reason})`,
+        'No se pudo leer la imagen. Puede estar dañada o incompleta.',
       );
     }
 
@@ -272,16 +281,18 @@ export class ImageUploadService {
 
     if (!detectedMime || !ALLOWED_INPUT_MIMES.has(detectedMime)) {
       throw new BadRequestException(
-        `Only image/jpeg, image/png and image/webp are allowed (detected: ${format ?? 'unknown'})`,
+        `Se aceptan JPG, PNG y WebP (este archivo es ${format ?? 'de un tipo desconocido'}).`,
       );
     }
     if (declaredMime && declaredMime.split(';')[0] !== detectedMime) {
       throw new BadRequestException(
-        `Image MIME type does not match file bytes (declared ${declaredMime}, actual ${detectedMime})`,
+        `El archivo dice ser ${declaredMime} pero por dentro es ${detectedMime}. Vuelve a guardarlo y súbelo otra vez.`,
       );
     }
     if (!metadata.width || !metadata.height) {
-      throw new BadRequestException('Could not read image dimensions');
+      throw new BadRequestException(
+        'No se pudo leer la imagen. Puede estar dañada.',
+      );
     }
     return { width: metadata.width, height: metadata.height };
   }
@@ -294,7 +305,7 @@ export class ImageUploadService {
     if (metadata.width < min.width || metadata.height < min.height) {
       throw new BadRequestException({
         code: 'IMAGE_DIMENSIONS_TOO_SMALL',
-        message: `Image must be at least ${min.width}x${min.height}px for kind=${kind}`,
+        message: `La imagen es muy pequeña: debe tener al menos ${min.width}x${min.height} píxeles y esta tiene ${metadata.width}x${metadata.height}.`,
         minWidth: min.width,
         minHeight: min.height,
         width: metadata.width,
