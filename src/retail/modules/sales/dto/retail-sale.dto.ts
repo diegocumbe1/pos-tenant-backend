@@ -15,6 +15,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -260,6 +261,37 @@ export class CreateRetailSaleNoteDto {
   @IsString()
   @MaxLength(300)
   note!: string;
+}
+
+/**
+ * Cambia (o pone) el cliente de una venta ya registrada.
+ *
+ * EL CASO. Se cobró de afán sin asociar a nadie, o se eligió el cliente
+ * equivocado de la lista. Sin esto la única salida era anular y volver a
+ * digitar, que mueve el inventario dos veces y le cambia el consecutivo.
+ *
+ * NO ES INOCENTE: reescribe el histórico de compras de dos clientes. Por eso va
+ * con el permiso de corrección y queda en el histórico de la venta.
+ */
+export class UpdateRetailSaleCustomerDto {
+  @ApiPropertyOptional({
+    example: 'cus_xxx',
+    description:
+      'Cliente al que queda asociada la venta. `null` la deja sin cliente, que ' +
+      'es lo correcto cuando se asoció a la persona equivocada y no se sabe ' +
+      'quién era: inventar un dueño es peor que no tenerlo.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object, value) => value !== null)
+  @IsString()
+  customerId?: string | null;
+
+  @ApiPropertyOptional({ example: 'Se cobró sin asociar al cliente' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
 }
 
 export class DeliverRetailSaleItemDto {

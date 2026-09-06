@@ -5,6 +5,7 @@ import {
   IsString,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateRetailCustomerDto {
@@ -38,6 +39,24 @@ export class CreateRetailCustomerDto {
   notes?: string;
 }
 
+/**
+ * Actualiza la ficha del cliente.
+ *
+ * LOS OPCIONALES ACEPTAN CADENA VACÍA PARA BORRARSE. En un PATCH, omitir un
+ * campo significa "déjalo como estaba", así que sin esto no habría forma de
+ * quitar un teléfono mal digitado: mandarlo vacío lo dejaba igual y el dueño
+ * quedaba obligado a borrar al cliente y crearlo de nuevo, perdiendo su
+ * historial de compras. El correo lleva su propia excepción porque `@IsEmail`
+ * rechaza la cadena vacía.
+ */
 export class UpdateRetailCustomerDto extends PartialType(
   CreateRetailCustomerDto,
-) {}
+) {
+  @ApiPropertyOptional({
+    description: 'Cadena vacía para quitar el correo guardado.',
+  })
+  @IsOptional()
+  @ValidateIf((_object, value) => value !== '')
+  @IsEmail()
+  declare email?: string;
+}

@@ -1,0 +1,24 @@
+-- Abono del cliente al flete, hecho POR FUERA de sus ventas.
+--
+-- POR QUÉ. El flete se le carga a una venta del paquete para que se pueda
+-- cobrar, pero una venta ya cobrada no se toca: reescribir su total cambiaría
+-- un ingreso del pasado. Cuando el cliente adelanta la plata del envío antes de
+-- que exista esa venta —el caso normal en encomiendas— esos pesos se quedaban
+-- sin dónde vivir: el envío los marcaba "sin cobrar" para siempre y el gasto de
+-- la guía pesaba entero contra la utilidad aunque el cliente ya lo hubiera
+-- reembolsado.
+--
+-- Caso real (EN-000001, tenant Bella C.): guía de 35.900, el cliente había
+-- mandado 27.500 antes y solo se le cargaron 8.400 a RS-000024. La utilidad del
+-- período quedaba 27.500 por debajo de la real.
+--
+-- Es una PARTE de shippingChargedCOP, no un cobro nuevo: a la venta se le carga
+-- shippingChargedCOP - shippingPrepaidCOP.
+--
+-- SIN BACKFILL A PROPÓSITO. Se podría deducir el abono de los envíos ya
+-- entregados que tienen flete sin cargar (cobrado − cargado), pero eso sería
+-- afirmar que entró una plata que nadie registró: reduce un gasto real y sube
+-- la utilidad sin que un humano lo haya confirmado. Los envíos viejos arrancan
+-- en 0 y la alerta de la pantalla dice exactamente cuánto falta por registrar.
+ALTER TABLE "retail_shipments"
+  ADD COLUMN "shippingPrepaidCOP" INTEGER NOT NULL DEFAULT 0;

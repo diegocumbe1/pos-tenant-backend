@@ -8,6 +8,30 @@ import {
   UpdateRetailCustomerDto,
 } from './dto/retail-customer.dto';
 
+/**
+ * Cómo llega un campo de texto opcional en un PATCH:
+ *
+ *   undefined → no se manda: se deja como estaba.
+ *   ''        → se manda vacío: se BORRA, y se guarda NULL.
+ *   valor     → se guarda.
+ *
+ * La cadena vacía tiene que borrar de verdad. Sin esto no había forma de quitar
+ * un teléfono mal digitado —mandarlo vacío lo dejaba igual— y la única salida
+ * era borrar al cliente y crearlo de nuevo, perdiendo su historial de compras.
+ *
+ * Y borra a NULL, no a '': un teléfono guardado como cadena vacía existe pero no
+ * sirve, y toda pantalla que hace `phone ?? '—'` mostraría un hueco en vez de un
+ * guion. "No tengo el dato" en base de datos se escribe NULL.
+ */
+function patchText(
+  value: string | undefined,
+  normalize: (value: string) => string = (raw) => raw,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : normalize(trimmed);
+}
+
 @Injectable()
 export class RetailCustomersService {
   constructor(
@@ -72,11 +96,10 @@ export class RetailCustomersService {
         where: { id },
         data: {
           name: dto.name?.trim(),
-          phone:
-            dto.phone === undefined ? undefined : dto.phone.replace(/\s/g, ''),
-          email: dto.email,
-          documentId: dto.documentId,
-          notes: dto.notes,
+          phone: patchText(dto.phone, (value) => value.replace(/\s/g, '')),
+          email: patchText(dto.email),
+          documentId: patchText(dto.documentId),
+          notes: patchText(dto.notes),
         },
       });
     } catch (error) {

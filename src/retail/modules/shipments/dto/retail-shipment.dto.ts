@@ -67,14 +67,27 @@ export class RetailShipmentDetailsDto {
   @ApiPropertyOptional({
     example: 18000,
     description:
-      'Lo que se le cobra al cliente por el envío. Si se omite se copia del ' +
-      'costo: lo normal es trasladar el flete tal cual. Mandar 0 explícitamente ' +
-      'es un envío regalado.',
+      'Lo que se le cobra al cliente por el envío EN TOTAL. Si se omite se ' +
+      'copia del costo: lo normal es trasladar el flete tal cual. Mandar 0 ' +
+      'explícitamente es un envío regalado.',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
   shippingChargedCOP?: number;
+
+  @ApiPropertyOptional({
+    example: 27500,
+    description:
+      'De ese cobro, cuánto ya mandó el cliente por fuera de sus ventas ' +
+      '(adelantó la plata del flete para que el paquete saliera). Es una PARTE ' +
+      'de shippingChargedCOP, no un cobro adicional: a la venta se le carga ' +
+      'solo la diferencia, y el gasto de la guía baja en lo ya reembolsado.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  shippingPrepaidCOP?: number;
 
   @ApiPropertyOptional({ example: 'Va con el pedido de la semana pasada' })
   @IsOptional()

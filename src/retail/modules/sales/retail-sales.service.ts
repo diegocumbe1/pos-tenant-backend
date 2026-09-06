@@ -26,6 +26,7 @@ import {
   CreateRetailSalePaymentDto,
   DeliverRetailSaleDto,
   PayRetailSaleDto,
+  UpdateRetailSaleCustomerDto,
   UpdateRetailSaleDateDto,
   VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
@@ -194,6 +195,9 @@ export class RetailSalesService {
             id: true,
             totalCOP: true,
             costCOP: true,
+            // El flete viaja dentro del total de la venta, así que entra en el
+            // ingreso pero NO es margen: hay que poder restarlo del resultado.
+            shippingCOP: true,
             saleType: true,
             items: { select: { quantity: true } },
           },
@@ -288,11 +292,16 @@ export class RetailSalesService {
       bucket.salesCount = row.closedSales;
       bucket.revenueCOP = row.revenueCOP;
       bucket.costCOP = row.cogsCOP;
+      bucket.shippingCOP = row.shippingCOP;
       bucket.unitsSold = row.closedUnits;
     }
     for (const bucket of Object.values(bySaleType)) {
-      bucket.grossProfitCOP = bucket.revenueCOP - bucket.costCOP;
-      bucket.marginPct = this.marginPct(bucket.revenueCOP, bucket.costCOP);
+      bucket.grossProfitCOP =
+        bucket.revenueCOP - bucket.costCOP - bucket.shippingCOP;
+      bucket.marginPct = this.marginPct(
+        bucket.revenueCOP,
+        bucket.costCOP + bucket.shippingCOP,
+      );
       bucket.averageTicketCOP = bucket.salesCount
         ? Math.round(bucket.revenueCOP / bucket.salesCount)
         : 0;
@@ -304,8 +313,20 @@ export class RetailSalesService {
       /** Plata que ENTRÓ en el período, venga de la venta de hoy o de un fiado. */
       revenueCOP,
       costCOP,
-      grossProfitCOP: revenueCOP - costCOP,
-      marginPct: this.marginPct(revenueCOP, costCOP),
+      /**
+       * EL FLETE NO ES MARGEN.
+       *
+       * Está dentro de `revenueCOP` porque es plata que entró —el cliente paga
+       * mercancía más envío en un solo giro— pero lo que se cobra por mandar el
+       * paquete se va en pagar la guía, y esa guía es un gasto de finanzas que
+       * nunca pasa por `costCOP` (ahí solo va el costo de la mercancía). Si no
+       * se resta acá, cada envío se cuenta como utilidad pura: la tarjeta de
+       * cada venta ya lo restaba y el total de arriba no, así que las dos
+       * cifras de la misma pantalla no sumaban lo mismo.
+       */
+      shippingCOP: recognized.shippingCOP,
+      grossProfitCOP: revenueCOP - costCOP - recognized.shippingCOP,
+      marginPct: this.marginPct(revenueCOP, costCOP + recognized.shippingCOP),
       unitsSold,
       averageTicketCOP: recognized.closedSales
         ? Math.round(revenueCOP / recognized.closedSales)
@@ -337,6 +358,8 @@ export class RetailSalesService {
       salesCount: 0,
       revenueCOP: 0,
       costCOP: 0,
+      /** Flete reconocido en este tipo de venta. Va dentro de `revenueCOP`. */
+      shippingCOP: 0,
       grossProfitCOP: 0,
       marginPct: 0,
       unitsSold: 0,
@@ -1323,18 +1346,134 @@ export class RetailSalesService {
 
     // La última compra del cliente es la fecha de la venta, no la de digitación.
     if (existing.customerId) {
-      const last = await this.prisma.retailSale.findFirst({
-        where: { customerId: existing.customerId, status: 'COMPLETED' },
-        orderBy: { soldAt: 'desc' },
-        select: { soldAt: true },
-      });
-      await this.prisma.retailCustomer.update({
-        where: { id: existing.customerId },
-        data: { lastPurchaseAt: last?.soldAt ?? null },
-      });
+      await this.refreshLastPurchase(this.prisma, existing.customerId);
     }
 
     return this.getSale(ctx, id);
+  }
+
+  /**
+   * Cambia (o pone) el cliente de una venta ya registrada.
+   *
+   * EL CASO. Se cobró de afán sin asociar a nadie, o se eligió mal de la lista.
+   * Sin esto la única salida era anular y volver a digitar: mueve el inventario
+   * dos veces y le cambia el consecutivo al cliente.
+   *
+   * LO QUE HACE DIFÍCIL ESTO no es cambiar el campo, es que el histórico de
+   * compras de un cliente —cuánto lleva gastado, cuántas compras, cuándo fue la
+   * última— está guardado en el cliente, no calculado. Así que hay que restarle
+   * al que sale y sumarle al que entra, y recalcular la última compra de ambos:
+   * si la venta que se mueve era justo la última del cliente viejo, su "última
+   * compra" pasa a ser otra.
+   *
+   * NO TOCA UNA VENTA ANULADA: sus totales ya se le habían restado al cliente al
+   * anularla, y volver a restarlos dejaría el histórico en negativo.
+   */
+  async updateSaleCustomer(
+    ctx: TenantContext,
+    id: string,
+    dto: UpdateRetailSaleCustomerDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    const existing = await this.prisma.retailSale.findUniqueOrThrow({
+      where: { id },
+      select: {
+        status: true,
+        customerId: true,
+        totalCOP: true,
+        customer: { select: { name: true } },
+      },
+    });
+    if (existing.status === 'VOIDED') {
+      throw new BadRequestException(
+        'La venta está anulada: cambiarle el cliente no corregiría nada',
+      );
+    }
+
+    const nextId = dto.customerId ?? null;
+    if (nextId === existing.customerId) {
+      throw new BadRequestException('La venta ya está con ese cliente');
+    }
+
+    let nextName: string | null = null;
+    if (nextId) {
+      const next = await this.prisma.retailCustomer.findFirst({
+        where: { id: nextId, tenantId: ctx.tenantId, branchId: ctx.branchId },
+        select: { name: true },
+      });
+      if (!next) {
+        throw new BadRequestException('Ese cliente no existe en esta tienda');
+      }
+      nextName = next.name;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.retailSale.update({
+        where: { id },
+        data: { customerId: nextId },
+      });
+
+      // Al que sale se le quita lo que esta venta le sumaba; al que entra se le
+      // pone. Se hace después de mover la venta para que el recálculo de la
+      // última compra lea el estado ya nuevo.
+      if (existing.customerId) {
+        await tx.retailCustomer.update({
+          where: { id: existing.customerId },
+          data: {
+            totalSpentCOP: { decrement: existing.totalCOP },
+            salesCount: { decrement: 1 },
+          },
+        });
+        await this.refreshLastPurchase(tx, existing.customerId);
+      }
+      if (nextId) {
+        await tx.retailCustomer.update({
+          where: { id: nextId },
+          data: {
+            totalSpentCOP: { increment: existing.totalCOP },
+            salesCount: { increment: 1 },
+          },
+        });
+        await this.refreshLastPurchase(tx, nextId);
+      }
+
+      const from = existing.customer?.name ?? 'sin cliente';
+      const to = nextName ?? 'sin cliente';
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'CUSTOMER_CHANGED',
+        summary: `Cliente: ${from} → ${to}`,
+        note: dto.reason,
+        detail: {
+          fromCustomerId: existing.customerId,
+          toCustomerId: nextId,
+          amountCOP: existing.totalCOP,
+        },
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * Recalcula la fecha de última compra de un cliente desde sus ventas.
+   *
+   * No se puede arrastrar a mano: si la venta que se movió era justo la última,
+   * la fecha guardada apunta a algo que ya no le pertenece.
+   */
+  private async refreshLastPurchase(
+    tx: Prisma.TransactionClient,
+    customerId: string,
+  ) {
+    const last = await tx.retailSale.findFirst({
+      where: { customerId, status: 'COMPLETED' },
+      orderBy: { soldAt: 'desc' },
+      select: { soldAt: true },
+    });
+    await tx.retailCustomer.update({
+      where: { id: customerId },
+      data: { lastPurchaseAt: last?.soldAt ?? null },
+    });
   }
 
   /**
@@ -1705,6 +1844,7 @@ export class RetailSalesService {
       sale: {
         totalCOP: number;
         costCOP: number;
+        shippingCOP: number;
         saleType: RetailSaleType;
         items: Array<{ quantity: number }>;
       };
@@ -1713,12 +1853,15 @@ export class RetailSalesService {
     const emptyType = () => ({
       revenueCOP: 0,
       cogsCOP: 0,
+      shippingCOP: 0,
       closedSales: 0,
       closedUnits: 0,
     });
     const result = {
       revenueCOP: 0,
       cogsCOP: 0,
+      /** Flete reconocido en el período. Está dentro de `revenueCOP`. */
+      shippingCOP: 0,
       closedSales: 0,
       closedUnits: 0,
       /** De lo que entró, cuánto es de ventas que siguen abiertas. */
@@ -1771,6 +1914,15 @@ export class RetailSalesService {
           ? Math.round((sale.costCOP * spot.after) / total) -
             Math.round((sale.costCOP * spot.before) / total)
           : 0;
+      // El flete se prorratea igual que el costo, y por la misma razón: con
+      // abonos, una venta con envío se cobra en pedazos y cada pedazo trae su
+      // parte de flete. Reconocerlo entero en el primer abono le quitaría todo
+      // el margen a un mes para regalárselo al siguiente.
+      const shippingShare =
+        spot && total > 0
+          ? Math.round((sale.shippingCOP * spot.after) / total) -
+            Math.round((sale.shippingCOP * spot.before) / total)
+          : 0;
       // Cierra si es el último abono Y alcanzó el total. Un último abono que
       // deja saldo es una venta abierta, no una cerrada.
       const closes = Boolean(spot?.last && spot.after >= total && total > 0);
@@ -1780,6 +1932,7 @@ export class RetailSalesService {
 
       result.revenueCOP += payment.amountCOP;
       result.cogsCOP += costShare;
+      result.shippingCOP += shippingShare;
       if (closes) {
         result.closedSales += 1;
         result.closedUnits += units;
@@ -1792,6 +1945,7 @@ export class RetailSalesService {
       const bucket = result.byType[sale.saleType];
       bucket.revenueCOP += payment.amountCOP;
       bucket.cogsCOP += costShare;
+      bucket.shippingCOP += shippingShare;
       if (closes) {
         bucket.closedSales += 1;
         bucket.closedUnits += units;

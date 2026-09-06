@@ -2488,8 +2488,20 @@ model RetailShipment {
 
   // Lo que cuesta la guía.
   shippingCostCOP    Int @default(0)
-  // Lo que se le cobra al cliente por el envío. 0 = envío regalado.
+  // Lo que se le cobra al cliente por el envío EN TOTAL. 0 = envío regalado.
   shippingChargedCOP Int @default(0)
+  // De ese cobro, cuánto ya había mandado el cliente POR FUERA de sus ventas.
+  //
+  // Pasa todo el tiempo en encomiendas: el cliente adelanta la plata del flete
+  // para que el paquete salga, y esa plata entra días antes de que exista la
+  // venta que lo llevaría. Sin este campo esos pesos no tienen dónde vivir: no
+  // se pueden cargar a una venta ya cobrada, así que el envío los reportaba
+  // eternamente como "sin cobrar" y el gasto de la guía quedaba entero contra
+  // la utilidad aunque el cliente ya lo hubiera reembolsado.
+  //
+  // Es una PARTE de `shippingChargedCOP`, no un cobro adicional: lo que se le
+  // carga a una venta es `shippingChargedCOP - shippingPrepaidCOP`.
+  shippingPrepaidCOP Int @default(0)
 
   note        String?
   sentAt      DateTime?
@@ -2715,6 +2727,7 @@ enum RetailSaleEventKind {
   DELIVERY // salió mercancía, total o parcial
   RETURN // el cliente devolvió o cambió
   DATE_CHANGED // se corrigió el día de la venta
+  CUSTOMER_CHANGED // se le cambió (o se le puso) el cliente a la venta
   SHIPPING_CHARGED // el envío le cargó el flete a esta venta
   VOIDED // se anuló la venta entera
   NOTE // una anotación a mano, sin más consecuencia

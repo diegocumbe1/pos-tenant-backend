@@ -209,7 +209,42 @@ export class FinanceService {
       splits.reduce((acc, s) => acc + s.totalCOP, 0) +
       barberRevenue +
       retailRevenue;
-    const expensesTotal = expenses._sum.amountCOP ?? 0;
+
+    /**
+     * EL FLETE SE CRUZA CONTRA EL GASTO DE LA GUÍA.
+     *
+     * El ingreso ya no lleva el flete que le cobras al cliente: `revenue` es
+     * mercancía vendida. Pero el costo de la guía SÍ está anotado como gasto
+     * (`SALES_SHIPPING`, lo escribe el despacho). Dejando las dos cosas así, el
+     * flete restaba dos veces: la utilidad de EN-000001 bajaba 35.900 aunque el
+     * cliente hubiera pagado la guía completa.
+     *
+     * Un flete es un TRASLADO, no un margen: si lo que cobras cubre la guía, el
+     * envío no debe mover la utilidad ni un peso. Por eso el gasto se reduce en
+     * lo que se cobró, y lo que queda es lo que de verdad puso la tienda de su
+     * bolsillo —que sí es un costo real y sigue pesando—.
+     *
+     * Tope en el gasto anotado: si se cobró más flete del que costó la guía, ese
+     * excedente es margen del envío y se ignora acá en vez de volverse un gasto
+     * negativo. Es conservador a propósito.
+     */
+    const expensesByCategory = await this.expenseBreakdown(
+      ctx,
+      range.from,
+      range.to,
+    );
+    const shippingExpenseRow = expensesByCategory.find(
+      (row) => row.category === 'SALES_SHIPPING',
+    );
+    const shippingOffsetCOP = Math.min(
+      shippingExpenseRow?.amountCOP ?? 0,
+      retail.shippingCOP,
+    );
+    if (shippingExpenseRow) {
+      shippingExpenseRow.amountCOP -= shippingOffsetCOP;
+    }
+
+    const expensesTotal = (expenses._sum.amountCOP ?? 0) - shippingOffsetCOP;
 
     // ── Costo de lo vendido ────────────────────────────────────────────────
     const cogs = this.accumulateCogs(splits, barberAppointments, retail);
@@ -392,16 +427,11 @@ export class FinanceService {
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Gasto por categoría: el mapeo a los buckets que dibuja la pantalla de
-    // rentabilidad se define AQUÍ, una sola vez, y viaja en la respuesta. Antes
-    // el frontend recibía un único entero y por eso el punto de equilibrio
-    // salía en $0.
-    const expensesByCategory = await this.expenseBreakdown(
-      ctx,
-      range.from,
-      range.to,
-    );
-
+    // `expensesByCategory` se calcula arriba —junto al cruce del flete— porque
+    // el total de gastos depende de él. El mapeo a los buckets que dibuja la
+    // pantalla de rentabilidad se define AQUÍ, una sola vez, y viaja en la
+    // respuesta: antes el frontend recibía un único entero y por eso el punto
+    // de equilibrio salía en $0.
     return {
       revenue,
       expenses: expensesTotal,
@@ -458,7 +488,18 @@ export class FinanceService {
    */
   private async recognizeRetailPayments(payments: DashboardRetailPayment[]) {
     const empty = {
+      /**
+       * MERCANCÍA VENDIDA, sin el flete.
+       *
+       * El abono trae adentro lo que el cliente pagó por el envío, y eso entró
+       * a la caja pero no se vendió: se va en pagar la guía, que además ya está
+       * anotada como gasto. Contándolo como venta, el dashboard decía 1.092.900
+       * donde la pantalla de Ventas decía 1.057.000 —dos respuestas a "cuánto
+       * vendí" en el mismo módulo— y de paso inflaba el margen y el ticket.
+       */
       revenueCOP: 0,
+      /** Flete reconocido en el período. Ya está FUERA de `revenueCOP`. */
+      shippingCOP: 0,
       cogsCOP: 0,
       closedSales: [] as DashboardRetailSale[],
       recognized: [] as Array<{
@@ -517,6 +558,13 @@ export class FinanceService {
           ? Math.round((sale.costCOP * spot.after) / total) -
             Math.round((sale.costCOP * spot.before) / total)
           : 0;
+      // El flete se reparte igual que el costo, y por lo mismo: una venta con
+      // envío cobrada en pedazos trae su parte de flete en cada abono.
+      const shippingShare =
+        spot && total > 0
+          ? Math.round((sale.shippingCOP * spot.after) / total) -
+            Math.round((sale.shippingCOP * spot.before) / total)
+          : 0;
 
       // Cierra si es el último abono Y alcanzó el total. Un último abono que
       // deja saldo es una venta abierta, no una cerrada.
@@ -525,12 +573,16 @@ export class FinanceService {
         ? sale.items.reduce((sum, item) => sum + item.quantity, 0)
         : 0;
 
-      result.revenueCOP += payment.amountCOP;
+      const soldCOP = payment.amountCOP - shippingShare;
+      result.revenueCOP += soldCOP;
+      result.shippingCOP += shippingShare;
       result.cogsCOP += costShare;
       if (closes) result.closedSales.push(sale);
       result.recognized.push({
         paidAt: payment.paidAt,
-        amountCOP: payment.amountCOP,
+        // La serie diaria también va sin flete: si el total de arriba lo
+        // descuenta y las barras no, la suma del gráfico no da el KPI.
+        amountCOP: soldCOP,
         saleId: payment.saleId,
         closedUnits: units,
       });
@@ -929,9 +981,12 @@ export class FinanceService {
               status: 'COMPLETED',
               soldAt: { gte: from, lt: to },
             },
-            _sum: { totalCOP: true },
+            // El flete sale del total, igual que en el dashboard: si el período
+            // anterior lo contara y el actual no, el "vs período anterior"
+            // mostraría una caída que nunca ocurrió.
+            _sum: { totalCOP: true, shippingCOP: true },
           })
-        : Promise.resolve({ _sum: { totalCOP: 0 } }),
+        : Promise.resolve({ _sum: { totalCOP: 0, shippingCOP: 0 } }),
     ]);
     // Mismo criterio que el dashboard: manda el precio congelado en la cita.
     const barber = appts.reduce(
@@ -939,7 +994,9 @@ export class FinanceService {
       0,
     );
     return (
-      (splitAgg._sum.totalCOP ?? 0) + barber + (retailAgg._sum.totalCOP ?? 0)
+      (splitAgg._sum.totalCOP ?? 0) +
+      barber +
+      ((retailAgg._sum.totalCOP ?? 0) - (retailAgg._sum.shippingCOP ?? 0))
     );
   }
 

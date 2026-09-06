@@ -29,6 +29,7 @@ import {
   CreateRetailSalePaymentDto,
   DeliverRetailSaleDto,
   PayRetailSaleDto,
+  UpdateRetailSaleCustomerDto,
   UpdateRetailSaleDateDto,
   VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
@@ -295,6 +296,23 @@ export class RetailSalesController {
     @Body() dto: UpdateRetailSaleDateDto,
   ) {
     return this.sales.updateSaleDate(ctx, id, dto);
+  }
+
+  /**
+   * Cambia (o pone) el cliente de una venta ya registrada.
+   *
+   * Va con el permiso de anular, igual que corregir la fecha: reescribe el
+   * histórico de compras de dos clientes, y eso es corrección de dueño, no
+   * trabajo de mostrador.
+   */
+  @Patch(':id/customer')
+  @RequirePermissions('retail:sales:void')
+  updateCustomer(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateRetailSaleCustomerDto,
+  ) {
+    return this.sales.updateSaleCustomer(ctx, id, dto);
   }
 
   @Post(':id/void')
