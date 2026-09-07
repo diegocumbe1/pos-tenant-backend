@@ -3079,3 +3079,118 @@ model RetailSupplier {
   @@index([tenantId, branchId, deletedAt])
   @@map("retail_suppliers")
 }
+
+// ─── Catálogos gestionados ───────────────────────────────────────────────────
+//
+// Servicio aparte, para vendedores de temporada que NO tienen cuenta: solo
+// quieren una página con sus productos y un botón de WhatsApp. Lo edita el
+// superadmin desde el backoffice; el dueño del catálogo nunca entra.
+//
+// SIN `tenantId` A PROPÓSITO. Colgar esto de `PublicSite` obligaba a crear un
+// Tenant y un Branch cascarón por cada catálogo, y eso ensucia el modelo
+// comercial: la lista de clientes, el conteo de tenants y los dashboards de MRR
+// empezarían a contar cosas que no son clientes. Vive del lado de plataforma,
+// como PlanPrice o PlatformExpense.
+//
+// Ver docs/CATALOGOS_GESTIONADOS_PLAN.md.
+
+enum CatalogStatus {
+  DRAFT
+  PUBLISHED
+  /// Temporada cerrada. El link sigue vivo —el cliente ya lo repartió— pero
+  /// deja de listarse como activo en el backoffice.
+  ARCHIVED
+}
+
+model Catalog {
+  id     String        @id @default(cuid())
+  /// uselynko.com/c/<slug>. Corto porque se comparte por WhatsApp y se escribe
+  /// a mano.
+  slug   String        @unique
+  status CatalogStatus @default(DRAFT)
+
+  businessName String
+  season       String?
+  city         String?
+  intro        String?
+  /// Formato internacional sin + ni espacios: 573001234567.
+  whatsapp     String
+
+  // Tema corto a propósito: el catálogo no es un constructor de páginas, y cada
+  // opción de más es una decisión que el superadmin toma por un cliente que no
+  // está presente.
+  themePrimary String @default("#d81159")
+  themeAccent  String @default("#ffb6c9")
+  /// light | dark | auto
+  themeMode    String @default("light")
+
+  seoTitle       String?
+  seoDescription String?
+  ogImageUrl     String?
+
+  // Comercial. Va acá y no en tabla aparte porque son tres campos y el
+  // superadmin los necesita en la misma pantalla donde edita el catálogo.
+  contactName String?
+  contactNote String?
+  /// Referencia comercial de cuándo renueva. NO apaga el catálogo por sí sola.
+  expiresAt   DateTime?
+
+  /// Tenant al que se convirtió si compró Retail. Deja el rastro del embudo.
+  convertedTenantId String?
+
+  publishedAt       DateTime?
+  publishedByUserId String?
+
+  products CatalogProduct[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, updatedAt])
+  @@map("catalogs")
+}
+
+/// Los campos de plata y de nombre son los mismos de `RetailProduct` A
+/// PROPÓSITO: cuando el cliente compre Retail, convertirlo es copiar filas.
+model CatalogProduct {
+  id        String  @id @default(cuid())
+  catalogId String
+  catalog   Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  category    String?
+
+  priceCOP           Int
+  /// Precio por unidad desde 6. null = el escalón no aplica.
+  wholesalePrice6COP Int?
+
+  isAvailable Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  images CatalogProductImage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([catalogId, sortOrder])
+  @@map("catalog_products")
+}
+
+model CatalogProductImage {
+  id        String         @id @default(cuid())
+  productId String
+  product   CatalogProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  url       String
+  /// Ruta dentro del bucket. SIN esto la imagen no se puede borrar de Supabase
+  /// y cada reemplazo deja un archivo huérfano pagando almacenamiento.
+  path      String
+  /// 0 = portada del producto.
+  sortOrder Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([productId, sortOrder])
+  @@map("catalog_product_images")
+}

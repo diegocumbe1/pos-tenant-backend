@@ -149,6 +149,13 @@ export class RetailShipmentsService {
         'Customer',
       );
     }
+    // Al crear, el cobro se copia del costo si nadie lo escribió (`detailsData`
+    // con `copyChargeFromCost`), así que el abono se compara contra ese mismo
+    // valor y no contra un 0 que nunca se va a guardar.
+    this.assertPrepaidWithinCharge(
+      dto.shippingChargedCOP ?? dto.shippingCostCOP ?? 0,
+      dto.shippingPrepaidCOP ?? 0,
+    );
 
     const shipment = await this.prisma.$transaction(async (tx) => {
       const sales = await this.assertShippableSales(tx, ctx, dto.saleIds, null);
@@ -204,11 +211,24 @@ export class RetailShipmentsService {
 
     const existing = await this.prisma.retailShipment.findUniqueOrThrow({
       where: { id },
-      select: { status: true },
+      select: {
+        status: true,
+        shippingCostCOP: true,
+        shippingChargedCOP: true,
+        shippingPrepaidCOP: true,
+      },
     });
     if (existing.status === 'CANCELLED') {
       throw new BadRequestException('El envío está cancelado');
     }
+    // El abono es una PARTE del cobro, así que se valida contra el cobro que va
+    // a quedar, no contra el que había: bajar el flete y anotar el abono en la
+    // misma pantalla es el caso normal, y compararlo contra el valor viejo
+    // rechazaría un cambio que sí es válido.
+    this.assertPrepaidWithinCharge(
+      dto.shippingChargedCOP ?? existing.shippingChargedCOP,
+      dto.shippingPrepaidCOP ?? existing.shippingPrepaidCOP,
+    );
 
     // En transacción porque cambiar el flete reescribe el total de una venta:
     // el envío y la venta no pueden quedar diciendo cosas distintas.
@@ -634,6 +654,7 @@ export class RetailShipmentsService {
         code: true,
         status: true,
         shippingChargedCOP: true,
+        shippingPrepaidCOP: true,
         sales: {
           orderBy: { addedAt: 'asc' },
           select: { sale: { select: SHIPPING_SALE_SELECT } },
@@ -645,8 +666,17 @@ export class RetailShipmentsService {
       .map((row) => row.sale)
       .filter((sale) => sale.status !== 'VOIDED');
     // Un paquete cancelado no le cobra flete a nadie.
+    //
+    // Lo que se le carga a la venta es el flete MENOS lo que el cliente ya
+    // abonó: esa parte ya entró, y volver a meterla en el total de la venta la
+    // cobraría dos veces.
     const charged =
-      shipment.status === 'CANCELLED' ? 0 : shipment.shippingChargedCOP;
+      shipment.status === 'CANCELLED'
+        ? 0
+        : Math.max(
+            0,
+            shipment.shippingChargedCOP - shipment.shippingPrepaidCOP,
+          );
 
     const collected = sales.some(
       (sale) => sale.shippingCOP > 0 && sale.paymentStatus === 'PAID',
@@ -684,9 +714,12 @@ export class RetailShipmentsService {
    *
    * POR QUÉ. Lo que cuesta mandar el paquete es plata que sale de la tienda, y
    * mientras vivió solo en el envío la utilidad quedaba inflada: en EN-000001 se
-   * pagaron 35.900 de guía, se le cobraron 8.400 al cliente, y los 27.500 de
-   * diferencia no bajaban de ningún lado. Es el mismo agujero que tenía el
-   * cobro, del otro lado.
+   * pagaron 35.900 de guía y no bajaban de ningún lado. Es el mismo agujero que
+   * tenía el cobro, del otro lado.
+   *
+   * CUÁNTO. El costo de la guía MENOS lo que el cliente ya abonó al flete: el
+   * gasto es lo que salió neto de la caja, no lo que decía el papel de la
+   * transportadora. Ver la nota larga sobre `netCostCOP` abajo.
    *
    * CUÁNDO. Solo cuando el paquete SALIÓ. Un borrador todavía no le ha pagado
    * nada a la transportadora, y uno cancelado nunca lo hará; anotar el gasto
@@ -713,6 +746,7 @@ export class RetailShipmentsService {
         carrier: true,
         trackingCode: true,
         shippingCostCOP: true,
+        shippingPrepaidCOP: true,
         sentAt: true,
         createdAt: true,
       },
@@ -722,7 +756,27 @@ export class RetailShipmentsService {
     const shipped =
       shipment.status === 'SENT' || shipment.status === 'DELIVERED';
 
-    if (!shipped || shipment.shippingCostCOP <= 0) {
+    /**
+     * El gasto es lo que salió NETO de la caja por esa guía.
+     *
+     * Lo que el cliente adelantó para el flete es plata que entró, pero retail
+     * no tiene dónde registrar un ingreso que no sea abono de una venta: los
+     * ingresos salen de `RetailSalePayment` y punto. Anotar el gasto completo y
+     * dejar el reembolso sin registrar hunde la utilidad por la diferencia
+     * —EN-000001 la bajaba 27.500—, así que el reembolso se registra por el
+     * lado del egreso.
+     *
+     * El neto es el mismo por los dos caminos: el flete que sí se le cargó a
+     * una venta entra como ingreso, y lo que el cliente adelantó baja el gasto.
+     * Si el cobro cubre la guía, el envío no mueve la utilidad, que es lo
+     * correcto: un flete es un traslado, no un margen.
+     */
+    const netCostCOP = Math.max(
+      0,
+      shipment.shippingCostCOP - shipment.shippingPrepaidCOP,
+    );
+
+    if (!shipped || netCostCOP <= 0) {
       await tx.expense.deleteMany({ where: { id } });
       return;
     }
@@ -734,9 +788,20 @@ export class RetailShipmentsService {
       concept: [`Flete envío ${shipment.code}`, shipment.carrier]
         .filter(Boolean)
         .join(' · '),
-      amountCOP: shipment.shippingCostCOP,
+      amountCOP: netCostCOP,
       incurredAt: shipment.sentAt ?? shipment.createdAt,
-      note: shipment.trackingCode ? `Guía ${shipment.trackingCode}` : null,
+      // El desglose va en la nota porque el monto ya no es el de la guía: sin
+      // esto, el gasto contradice el papel de la transportadora y parece un
+      // error de digitación.
+      note:
+        [
+          shipment.trackingCode ? `Guía ${shipment.trackingCode}` : null,
+          shipment.shippingPrepaidCOP > 0
+            ? `Guía ${formatCOP(shipment.shippingCostCOP)} − ${formatCOP(shipment.shippingPrepaidCOP)} que abonó el cliente`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || null,
     };
 
     await tx.expense.upsert({
@@ -819,6 +884,25 @@ export class RetailShipmentsService {
    * guía. Mandar `shippingChargedCOP: 0` explícito siempre significa regalado:
    * es un valor, no una ausencia.
    */
+  /**
+   * El abono no puede pasarse del cobro.
+   *
+   * Si se pasara, el envío diría que el cliente puso más flete del que se le
+   * cobró, y el gasto de la guía bajaría más de la cuenta: sería inventar
+   * utilidad. Cobrar de más por el envío es legítimo —eso se hace subiendo el
+   * cobro, y la diferencia entra como margen del envío—, pero abonar de más no
+   * significa nada.
+   */
+  private assertPrepaidWithinCharge(chargedCOP: number, prepaidCOP: number) {
+    if (prepaidCOP > chargedCOP) {
+      throw new BadRequestException(
+        `El abono del cliente (${formatCOP(prepaidCOP)}) no puede ser mayor ` +
+          `que el flete que se le cobra (${formatCOP(chargedCOP)}). Si le ` +
+          `cobraste más, sube primero el valor del envío.`,
+      );
+    }
+  }
+
   private detailsData(
     dto: RetailShipmentDetailsDto,
     copyChargeFromCost = false,
@@ -842,6 +926,9 @@ export class RetailShipmentsService {
         ? { shippingCostCOP: dto.shippingCostCOP }
         : {}),
       ...(charged !== undefined ? { shippingChargedCOP: charged } : {}),
+      ...(dto.shippingPrepaidCOP !== undefined
+        ? { shippingPrepaidCOP: dto.shippingPrepaidCOP }
+        : {}),
       ...(dto.note !== undefined ? { note: dto.note } : {}),
     };
   }
@@ -935,18 +1022,32 @@ export class RetailShipmentsService {
       0,
     );
 
-    // Quién carga el flete, y cuánto quedó sin cargarle a nadie. Lo segundo pasa
-    // cuando ya se cobraron todas las ventas del paquete: no hay dónde meterlo,
-    // y el envío tiene que decirlo en vez de dejar el número tirado.
-    const shippingCarrier =
-      sales.find((sale) => sale.shippingCOP > 0 && sale.status !== 'VOIDED') ??
-      null;
+    /**
+     * Quién carga el flete, y cuánto quedó sin cargarle a nadie.
+     *
+     * SE SUMA SOBRE TODAS LAS VENTAS, no sobre la primera que lo lleve.
+     * `syncShippingCharge` se lo carga a una sola, pero el flete de un paquete
+     * SÍ se puede repartir: el cliente adelanta parte con el primer pedido y
+     * paga el resto con el segundo, y ahí cada venta lleva su pedazo. Leyendo
+     * solo la primera, el envío reportaba como "sin cobrar" un flete que ya
+     * estaba íntegro dentro de sus ventas —el caso de EN-000001, con 27.500 en
+     * RS-000007 y 8.400 en RS-000024—.
+     */
+    const shippingCarriers = sales.filter(
+      (sale) => sale.shippingCOP > 0 && sale.status !== 'VOIDED',
+    );
+    const shippingBilledCOP = shippingCarriers.reduce(
+      (sum, sale) => sum + sale.shippingCOP,
+      0,
+    );
     const shippingUnbilledCOP =
       shipment.status === 'CANCELLED'
         ? 0
         : Math.max(
             0,
-            shipment.shippingChargedCOP - (shippingCarrier?.shippingCOP ?? 0),
+            shipment.shippingChargedCOP -
+              shipment.shippingPrepaidCOP -
+              shippingBilledCOP,
           );
 
     return {
@@ -966,13 +1067,31 @@ export class RetailShipmentsService {
       shippingCostCOP: shipment.shippingCostCOP,
       shippingChargedCOP: shipment.shippingChargedCOP,
       /**
+       * De lo que se le cobra, cuánto ya había mandado el cliente por fuera de
+       * sus ventas. Baja el gasto de la guía en vez de entrar como ingreso:
+       * retail no tiene ingresos que no sean abono de una venta.
+       */
+      shippingPrepaidCOP: shipment.shippingPrepaidCOP,
+      /**
        * Lo que la tienda gana o pone de su bolsillo por el envío. Negativo = el
-       * flete salió más caro de lo que se cobró.
+       * flete salió más caro de lo que se cobró. El abono NO entra acá: ya está
+       * dentro de `shippingChargedCOP`, y restarlo otra vez diría que la tienda
+       * puso una plata que el cliente ya devolvió.
        */
       shippingMarginCOP: shipment.shippingChargedCOP - shipment.shippingCostCOP,
-      /** Código de la venta que lleva el flete cargado. null = ninguna. */
-      shippingOnSaleCode: shippingCarrier?.code ?? null,
-      /** Flete que no se le pudo cargar a ninguna venta: se cobra a mano. */
+      /**
+       * Ventas que llevan el flete dentro de su total. Casi siempre es una,
+       * pero pueden ser varias cuando el cliente lo pagó por partes, y la
+       * pantalla tiene que poder nombrarlas todas: decir solo la primera hace
+       * creer que en la otra no hay flete.
+       */
+      shippingOnSaleCodes: shippingCarriers.map((sale) => sale.code),
+      /** Cuánto del flete ya está dentro de una venta. */
+      shippingBilledCOP,
+      /**
+       * Flete que no está ni cargado a una venta ni abonado por el cliente. Es
+       * lo único que de verdad falta por registrar.
+       */
       shippingUnbilledCOP,
       note: shipment.note,
       sentAt: shipment.sentAt,

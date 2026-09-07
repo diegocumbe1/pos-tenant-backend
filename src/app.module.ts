@@ -18,6 +18,7 @@ import { BarberModule } from './barber/barber.module';
 import { RetailModule } from './retail/retail.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PlatformModule } from './platform/platform.module';
+import { CatalogModule } from './catalog/catalog.module';
 import { PlatformMessagingModule } from './platform-messaging/platform-messaging.module';
 import { StaffCompensationModule } from './staff-compensation/staff-compensation.module';
 import { LoggingInterceptor } from './monitoring/logging.interceptor';
@@ -28,7 +29,10 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
     // `.env.local` primero: en desarrollo apunta la base a la réplica de Docker
     // sin tocar `.env`, donde siguen las credenciales de producción. En el deploy
     // no existe `.env.local` (está en .gitignore) y manda el entorno de Railway.
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'] }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env.local', '.env'],
+    }),
     EventEmitterModule.forRoot(),
     PrismaModule,
     SupabaseModule,
@@ -44,6 +48,7 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
     RetailModule,
     NotificationsModule,
     PlatformModule,
+    CatalogModule,
     PlatformMessagingModule,
     StaffCompensationModule,
   ],
