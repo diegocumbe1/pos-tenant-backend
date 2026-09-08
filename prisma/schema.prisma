@@ -2123,6 +2123,11 @@ model RetailProduct {
   wholesalePrice12COP Int?
   emoji               String?
   imageUrls           String[]
+  // Videos del producto, aparte de las fotos y no mezclados con ellas: se
+  // muestran distinto (hay que tocarlos para que carguen) y pesan dos órdenes
+  // de magnitud más. Mezclarlos en `imageUrls` obligaría a adivinar por la
+  // extensión en cada pantalla que los pinte.
+  videoUrls           String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
   trackStock          Boolean        @default(true)
   stock               Int            @default(0)
@@ -3168,7 +3173,7 @@ model CatalogProduct {
   isAvailable Boolean @default(true)
   sortOrder   Int     @default(0)
 
-  images CatalogProductImage[]
+  media CatalogProductMedia[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3177,20 +3182,63 @@ model CatalogProduct {
   @@map("catalog_products")
 }
 
-model CatalogProductImage {
+enum CatalogMediaKind {
+  IMAGE
+  VIDEO
+}
+
+/// Una foto o un video de un producto del catálogo.
+///
+/// Se llama "media" y no "image" porque desde el principio guarda las dos
+/// cosas: un video de producto —el clip de 15 segundos mostrando cómo se ve la
+/// flor eterna encendida— vende más que tres fotos, y meterlo en una tabla
+/// llamada `Image` habría dejado el nombre mintiendo para siempre.
+model CatalogProductMedia {
   id        String         @id @default(cuid())
   productId String
   product   CatalogProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  url       String
-  /// Ruta dentro del bucket. SIN esto la imagen no se puede borrar de Supabase
-  /// y cada reemplazo deja un archivo huérfano pagando almacenamiento.
-  path      String
+  kind        CatalogMediaKind @default(IMAGE)
+  url         String
+  /// Ruta dentro del bucket. SIN esto el archivo no se puede borrar de Supabase
+  /// y cada reemplazo deja uno huérfano pagando almacenamiento.
+  path        String
+  /// Tipo real servido: image/webp, video/mp4, video/webm, video/quicktime.
+  contentType String           @default("image/webp")
+  /// Solo videos: bytes del archivo, para poder auditar cuánto pesa el catálogo.
+  sizeBytes   Int?
   /// 0 = portada del producto.
-  sortOrder Int    @default(0)
+  sortOrder   Int              @default(0)
 
   createdAt DateTime @default(now())
 
   @@index([productId, sortOrder])
-  @@map("catalog_product_images")
+  @@map("catalog_product_media")
+}
+
+/// Tarifa de un servicio de catálogo gestionado, a partir de una fecha.
+///
+/// APPEND-ONLY, igual que `PlanPrice`: guardar no sobrescribe, crea una tarifa
+/// nueva y la anterior queda en el histórico. Así un catálogo que se cobró en
+/// septiembre conserva el precio de septiembre aunque la tarifa suba en
+/// diciembre — el mismo principio que ya rige los planes.
+///
+/// El ancla es USD; el COP sale de `PlatformRate` a la fecha del cobro.
+model CatalogServicePrice {
+  id            String   @id @default(cuid())
+  /// SETUP | SEASON_UPDATE | YEAR_BUNDLE | EXTRA_PRODUCT
+  serviceCode   String
+  /// EN CENTAVOS DE USD, no en dólares enteros como `PlanPrice`.
+  ///
+  /// Un plan nunca cuesta 20,50 USD, pero "producto adicional" sí vale 0,50 y
+  /// con enteros habría que redondearlo a 0 o a 1 — o sea regalarlo o cobrar el
+  /// doble. Las tarifas de catálogo son montos chicos y necesitan el centavo.
+  priceUsdCents Int
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([serviceCode, effectiveFrom])
+  @@map("catalog_service_prices")
 }

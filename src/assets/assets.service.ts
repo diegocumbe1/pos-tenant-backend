@@ -19,6 +19,7 @@ import {
 } from './dto/upload-asset.dto';
 
 type UploadedFile = UploadedImageFile;
+type UploadedAssetFile = UploadedImageFile;
 
 // Ancho máximo de salida por tipo de asset. Todas las imágenes se reescalan y
 // se convierten a WebP en `ImageUploadService`, así el navegador nunca descarga
@@ -26,6 +27,14 @@ type UploadedFile = UploadedImageFile;
 // eso 640px (thumbnail) cubre pantallas retina con archivos de decenas de KB.
 const PRODUCT_IMAGE_KIND: ImageKind = 'thumbnail';
 const BARBER_SERVICE_IMAGE_KIND: ImageKind = 'service';
+
+/**
+ * Un solo video por producto de tienda.
+ *
+ * No es técnico: dos videos en la misma ficha es un producto que ya no se
+ * explica con un catálogo, y cada uno son hasta 20 MB en un bucket que se paga.
+ */
+const MAX_VIDEOS_PER_RETAIL_PRODUCT = 1;
 
 @Injectable()
 export class AssetsService {
@@ -156,6 +165,82 @@ export class AssetsService {
       images: uploadedImages,
       imageUrls,
     };
+  }
+
+  /**
+   * Sube un VIDEO de producto de tienda.
+   *
+   * Solo retail: es donde el video vende —el clip de 15 segundos mostrando cómo
+   * se ve la flor eterna encendida— y donde el dueño hoy lo manda suelto por
+   * WhatsApp. Restaurante y barbería no lo han pedido, y cada vertical de más es
+   * storage que se paga sin que nadie lo mire.
+   *
+   * Va a `videoUrls` y NO a `imageUrls`: se pintan distinto (hay que tocarlos
+   * para que carguen) y pesan dos órdenes de magnitud más. Mezclarlos obligaría
+   * a adivinar por la extensión en cada pantalla.
+   */
+  async uploadRetailProductVideo(
+    ctx: TenantContext,
+    itemId: string,
+    file: UploadedAssetFile,
+  ) {
+    await this.assertCatalogItem(ctx, 'retail-product', itemId);
+
+    const product = await this.prisma.retailProduct.findUniqueOrThrow({
+      where: { id: itemId },
+      select: { videoUrls: true },
+    });
+    if (product.videoUrls.length >= MAX_VIDEOS_PER_RETAIL_PRODUCT) {
+      throw new BadRequestException(
+        `Solo se permite ${MAX_VIDEOS_PER_RETAIL_PRODUCT} video por producto. ` +
+          `Borra el que hay para subir otro.`,
+      );
+    }
+
+    const uploaded = await this.imageUpload.uploadVideo({
+      file,
+      pathPrefix: this.buildCatalogPathPrefix(
+        ctx.tenantId,
+        'retail-product',
+        itemId,
+      ),
+    });
+
+    const updated = await this.prisma.retailProduct.update({
+      where: { id: itemId },
+      data: { videoUrls: [...product.videoUrls, uploaded.publicUrl] },
+      select: { videoUrls: true },
+    });
+
+    return { ok: true, video: uploaded, videoUrls: updated.videoUrls };
+  }
+
+  /**
+   * Quita un video del producto.
+   *
+   * El archivo del bucket NO se borra acá: `retail_products.videoUrls` guarda
+   * URLs sueltas, sin la ruta interna, así que no hay con qué pedirle a Supabase
+   * que lo elimine. Es la misma limitación que ya tienen las fotos de retail —el
+   * modelo nació como `String[]`— y arreglarla es migrar retail a una tabla de
+   * medios como la de catálogos. Mientras tanto se quita de la vista, que es lo
+   * que el dueño espera, y el archivo queda hasta esa migración.
+   */
+  async removeRetailProductVideo(
+    ctx: TenantContext,
+    itemId: string,
+    url: string,
+  ) {
+    await this.assertCatalogItem(ctx, 'retail-product', itemId);
+    const product = await this.prisma.retailProduct.findUniqueOrThrow({
+      where: { id: itemId },
+      select: { videoUrls: true },
+    });
+    const updated = await this.prisma.retailProduct.update({
+      where: { id: itemId },
+      data: { videoUrls: product.videoUrls.filter((item) => item !== url) },
+      select: { videoUrls: true },
+    });
+    return { ok: true, videoUrls: updated.videoUrls };
   }
 
   async delete(ctx: TenantContext, dto: DeleteAssetDto) {

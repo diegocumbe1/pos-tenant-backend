@@ -23,12 +23,17 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformActor } from '../platform/decorators/platform-actor.decorator';
 import { PlatformAdminGuard } from '../platform/guards/platform-admin.guard';
-import { UploadedImageFile } from '../assets/image-upload.service';
+import {
+  MAX_VIDEO_MB,
+  UploadedImageFile,
+} from '../assets/image-upload.service';
 import { CatalogService } from './catalog.service';
+import { CatalogPricingService } from './catalog-pricing.service';
 import {
   BulkCatalogProductsDto,
   CreateCatalogDto,
   CreateCatalogProductDto,
+  CreateCatalogServicePriceDto,
   ListCatalogsQueryDto,
   ReorderCatalogImagesDto,
   ReorderCatalogProductsDto,
@@ -51,7 +56,10 @@ import {
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('platform/catalogs')
 export class CatalogAdminController {
-  constructor(private readonly catalogs: CatalogService) {}
+  constructor(
+    private readonly catalogs: CatalogService,
+    private readonly pricing: CatalogPricingService,
+  ) {}
 
   // ─── Catálogo ──────────────────────────────────────────────────────────────
 
@@ -65,6 +73,35 @@ export class CatalogAdminController {
   @ApiOperation({ summary: 'Crear catálogo (queda en borrador)' })
   create(@Body() dto: CreateCatalogDto) {
     return this.catalogs.create(dto);
+  }
+
+  // ─── Tarifas del servicio ──────────────────────────────────────────────────
+  //
+  // Van ANTES de `:id` a propósito: Nest resuelve por orden de declaración, y
+  // con la ruta paramétrica arriba "pricing" entraría como si fuera el id de un
+  // catálogo.
+
+  @Get('pricing')
+  @ApiOperation({ summary: 'Tarifas vigentes de los servicios de catálogo' })
+  getPricing() {
+    return this.pricing.getPricesAt();
+  }
+
+  @Get('pricing/history')
+  @ApiOperation({ summary: 'Histórico de tarifas' })
+  getPricingHistory(@Query('serviceCode') serviceCode?: string) {
+    return this.pricing.getHistory(serviceCode);
+  }
+
+  @Post('pricing')
+  @ApiOperation({
+    summary: 'Nueva tarifa (append-only: no sobrescribe la anterior)',
+  })
+  createPrice(
+    @Body() dto: CreateCatalogServicePriceDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.pricing.createPrice(dto, actor.id);
   }
 
   @Get(':id')
@@ -173,26 +210,62 @@ export class CatalogAdminController {
     @Param('productId') productId: string,
     @UploadedFile() file: unknown,
   ) {
-    return this.catalogs.addProductImage(
+    return this.catalogs.addProductMedia(
       id,
       productId,
       file as UploadedImageFile,
+      'IMAGE',
     );
   }
 
-  @Patch(':id/products/:productId/images/reorder')
-  @ApiOperation({ summary: 'Reordenar fotos. La primera es la portada.' })
-  reorderImages(
+  @Post(':id/products/:productId/videos')
+  @ApiOperation({
+    summary: `Subir video (MP4/WebM/MOV, máx. ${MAX_VIDEO_MB} MB, sin recomprimir)`,
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  // El tope de multer va 1 MB por encima del límite real para que un archivo
+  // apenas pasado llegue entero y el servicio pueda responder "pesa más de 20
+  // MB" en vez del error genérico de archivo truncado.
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: (MAX_VIDEO_MB + 1) * 1024 * 1024 },
+    }),
+  )
+  addVideo(
+    @Param('id') id: string,
+    @Param('productId') productId: string,
+    @UploadedFile() file: unknown,
+  ) {
+    return this.catalogs.addProductMedia(
+      id,
+      productId,
+      file as UploadedImageFile,
+      'VIDEO',
+    );
+  }
+
+  @Patch(':id/products/:productId/media/reorder')
+  @ApiOperation({
+    summary: 'Reordenar fotos y videos. El primero es la portada.',
+  })
+  reorderMedia(
     @Param('id') id: string,
     @Param('productId') productId: string,
     @Body() dto: ReorderCatalogImagesDto,
   ) {
-    return this.catalogs.reorderProductImages(id, productId, dto);
+    return this.catalogs.reorderProductMedia(id, productId, dto);
   }
 
-  @Delete(':id/images/:imageId')
-  @ApiOperation({ summary: 'Borrar una foto (fila y archivo del bucket)' })
-  removeImage(@Param('id') id: string, @Param('imageId') imageId: string) {
-    return this.catalogs.removeProductImage(id, imageId);
+  @Delete(':id/media/:mediaId')
+  @ApiOperation({ summary: 'Borrar foto o video (fila y archivo del bucket)' })
+  removeMedia(@Param('id') id: string, @Param('mediaId') mediaId: string) {
+    return this.catalogs.removeProductMedia(id, mediaId);
   }
 }

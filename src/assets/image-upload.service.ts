@@ -71,6 +71,33 @@ const MAX_INPUT_SIZE_BYTES = 5 * 1024 * 1024;
 const PDF_HEADER = '%PDF-';
 const ALLOWED_INPUT_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
+/**
+ * Tope de un video de producto.
+ *
+ * 20 MB no es un número técnico: es cuánto aguanta alguien que abre el catálogo
+ * desde un estado de WhatsApp con datos móviles. Un clip de 15–20 segundos
+ * grabado con el celular cabe de sobra; lo que no cabe es un video de un minuto,
+ * y ese es justo el que hace que el visitante cierre la página.
+ */
+export const MAX_VIDEO_MB = 20;
+const MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_MB * 1024 * 1024;
+
+export type VideoContentType = 'video/mp4' | 'video/webm' | 'video/quicktime';
+
+const VIDEO_EXTENSIONS: Record<VideoContentType, string> = {
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
+};
+
+export type VideoUploadResult = {
+  bucket: string;
+  path: string;
+  publicUrl: string;
+  sizeBytes: number;
+  contentType: VideoContentType;
+};
+
 const MIN_DIMENSIONS: Record<ImageKind, { width: number; height: number }> = {
   logo: { width: 128, height: 128 },
   hero: { width: 1200, height: 600 },
@@ -169,6 +196,113 @@ export class ImageUploadService {
       sizeBytes: optimized.info.size,
       contentType: 'image/webp',
     };
+  }
+
+  /**
+   * Sube un video TAL CUAL, sin recomprimir.
+   *
+   * NO SE TRANSCODIFICA, y es una decisión, no una carencia. Recomprimir video
+   * necesita ffmpeg: un binario grande en la imagen de despliegue y un proceso
+   * que ocupa CPU por minutos, en un servidor que atiende pedidos de mostrador
+   * en vivo. Un video de producto es un clip corto grabado con el celular, que
+   * ya viene comprimido en H.264; lo que se gana recomprimiéndolo no paga lo
+   * que cuesta.
+   *
+   * Por eso el control es el TAMAÑO DE ENTRADA. `MAX_VIDEO_SIZE_BYTES` es el
+   * único freno entre un catálogo que abre rápido con datos móviles y uno que
+   * el cliente cierra antes de que cargue.
+   *
+   * Quien lo muestre tiene que hacerlo con `preload="none"` y un `poster`: sin
+   * eso el navegador empieza a bajar el video apenas se pinta la página, y el
+   * visitante paga megas por un video que quizá nunca toque.
+   */
+  async uploadVideo(
+    input: Omit<ImageUploadInput, 'kind' | 'maxWidth'>,
+  ): Promise<VideoUploadResult> {
+    const file = input.file;
+    const contentType = this.assertVideoFile(file);
+
+    const buffer = file.buffer as Buffer;
+    const extension = VIDEO_EXTENSIONS[contentType];
+    const filename = `${Date.now()}-${randomUUID()}.${extension}`;
+    const path = `${this.normalizePrefix(input.pathPrefix)}/${filename}`;
+
+    const uploaded = await this.supabase.uploadPublicAsset({
+      path,
+      buffer,
+      contentType,
+    });
+
+    this.logger.log(
+      `video uploaded path=${uploaded.path} bytes=${buffer.length} type=${contentType}`,
+    );
+
+    return {
+      bucket: uploaded.bucket,
+      path: uploaded.path,
+      publicUrl: uploaded.publicUrl,
+      sizeBytes: buffer.length,
+      contentType,
+    };
+  }
+
+  /**
+   * Valida que sea de verdad un video de un formato que el navegador reproduce.
+   *
+   * Se miran los BYTES, no solo el `mimetype` declarado: ese lo pone el cliente
+   * y se puede mentir. Mismo criterio que ya se usa con imágenes y PDF.
+   */
+  private assertVideoFile(file: UploadedImageFile): VideoContentType {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Falta el archivo de video');
+    }
+    if (file.truncated || (file.size && file.size > MAX_VIDEO_SIZE_BYTES)) {
+      throw new BadRequestException(
+        `El video pesa más de ${MAX_VIDEO_MB} MB. Recórtalo o grábalo en menor ` +
+          `calidad: uno más pesado tarda tanto en abrir con datos móviles que el ` +
+          `cliente cierra la página antes de verlo.`,
+      );
+    }
+
+    const declared = file.mimetype?.split(';')[0]?.toLowerCase() ?? '';
+    const detected = this.detectVideoType(file.buffer);
+    if (!detected) {
+      throw new BadRequestException(
+        'El archivo no parece un video MP4, WebM o MOV.',
+      );
+    }
+    // El declarado solo tiene que no contradecir a los bytes: los celulares
+    // mandan `video/quicktime` para archivos que por dentro son MP4, y
+    // rechazarlos sería rechazar la mitad de los videos de iPhone.
+    if (declared && !declared.startsWith('video/')) {
+      throw new BadRequestException('El archivo no es un video');
+    }
+    return detected;
+  }
+
+  /**
+   * Tipo real por los primeros bytes.
+   *
+   * MP4 y MOV comparten contenedor ISO-BMFF: `....ftyp` en el byte 4. WebM es
+   * Matroska y arranca con `1A 45 DF A3`.
+   */
+  private detectVideoType(buffer: Buffer): VideoContentType | null {
+    if (buffer.length < 12) return null;
+    if (
+      buffer[0] === 0x1a &&
+      buffer[1] === 0x45 &&
+      buffer[2] === 0xdf &&
+      buffer[3] === 0xa3
+    ) {
+      return 'video/webm';
+    }
+    if (buffer.subarray(4, 8).toString('ascii') === 'ftyp') {
+      const brand = buffer.subarray(8, 12).toString('ascii');
+      // `qt  ` es QuickTime de verdad; todo lo demás (isom, mp42, iso5, avc1…)
+      // se sirve como MP4, que es lo que el navegador espera.
+      return brand.startsWith('qt') ? 'video/quicktime' : 'video/mp4';
+    }
+    return null;
   }
 
   async uploadPdf(

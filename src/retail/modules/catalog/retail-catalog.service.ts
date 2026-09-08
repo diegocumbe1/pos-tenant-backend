@@ -508,6 +508,9 @@ export class RetailCatalogService {
       wholesaleTiers: wholesaleTiersOf(product),
       emoji: product.emoji,
       imageUrls: product.imageUrls,
+      // Aparte de las fotos: se pintan distinto —hay que tocarlos para que
+      // carguen— y pesan dos órdenes de magnitud más.
+      videoUrls: product.videoUrls,
       primaryImageUrl: product.imageUrls[0] ?? null,
       trackStock: product.trackStock,
       stock: product.stock,

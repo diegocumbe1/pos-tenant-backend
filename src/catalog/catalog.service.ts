@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import {
   ImageUploadService,
+  MAX_VIDEO_MB,
   UploadedImageFile,
 } from '../assets/image-upload.service';
 import {
@@ -26,7 +27,7 @@ import {
 const CATALOG_INCLUDE = {
   products: {
     orderBy: { sortOrder: 'asc' as const },
-    include: { images: { orderBy: { sortOrder: 'asc' as const } } },
+    include: { media: { orderBy: { sortOrder: 'asc' as const } } },
   },
 } satisfies Prisma.CatalogInclude;
 
@@ -38,7 +39,16 @@ type CatalogWithProducts = Prisma.CatalogGetPayload<{
  * Más de seis fotos no se navegan y solo pesan en datos móviles, que es la
  * conexión real de quien abre el catálogo desde un estado de WhatsApp.
  */
-const MAX_IMAGES_PER_PRODUCT = 6;
+const MAX_MEDIA_PER_PRODUCT = 6;
+
+/**
+ * Un solo video por producto.
+ *
+ * No es una restricción técnica: dos videos en la misma tarjeta es un producto
+ * que ya no se explica con un catálogo. Y cada video son hasta 20 MB en un
+ * bucket que se paga.
+ */
+const MAX_VIDEOS_PER_PRODUCT = 1;
 
 /**
  * Catálogos gestionados: el servicio de temporada para vendedores SIN cuenta.
@@ -232,17 +242,17 @@ export class CatalogService {
   async remove(id: string) {
     const catalog = await this.prisma.catalog.findUnique({
       where: { id },
-      include: { products: { include: { images: true } } },
+      include: { products: { include: { media: true } } },
     });
     if (!catalog) throw new NotFoundException('Catálogo no encontrado');
 
     const paths = catalog.products.flatMap((product) =>
-      product.images.map((image) => image.path),
+      product.media.map((item) => item.path),
     );
     await this.deleteFromBucket(paths);
 
     await this.prisma.catalog.delete({ where: { id } });
-    return { id, deleted: true, imagesRemoved: paths.length };
+    return { id, deleted: true, filesRemoved: paths.length };
   }
 
   // ─── Productos ─────────────────────────────────────────────────────────────
@@ -265,7 +275,7 @@ export class CatalogService {
         isAvailable: dto.isAvailable ?? true,
         sortOrder: (last?.sortOrder ?? -1) + 1,
       },
-      include: { images: { orderBy: { sortOrder: 'asc' } } },
+      include: { media: { orderBy: { sortOrder: 'asc' } } },
     });
     return product;
   }
@@ -301,14 +311,20 @@ export class CatalogService {
     dto: UpdateCatalogProductDto,
   ) {
     await this.assertProduct(catalogId, productId);
+    // Vaciar el campo en el editor QUITA el dato, no guarda una cadena vacía:
+    // una categoría "" crearía un chip sin nombre en el catálogo público, y una
+    // descripción "" dejaría un renglón en blanco bajo el producto.
+    const blankToNull = (value: string) => value.trim() || null;
     return this.prisma.catalogProduct.update({
       where: { id: productId },
       data: {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.description !== undefined
-          ? { description: dto.description }
+          ? { description: blankToNull(dto.description) }
           : {}),
-        ...(dto.category !== undefined ? { category: dto.category } : {}),
+        ...(dto.category !== undefined
+          ? { category: blankToNull(dto.category) }
+          : {}),
         ...(dto.priceCOP !== undefined ? { priceCOP: dto.priceCOP } : {}),
         ...(dto.wholesalePrice6COP !== undefined
           ? { wholesalePrice6COP: dto.wholesalePrice6COP }
@@ -317,13 +333,13 @@ export class CatalogService {
           ? { isAvailable: dto.isAvailable }
           : {}),
       },
-      include: { images: { orderBy: { sortOrder: 'asc' } } },
+      include: { media: { orderBy: { sortOrder: 'asc' } } },
     });
   }
 
   async removeProduct(catalogId: string, productId: string) {
     const product = await this.assertProduct(catalogId, productId);
-    await this.deleteFromBucket(product.images.map((image) => image.path));
+    await this.deleteFromBucket(product.media.map((item) => item.path));
     await this.prisma.catalogProduct.delete({ where: { id: productId } });
     return { id: productId, deleted: true };
   }
@@ -366,71 +382,97 @@ export class CatalogService {
    * del bucket a partir de `ctx.tenantId` y un catálogo no tiene tenant: por eso
    * la ruta se construye acá, con el id del catálogo como raíz.
    */
-  async addProductImage(
+  async addProductMedia(
     catalogId: string,
     productId: string,
     file: UploadedImageFile,
+    kind: 'IMAGE' | 'VIDEO',
   ) {
     const product = await this.assertProduct(catalogId, productId);
-    if (product.images.length >= MAX_IMAGES_PER_PRODUCT) {
+    if (product.media.length >= MAX_MEDIA_PER_PRODUCT) {
       throw new BadRequestException(
-        `Máximo ${MAX_IMAGES_PER_PRODUCT} fotos por producto. Borra alguna antes de subir otra.`,
+        `Máximo ${MAX_MEDIA_PER_PRODUCT} archivos por producto. Borra alguno antes de subir otro.`,
       );
     }
+    if (kind === 'VIDEO') {
+      const videos = product.media.filter((item) => item.kind === 'VIDEO');
+      if (videos.length >= MAX_VIDEOS_PER_PRODUCT) {
+        throw new BadRequestException(
+          `Solo se permite ${MAX_VIDEOS_PER_PRODUCT} video por producto ` +
+            `(máx. ${MAX_VIDEO_MB} MB). Borra el que hay para subir otro.`,
+        );
+      }
+    }
 
-    const uploaded = await this.imageUpload.uploadImage({
-      file,
-      pathPrefix: `catalogs/${catalogId}/products/${productId}`,
-      kind: 'gallery',
-    });
+    const uploaded =
+      kind === 'VIDEO'
+        ? await this.imageUpload.uploadVideo({
+            file,
+            pathPrefix: `catalogs/${catalogId}/products/${productId}`,
+          })
+        : await this.imageUpload.uploadImage({
+            file,
+            pathPrefix: `catalogs/${catalogId}/products/${productId}`,
+            kind: 'gallery',
+          });
 
-    const image = await this.prisma.catalogProductImage.create({
+    const media = await this.prisma.catalogProductMedia.create({
       data: {
         productId,
+        kind,
         url: uploaded.publicUrl,
         path: uploaded.path,
-        sortOrder: product.images.length,
+        contentType: uploaded.contentType,
+        sizeBytes: uploaded.sizeBytes,
+        // EL VIDEO NUNCA VA DE PRIMERO. La posición 0 es la portada: la que
+        // pinta la grilla y la que alimenta la previsualización de WhatsApp. Un
+        // video ahí deja la tarjeta en negro hasta que alguien lo toque.
+        sortOrder:
+          kind === 'VIDEO'
+            ? Math.max(1, product.media.length)
+            : product.media.length,
       },
     });
 
-    // La portada del primer producto alimenta la previsualización de WhatsApp,
-    // que es lo que se ve cuando alguien pega el link. Sin `ogImageUrl` el link
-    // sale como texto pelado y la mitad de la gracia se pierde.
-    await this.backfillOgImage(catalogId, uploaded.publicUrl);
+    // La primera FOTO alimenta la previsualización del link. Un video no sirve
+    // para eso: WhatsApp espera una imagen.
+    if (kind === 'IMAGE') {
+      await this.backfillOgImage(catalogId, uploaded.publicUrl);
+    }
 
-    return image;
+    return media;
   }
 
-  async removeProductImage(catalogId: string, imageId: string) {
-    const image = await this.prisma.catalogProductImage.findFirst({
-      where: { id: imageId, product: { catalogId } },
+  async removeProductMedia(catalogId: string, mediaId: string) {
+    const media = await this.prisma.catalogProductMedia.findFirst({
+      where: { id: mediaId, product: { catalogId } },
     });
-    if (!image) throw new NotFoundException('Imagen no encontrada');
+    if (!media) throw new NotFoundException('Archivo no encontrado');
 
-    await this.deleteFromBucket([image.path]);
-    await this.prisma.catalogProductImage.delete({ where: { id: imageId } });
-    return { id: imageId, deleted: true };
+    await this.deleteFromBucket([media.path]);
+    await this.prisma.catalogProductMedia.delete({ where: { id: mediaId } });
+    return { id: mediaId, deleted: true };
   }
 
-  async reorderProductImages(
+  async reorderProductMedia(
     catalogId: string,
     productId: string,
     dto: ReorderCatalogImagesDto,
   ) {
     const product = await this.assertProduct(catalogId, productId);
-    const known = new Set(product.images.map((image) => image.id));
+    const known = new Set(product.media.map((item) => item.id));
     if (
       dto.imageIds.length !== known.size ||
       dto.imageIds.some((id) => !known.has(id))
     ) {
       throw new BadRequestException(
-        'El orden tiene que traer exactamente las fotos de este producto.',
+        'El orden tiene que traer exactamente los archivos de este producto.',
       );
     }
 
     await this.prisma.$transaction(
       dto.imageIds.map((id, index) =>
-        this.prisma.catalogProductImage.update({
+        this.prisma.catalogProductMedia.update({
           where: { id },
           data: { sortOrder: index },
         }),
@@ -438,7 +480,7 @@ export class CatalogService {
     );
     return this.prisma.catalogProduct.findUnique({
       where: { id: productId },
-      include: { images: { orderBy: { sortOrder: 'asc' } } },
+      include: { media: { orderBy: { sortOrder: 'asc' } } },
     });
   }
 
@@ -454,7 +496,7 @@ export class CatalogService {
   private async assertProduct(catalogId: string, productId: string) {
     const product = await this.prisma.catalogProduct.findFirst({
       where: { id: productId, catalogId },
-      include: { images: { orderBy: { sortOrder: 'asc' } } },
+      include: { media: { orderBy: { sortOrder: 'asc' } } },
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
@@ -568,10 +610,13 @@ export class CatalogService {
         wholesalePrice6COP: product.wholesalePrice6COP,
         isAvailable: product.isAvailable,
         sortOrder: product.sortOrder,
-        images: product.images.map((image) => ({
-          id: image.id,
-          url: image.url,
-          sortOrder: image.sortOrder,
+        media: product.media.map((item) => ({
+          id: item.id,
+          kind: item.kind,
+          url: item.url,
+          contentType: item.contentType,
+          sizeBytes: item.sizeBytes,
+          sortOrder: item.sortOrder,
         })),
       })),
       status: catalog.status,
@@ -615,7 +660,14 @@ export class CatalogService {
         priceCOP: product.priceCOP,
         wholesalePrice6COP: product.wholesalePrice6COP,
         isAvailable: product.isAvailable,
-        images: product.images.map((image) => image.url),
+        // El público recibe fotos y videos separados: se pintan distinto —el
+        // video no se precarga— y adivinar por la extensión sería frágil.
+        images: product.media
+          .filter((item) => item.kind === 'IMAGE')
+          .map((item) => item.url),
+        videos: product.media
+          .filter((item) => item.kind === 'VIDEO')
+          .map((item) => ({ url: item.url, contentType: item.contentType })),
       })),
       /** Categorías en el orden en que aparecen: es el orden que puso el admin. */
       categories: [

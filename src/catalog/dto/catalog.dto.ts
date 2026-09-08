@@ -254,6 +254,37 @@ export class ReorderCatalogImagesDto {
   imageIds!: string[];
 }
 
+export class CreateCatalogServicePriceDto {
+  @ApiProperty({
+    example: 'SETUP',
+    enum: ['SETUP', 'SEASON_UPDATE', 'YEAR_BUNDLE', 'EXTRA_PRODUCT'],
+  })
+  @IsEnum(['SETUP', 'SEASON_UPDATE', 'YEAR_BUNDLE', 'EXTRA_PRODUCT'])
+  serviceCode!: string;
+
+  @ApiProperty({
+    example: 2500,
+    description: 'EN CENTAVOS de USD. 2500 = 25 USD; 50 = 0,50 USD.',
+  })
+  @IsInt()
+  @Min(0)
+  priceUsdCents!: number;
+
+  @ApiPropertyOptional({
+    example: '2026-10-01',
+    description: 'Desde cuándo rige. Omitido = desde ya. Futuro = programada.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional({ example: 'Subida por inflación' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
+}
+
 /** Carga inicial: pegar un catálogo entero en vez de crear producto por producto. */
 export class BulkCatalogProductsDto {
   @ApiProperty({ type: [CreateCatalogProductDto] })
