@@ -60,9 +60,28 @@ export class UpdateBarberAppointmentDto {
   @IsString()
   status?: string;
 
+  // Cuándo se prestó el servicio, si no fue el día agendado. Solo se usa al
+  // completar la cita; después se corrige con el endpoint dedicado, que deja
+  // rastro en el histórico. Acepta 'YYYY-MM-DD' o ISO completo.
+  @IsOptional()
+  @IsDateString()
+  servedAt?: string;
+
   @IsOptional()
   @IsString()
   notes?: string;
+}
+
+export class UpdateBarberAppointmentServedAtDto {
+  // El día en que realmente se prestó el servicio. 'YYYY-MM-DD' o ISO completo.
+  @IsDateString()
+  servedAt!: string;
+
+  // Por qué se corrigió. Opcional, pero es lo que hace útil el histórico.
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  reason?: string;
 }
 
 export class CancelBarberAppointmentDto {

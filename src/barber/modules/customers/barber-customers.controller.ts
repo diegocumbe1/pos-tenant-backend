@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
@@ -21,6 +22,7 @@ import {
   CreateBarberCustomerDto,
   UpdateBarberCustomerDto,
 } from './dto/barber-customer.dto';
+import { BarberCustomerSegmentQueryDto } from './dto/barber-customer-segment.dto';
 
 @ApiTags('Barber')
 @ApiBearerAuth()
@@ -35,6 +37,20 @@ export class BarberCustomersController {
   @RequirePermissions('barber:customers:read')
   list(@CurrentTenant() ctx: TenantContext) {
     return this.customersService.listCustomers(ctx);
+  }
+
+  /**
+   * La lista "por atender": a quién llamar y por qué. Filtra por servicio usado,
+   * por fecha del último servicio, y por quién tiene el retoque o el
+   * mantenimiento vencido.
+   */
+  @Get('segments')
+  @RequirePermissions('barber:customers:read')
+  segments(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: BarberCustomerSegmentQueryDto,
+  ) {
+    return this.customersService.listSegments(ctx, query);
   }
 
   @Post()

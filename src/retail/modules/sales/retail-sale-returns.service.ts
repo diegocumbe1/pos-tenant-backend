@@ -7,6 +7,11 @@ import {
   weightedAverageCost,
 } from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
+import {
+  allocateIn,
+  allocateOut,
+  resolveLocation,
+} from '../../shared/retail-stock-locations';
 import { formatCOP } from '../../../common/date.util';
 import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
 
@@ -227,7 +232,18 @@ export class RetailSaleReturnsService {
       // muevan una sola vez por producto, con el stock encadenado.
       const inByProduct = new Map<
         string,
-        { quantity: number; valueCOP: number }
+        {
+          quantity: number;
+          valueCOP: number;
+          /** De qué bodega salió: es a la que tiene que volver. */
+          locationId: string | null;
+          /**
+           * De `quantity`, cuánto NO iba a un aroma. El saldo por bodega de un
+           * aroma vive en su propia fila, así que esas unidades ya se repusieron
+           * línea a línea; aquí solo queda lo del producto entero.
+           */
+          productLevelQty: number;
+        }
       >();
 
       for (const line of dto.returnedItems) {
@@ -251,6 +267,8 @@ export class RetailSaleReturnsService {
         const bucket = inByProduct.get(item.productId) ?? {
           quantity: 0,
           valueCOP: 0,
+          locationId: item.locationId,
+          productLevelQty: 0,
         };
         bucket.quantity += line.quantity;
         bucket.valueCOP += item.unitCostCOP * line.quantity;
@@ -267,6 +285,17 @@ export class RetailSaleReturnsService {
             where: { id: variantId },
             data: { stock: { increment: line.quantity } },
           });
+          // El saldo por bodega del aroma se repone AQUÍ y no en el bucle por
+          // producto de abajo: allá ya no se sabe de qué aroma era cada unidad.
+          // Vuelve a la bodega de la que salió.
+          await allocateIn(tx, ctx, {
+            productId: item.productId,
+            variantId,
+            quantity: line.quantity,
+            locationId: item.locationId,
+          });
+        } else {
+          bucket.productLevelQty += line.quantity;
         }
       }
 
@@ -293,6 +322,21 @@ export class RetailSaleReturnsService {
         });
         const stockAfter = product.stock + bucket.quantity;
 
+        // Vuelve A LA BODEGA DE LA QUE SALIÓ. Si se vendió de donde Nia y el
+        // cliente la devuelve, la unidad tiene que volver a figurar donde Nia:
+        // mandarla a la principal movería mercancía que nadie movió.
+        //
+        // Solo lo que no iba a un aroma: eso ya se repuso línea a línea, en la
+        // fila de saldo del aroma. `resolveLocation` sin cantidad deja el
+        // movimiento apuntando al sitio correcto sin volver a sumar.
+        const locationId = bucket.productLevelQty
+          ? await allocateIn(tx, ctx, {
+              productId,
+              quantity: bucket.productLevelQty,
+              locationId: bucket.locationId,
+            })
+          : await resolveLocation(tx, ctx, bucket.locationId);
+
         await tx.retailStockMovement.create({
           data: {
             tenantId: ctx.tenantId,
@@ -301,6 +345,7 @@ export class RetailSaleReturnsService {
             type: 'RETURN',
             quantity: bucket.quantity,
             stockAfter,
+            locationId,
             unitCostCOP: unitCost,
             reason: `Devolución del cliente · venta ${sale.code}`,
             reference: saleId,
@@ -338,6 +383,16 @@ export class RetailSaleReturnsService {
         if (!product.trackStock) continue;
 
         const stockAfter = product.stock - line.quantity;
+
+        // Lo que se lleva sale como cualquier venta: de la bodega elegida, o de
+        // la principal mientras haya, o repartido entre las que sí tienen.
+        const { primaryLocationId } = await allocateOut(tx, ctx, {
+          productId: product.id,
+          variantId: line.variantId ?? null,
+          quantity: line.quantity,
+          preferredLocationId: line.locationId,
+        });
+
         await tx.retailStockMovement.create({
           data: {
             tenantId: ctx.tenantId,
@@ -347,6 +402,7 @@ export class RetailSaleReturnsService {
             type: 'SALE',
             quantity: -line.quantity,
             stockAfter,
+            locationId: primaryLocationId,
             unitCostCOP: costingCostCOP(product),
             reason: `Cambio · venta ${sale.code}`,
             reference: saleId,

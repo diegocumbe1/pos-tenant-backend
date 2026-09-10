@@ -8,6 +8,7 @@ import { Prisma, RetailProduct } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
+import { allocateIn } from '../../shared/retail-stock-locations';
 import {
   readProductOptions,
   sanitizeProductOptions,
@@ -260,6 +261,12 @@ export class RetailCatalogService {
             where: { id: created.id },
             data: { avgCostCOP: created.costCOP },
           });
+          // TODO NACE EN PRINCIPAL. Un producto nuevo entra a la casa; de ahí se
+          // reparte después con un traslado, que es lo que de verdad pasó.
+          const locationId = await allocateIn(tx, ctx, {
+            productId: created.id,
+            quantity: initialStock,
+          });
           await tx.retailStockMovement.create({
             data: {
               tenantId: ctx.tenantId,
@@ -268,12 +275,27 @@ export class RetailCatalogService {
               type: 'INITIAL',
               quantity: initialStock,
               stockAfter: initialStock,
+              locationId,
               unitCostCOP: created.costCOP,
               reason: 'Carga inicial',
               userId: ctx.userId,
             },
           });
         }
+
+        // El primer punto del histórico de precios. Sin esto, el producto
+        // arrancaría diciendo que su precio nunca se puso.
+        await tx.retailProductPriceHistory.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            productId: created.id,
+            priceCOP: created.priceCOP,
+            costCOP: created.costCOP,
+            reason: 'Precio al crear el producto',
+            userId: ctx.userId,
+          },
+        });
 
         // Se relee porque `created` se resolvió antes de materializar las
         // variantes: ese objeto las traería vacías.
@@ -312,7 +334,13 @@ export class RetailCatalogService {
     }
     const current = await this.prisma.retailProduct.findUniqueOrThrow({
       where: { id },
-      select: { imageUrls: true, options: true, stockOptionId: true },
+      select: {
+        imageUrls: true,
+        options: true,
+        stockOptionId: true,
+        priceCOP: true,
+        costCOP: true,
+      },
     });
 
     // Las opciones se revalidan contra las fotos que quedarán guardadas, no
@@ -377,6 +405,27 @@ export class RetailCatalogService {
             stockOptionId,
           },
         });
+
+        // Un cambio de precio o de costo deja huella. Solo cuando de verdad
+        // cambia: guardar una fila cada vez que se guarda el producto llenaría
+        // el histórico de renglones idénticos y escondería los saltos reales,
+        // que son los que explican por qué una venta dejó menos margen.
+        const nextPrice = dto.priceCOP ?? current.priceCOP;
+        const nextCost = dto.costCOP ?? current.costCOP;
+        if (nextPrice !== current.priceCOP || nextCost !== current.costCOP) {
+          await tx.retailProductPriceHistory.create({
+            data: {
+              tenantId: ctx.tenantId,
+              branchId: ctx.branchId,
+              productId: id,
+              priceCOP: nextPrice,
+              prevPriceCOP: current.priceCOP,
+              costCOP: nextCost,
+              prevCostCOP: current.costCOP,
+              userId: ctx.userId,
+            },
+          });
+        }
 
         // Crea las filas que falten, borra las de valores eliminados y refresca
         // las etiquetas. El conteo de las que sobreviven no se toca.

@@ -34,6 +34,48 @@ const VERTICAL_ID = 'vertical-retail';
 const TENANT_ID = 'tenant-casehub';
 const BRANCH_ID = 'branch-casehub';
 
+/**
+ * La bodega principal de la tienda. Mismo id derivado que usan la migración y
+ * `ensureDefaultLocation`, para que el seed no cree una segunda.
+ *
+ * El seed escribe stock directo en la tabla, sin pasar por el servicio, así que
+ * tiene que sembrar los saldos a mano: sin esto la demo mostraría todo el
+ * inventario como "sin ubicar", que es justo lo que la pantalla existe para
+ * evitar.
+ */
+const MAIN_LOCATION_ID = `loc_${TENANT_ID}_${BRANCH_ID}`;
+
+async function ensureMainLocation() {
+  await prisma.retailStockLocation.upsert({
+    where: { id: MAIN_LOCATION_ID },
+    update: {},
+    create: {
+      id: MAIN_LOCATION_ID,
+      tenantId: TENANT_ID,
+      branchId: BRANCH_ID,
+      name: 'Bodega principal',
+      isDefault: true,
+      sortOrder: 0,
+    },
+  });
+}
+
+async function seedBalance(productId: string, qty: number) {
+  if (qty === 0) return;
+  await prisma.retailStockBalance.upsert({
+    where: { id: `bal_${productId}` },
+    update: {},
+    create: {
+      id: `bal_${productId}`,
+      tenantId: TENANT_ID,
+      branchId: BRANCH_ID,
+      locationId: MAIN_LOCATION_ID,
+      productId,
+      qty,
+    },
+  });
+}
+
 const img = (seed: string, w = 800, h = 600) =>
   `https://picsum.photos/seed/${seed}/${w}/${h}`;
 
@@ -345,6 +387,10 @@ async function main() {
   await seedRoles(TENANT_ID);
   console.log('✅ Roles (OWNER/MANAGER/CASHIER) con permisos retail:*');
 
+  // La bodega principal tiene que existir antes del catálogo: es donde nace
+  // todo el stock que el seed carga.
+  await ensureMainLocation();
+
   // 4) Catálogo retail + kardex de carga inicial
   for (let c = 0; c < CATEGORIES.length; c += 1) {
     const category = CATEGORIES[c];
@@ -402,6 +448,7 @@ async function main() {
       await prisma.retailProduct.create({
         data: { id: product.id, ...data, stock: product.stock },
       });
+      await seedBalance(product.id, product.stock);
       await prisma.retailStockMovement.create({
         data: {
           tenantId: TENANT_ID,
@@ -410,6 +457,7 @@ async function main() {
           type: 'INITIAL',
           quantity: product.stock,
           stockAfter: product.stock,
+          locationId: MAIN_LOCATION_ID,
           unitCostCOP: product.costCOP,
           reason: 'Carga inicial (seed)',
         },

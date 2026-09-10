@@ -22,6 +22,7 @@ import {
   CreateBarberAppointmentDto,
   RejectBarberAppointmentDto,
   UpdateBarberAppointmentDto,
+  UpdateBarberAppointmentServedAtDto,
 } from './dto/barber-appointment.dto';
 
 @ApiTags('Barber')
@@ -58,6 +59,25 @@ export class BarberAppointmentsController {
     @Body() dto: UpdateBarberAppointmentDto,
   ) {
     return this.appointmentsService.updateAppointment(ctx, id, dto);
+  }
+
+  // Corrige el día en que se prestó el servicio ("lo registré hoy pero fue hace
+  // ocho días"). Deja rastro en el histórico de la cita.
+  @Patch(':id/served-at')
+  @RequirePermissions('barber:appointments:write')
+  updateServedAt(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateBarberAppointmentServedAtDto,
+  ) {
+    return this.appointmentsService.updateServedAt(ctx, id, dto);
+  }
+
+  // Histórico auditable: quién cambió qué y cuándo.
+  @Get(':id/events')
+  @RequirePermissions('barber:appointments:read')
+  events(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.appointmentsService.listEvents(ctx, id);
   }
 
   @Patch(':id/cancel')

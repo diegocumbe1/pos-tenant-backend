@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { RetailCatalogModule } from './modules/catalog/retail-catalog.module';
 import { RetailCustomersModule } from './modules/customers/retail-customers.module';
 import { RetailInventoryModule } from './modules/inventory/retail-inventory.module';
+import { RetailLocationsModule } from './modules/locations/retail-locations.module';
 import { RetailPurchasesModule } from './modules/purchases/retail-purchases.module';
 import { RetailSalesModule } from './modules/sales/retail-sales.module';
 import { RetailShipmentsModule } from './modules/shipments/retail-shipments.module';
@@ -19,6 +20,7 @@ import { RetailSuppliersModule } from './modules/suppliers/retail-suppliers.modu
     RetailSuppliersModule,
     RetailCatalogModule,
     RetailInventoryModule,
+    RetailLocationsModule,
     RetailSalesModule,
     RetailShipmentsModule,
     RetailCustomersModule,

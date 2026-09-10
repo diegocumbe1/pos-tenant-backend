@@ -139,6 +139,16 @@ export class ReceiveRetailPurchaseItemDto {
   addToInventory?: boolean;
 
   @ApiPropertyOptional({
+    example: 'loc_xxx',
+    description:
+      'Bodega donde se guarda lo que llegó. Omitirlo entra a la principal: ' +
+      'la mercancía que llega sin decir dónde se guarda, se guarda en la casa.',
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
+
+  @ApiPropertyOptional({
     description: 'Nº de factura o remisión del proveedor',
   })
   @IsOptional()

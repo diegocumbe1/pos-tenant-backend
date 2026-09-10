@@ -15,6 +15,10 @@ import {
 } from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
+  allocateOut,
+  applySignedDelta,
+} from '../../shared/retail-stock-locations';
+import {
   CO_UTC_OFFSET,
   calendarDayCO,
   clockTimeCO,
@@ -116,6 +120,18 @@ export class RetailSalesService {
        * justo las ventas a medio pagar, que son las que hay que ir a cobrar.
        */
       paymentStatus?: RetailPaymentStatus | 'OPEN';
+      /**
+       * Medio de pago del ABONO, no el anotado en la venta.
+       *
+       * `retailSale.paymentMethod` es lo que se eligió en el mostrador al
+       * cerrar, y en una venta fiada esa es una suposición: la plata puede
+       * haber entrado meses después por transferencia. La pregunta que hace el
+       * dueño —"¿cuáles ventas me entraron en efectivo?"— se responde sobre los
+       * abonos, que es la misma base con la que el resumen arma
+       * `byPaymentMethod`. Si no, el filtro y el desglose de la misma pantalla
+       * dirían cosas distintas.
+       */
+      paymentMethod?: RetailPaymentMethod;
       search?: string;
     } = {},
   ) {
@@ -126,6 +142,13 @@ export class RetailSalesService {
         branchId: ctx.branchId,
         ...this.searchWhere(filters.search),
         ...(filters.saleType ? { saleType: filters.saleType } : {}),
+        ...(filters.paymentMethod
+          ? {
+              payments: {
+                some: { method: filters.paymentMethod, voidedAt: null },
+              },
+            }
+          : {}),
         ...(filters.deliveryStatus
           ? { deliveryStatus: filters.deliveryStatus }
           : {}),
@@ -159,12 +182,21 @@ export class RetailSalesService {
     return this.toSaleDto(sale);
   }
 
-  /** Totales del día/rango para el dashboard de la tienda. */
+  /**
+   * Totales del día/rango para el dashboard de la tienda.
+   *
+   * `paymentMethod` acota TODO el resumen a la plata que entró por ese medio.
+   * No es un adorno del desglose: la pantalla de Ventas deja filtrar por medio
+   * y, sin esto, las tarjetas de arriba seguirían diciendo el total del rango
+   * completo encima de una lista ya filtrada — el mismo desfase que ya se
+   * corrigió para la búsqueda.
+   */
   async getSummary(
     ctx: TenantContext,
     from?: string,
     to?: string,
     saleType?: RetailSaleType,
+    paymentMethod?: RetailPaymentMethod,
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
 
@@ -183,6 +215,7 @@ export class RetailSalesService {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         voidedAt: null,
+        ...(paymentMethod ? { method: paymentMethod } : {}),
         ...this.paidAtRange(from, to),
         sale: {
           status: 'COMPLETED',
@@ -213,17 +246,23 @@ export class RetailSalesService {
     //
     // Lo que se debe es el SALDO, no el total: decir que un pedido de 300.000 con
     // 250.000 abonados son 300.000 por cobrar es tres veces la deuda real.
-    const open = await this.prisma.retailSale.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        status: 'COMPLETED',
-        paymentStatus: { not: 'PAID' },
-        ...(saleType ? { saleType } : {}),
-        ...this.soldAtRange(from, to),
-      },
-      select: { totalCOP: true, paidCOP: true },
-    });
+    //
+    // Con un medio de pago filtrado no hay nada que preguntar: lo que no se ha
+    // cobrado todavía no tiene medio. Devolverlo igual pondría la deuda entera
+    // del rango debajo de unas tarjetas que solo hablan de efectivo.
+    const open: Array<{ totalCOP: number; paidCOP: number }> = paymentMethod
+      ? []
+      : await this.prisma.retailSale.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            status: 'COMPLETED',
+            paymentStatus: { not: 'PAID' },
+            ...(saleType ? { saleType } : {}),
+            ...this.soldAtRange(from, to),
+          },
+          select: { totalCOP: true, paidCOP: true },
+        });
     const pendingPayment = {
       salesCount: open.length,
       amountCOP: open.reduce(
@@ -239,14 +278,23 @@ export class RetailSalesService {
     // Va acá y no solo en el dashboard financiero para que "ventas del día"
     // signifique VENTAS NETAS en las dos pantallas: si una restara y la otra no,
     // habría dos cifras distintas para la misma pregunta.
-    const returns = await this.prisma.retailSaleReturn.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        ...this.returnedAtRange(from, to),
-      },
-      include: { items: true },
-    });
+    //
+    // Con un medio de pago filtrado quedan fuera: una devolución no registra
+    // por dónde salió la plata, así que restársela al efectivo (o a la
+    // transferencia) sería inventarse el dato. El total sin filtro sigue
+    // llevándolas, que es donde el número tiene que cuadrar.
+    const returns: Prisma.RetailSaleReturnGetPayload<{
+      include: { items: true };
+    }>[] = paymentMethod
+      ? []
+      : await this.prisma.retailSaleReturn.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            ...this.returnedAtRange(from, to),
+          },
+          include: { items: true },
+        });
     const returnsRevenueCOP = returns.reduce(
       (sum, row) => sum + (row.replacedCOP - row.returnedCOP),
       0,
@@ -448,6 +496,18 @@ export class RetailSalesService {
         requestedQty.set(key, (requestedQty.get(key) ?? 0) + item.quantity);
       }
 
+      // Bodega elegida en el mostrador, por grupo. Dos líneas del mismo producto
+      // y aroma comparten fila de inventario, así que la última elección manda:
+      // no se puede sacar el mismo aroma de dos sitios en una sola venta.
+      const preferredLocationByKey = new Map<string, string | null>();
+      for (const item of dto.items) {
+        if (!item.locationId) continue;
+        preferredLocationByKey.set(
+          stockKey(item.productId, item.variantId ?? null),
+          item.locationId,
+        );
+      }
+
       const productQty = new Map<string, number>();
       for (const [key, quantity] of requestedQty) {
         const { productId } = splitStockKey(key);
@@ -577,7 +637,30 @@ export class RetailSalesService {
       // Solo la venta entregada en el acto mueve inventario aquí. La pendiente
       // lo mueve entrega por entrega.
       if (!isPending) {
-        await this.applyStockDelta(tx, ctx, created.id, requestedQty, byId, -1);
+        const locationByKey = await this.applyStockDelta(
+          tx,
+          ctx,
+          created.id,
+          requestedQty,
+          byId,
+          -1,
+          undefined,
+          preferredLocationByKey,
+        );
+
+        // La línea guarda de qué bodega salió. Se estampa DESPUÉS y no al
+        // crearla porque hasta que no se reparte el stock no se sabe: cuando en
+        // la principal no alcanza, la bodega la decide el reparto, no el cajero.
+        for (const item of created.items) {
+          const locationId = locationByKey.get(
+            stockKey(item.productId, item.variantId ?? null),
+          );
+          if (!locationId) continue;
+          await tx.retailSaleItem.update({
+            where: { id: item.id },
+            data: { locationId },
+          });
+        }
       }
 
       if (dto.customerId) {
@@ -827,6 +910,25 @@ export class RetailSalesService {
         });
       }
 
+      // La bodega que la línea ya traía manda —se eligió al vender—; si no
+      // traía, sale de donde haya empezando por la principal.
+      const { primaryLocationId } = await allocateOut(tx, ctx, {
+        productId: product.id,
+        variantId: line.variantId ?? null,
+        quantity: line.quantity,
+        preferredLocationId: item.locationId,
+      });
+
+      // Una venta pendiente se despacha cuando llega la mercancía, que puede ser
+      // días después: hasta ahora la línea no tenía bodega, y esta entrega es la
+      // primera vez que se sabe de dónde salió.
+      if (!item.locationId && primaryLocationId) {
+        await tx.retailSaleItem.update({
+          where: { id: item.id },
+          data: { locationId: primaryLocationId },
+        });
+      }
+
       await tx.retailStockMovement.create({
         data: {
           tenantId: ctx.tenantId,
@@ -836,6 +938,7 @@ export class RetailSalesService {
           type: 'SALE',
           quantity: -line.quantity,
           stockAfter,
+          locationId: primaryLocationId,
           unitCostCOP: item.unitCostCOP,
           reason: 'Entrega de venta pendiente',
           reference: id,
@@ -1581,6 +1684,28 @@ export class RetailSalesService {
       });
       const byId = new Map(products.map((product) => [product.id, product]));
 
+      // Vuelve A LA BODEGA DE LA QUE SALIÓ, no a la principal: si se vendió de
+      // donde Nia, anular la venta tiene que dejar la unidad donde Nia. Mandarla
+      // a la principal movería mercancía que nadie movió.
+      const returnedLocation = new Map<string, string | null>();
+      for (const item of existing.items) {
+        if (!item.locationId) continue;
+        returnedLocation.set(
+          stockKey(item.productId, item.variantId),
+          item.locationId,
+        );
+        // Una venta con entregas guarda el aroma en la entrega, no en la línea,
+        // así que la llave que usó el reingreso puede llevar variante aunque la
+        // línea no la tenga.
+        for (const delivery of existing.deliveries) {
+          if (delivery.saleItemId !== item.id) continue;
+          returnedLocation.set(
+            stockKey(item.productId, delivery.variantId),
+            item.locationId,
+          );
+        }
+      }
+
       await this.applyStockDelta(
         tx,
         ctx,
@@ -1589,6 +1714,7 @@ export class RetailSalesService {
         byId,
         1,
         returnedCost,
+        returnedLocation,
       );
 
       if (existing.customerId) {
@@ -1656,6 +1782,12 @@ export class RetailSalesService {
      * inventario dejaría de cuadrar con lo que de verdad se pagó.
      */
     returnUnitCostByKey?: Map<string, number>,
+    /**
+     * Bodega elegida a mano para cada grupo. Vacío NO es un error: es el 95% de
+     * las ventas, y significa "de donde el sistema decida" — que es de la
+     * principal mientras haya. Al anular, es la bodega de la que salió.
+     */
+    preferredLocationByKey?: Map<string, string | null>,
   ) {
     // Se acumula por producto para no pisar el `stock` con dos updates seguidos
     // que hayan leído el mismo valor de partida.
@@ -1702,6 +1834,10 @@ export class RetailSalesService {
       });
     }
 
+    // De qué bodega salió cada grupo, para poder estamparlo en la línea de la
+    // venta: "esta se vendió de donde Nia" es literalmente el dato que se pidió.
+    const locationByKey = new Map<string, string>();
+
     for (const [key, quantity] of quantities) {
       const { productId, variantId } = splitStockKey(key);
       const product = products.get(productId);
@@ -1716,6 +1852,18 @@ export class RetailSalesService {
         });
       }
 
+      // Al VENDER se elige de dónde sale: la elegida en el mostrador, o la
+      // principal si alcanza, o se reparte entre las que sí tienen. Al ANULAR la
+      // mercancía vuelve A LA MISMA BODEGA DE LA QUE SALIÓ —no a la principal—,
+      // porque devolverla a otra parte movería stock que nunca se movió.
+      const locationId = await applySignedDelta(tx, ctx, {
+        productId,
+        variantId,
+        delta: quantity * direction,
+        locationId: preferredLocationByKey?.get(key) ?? null,
+      });
+      if (locationId) locationByKey.set(key, locationId);
+
       await tx.retailStockMovement.create({
         data: {
           tenantId: ctx.tenantId,
@@ -1727,6 +1875,7 @@ export class RetailSalesService {
           // El total del producto ya quedó movido arriba, así que este es el
           // valor final para todas las líneas del mismo producto.
           stockAfter: product.stock + (productDelta.get(productId) ?? 0),
+          locationId,
           // Al vender sale al promedio. Al anular vuelve al costo CON EL QUE
           // SALIÓ (congelado en la línea de la venta), no al promedio de hoy:
           // si entre medias entró mercancía más barata, reintegrarlas al
@@ -1739,6 +1888,8 @@ export class RetailSalesService {
         },
       });
     }
+
+    return locationByKey;
   }
 
   /** Consecutivo legible por tenant: RS-000001. */

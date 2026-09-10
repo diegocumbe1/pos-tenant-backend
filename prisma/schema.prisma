@@ -58,6 +58,7 @@ model Tenant {
   retailCategories     RetailCategory[]
   retailProducts       RetailProduct[]
   retailStockMovements RetailStockMovement[]
+  retailStockLocations RetailStockLocation[]
   retailCustomers      RetailCustomer[]
   retailSales          RetailSale[]
   retailPurchaseItems  RetailPurchaseItem[]
@@ -158,6 +159,7 @@ model Branch {
   retailCategories     RetailCategory[]
   retailProducts       RetailProduct[]
   retailStockMovements RetailStockMovement[]
+  retailStockLocations RetailStockLocation[]
   retailCustomers      RetailCustomer[]
   retailSales          RetailSale[]
   retailPurchaseItems  RetailPurchaseItem[]
@@ -401,33 +403,41 @@ model PublicSiteHighlight {
 }
 
 model BarberService {
-  id              String   @id @default(cuid())
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branchId        String
-  branch          Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  name            String
-  description     String?
-  durationMin     Int
-  priceCOP        Int
+  id                   String   @id @default(cuid())
+  tenantId             String
+  tenant               Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId             String
+  branch               Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name                 String
+  description          String?
+  durationMin          Int
+  priceCOP             Int
   // Costo de insumos del servicio (tintes, agujas, pigmentos...). Capturado a
   // mano: barbería no tiene inventario todavía. Sin esto la vertical queda
   // fuera de cualquier cálculo de margen.
-  costCOP         Int      @default(0)
+  costCOP              Int      @default(0)
   // Modo recursos: bloques de reserva adicionales al base (1h = priceCOP).
   // [{ minutes: number, priceCOP?: number | null }]. priceCOP null = derivado.
-  durationOptions Json     @default("[]")
-  color           String?
-  imageUrls       String[] @default([])
-  category        String?
-  resultDuration  String?
-  retouchPriceCOP Int?
-  retouchNote     String?
-  primaryImageUrl String?
-  isActive        Boolean  @default(true)
-  sortOrder       Int      @default(0)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  durationOptions      Json     @default("[]")
+  color                String?
+  imageUrls            String[] @default([])
+  category             String?
+  // Texto para el sitio público ("8 a 12 meses"). NO se usa para calcular: es
+  // libre a propósito, para que cada negocio lo escriba como lo dice.
+  resultDuration       String?
+  retouchPriceCOP      Int?
+  retouchNote          String?
+  // Cada cuántos días toca volver. Estos SÍ calculan: son los que arman la lista
+  // de "a quién le toca". Dos ventanas distintas y ambas cobran — el retoque es
+  // el ajuste del mismo trabajo, el mantenimiento es rehacerlo.
+  // null = ese servicio no entra en la lista de vencidos.
+  retouchAfterDays     Int? // micropigmentación: ~30
+  maintenanceAfterDays Int? // micropigmentación: ~365
+  primaryImageUrl      String?
+  isActive             Boolean  @default(true)
+  sortOrder            Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   staffServices BarberStaffService[]
   appointments  BarberAppointment[]
@@ -539,6 +549,13 @@ model BarberAppointment {
   staff        BarberStaff?   @relation(fields: [staffId], references: [id])
   scheduledAt  DateTime
   scheduledEnd DateTime
+  // Cuándo se PRESTÓ el servicio, que no es lo mismo que cuándo se agendó ni
+  // cuándo se digitó. Editable por el admin: el caso normal es registrar hoy
+  // algo que pasó hace ocho días. Manda para reportes, para la última visita del
+  // cliente y para la lista de retoques; `createdAt` queda intacto como
+  // auditoría. Mismo patrón que `retail_sales.soldAt`.
+  // null = cita aún no completada, o completada antes de esta migración.
+  servedAt     DateTime?
   // Precio y costo congelados al completar la cita. Hasta ahora el ingreso se
   // leía del BarberService ACTUAL: reprecio o renombrar reescribía el histórico
   // entero. null = cita no completada, o completada antes de este cambio.
@@ -551,11 +568,68 @@ model BarberAppointment {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
+  events BarberAppointmentEvent[]
+
   @@index([tenantId])
   @@index([branchId, status])
   @@index([staffId, scheduledAt])
   @@index([customerId, scheduledAt])
+  // Para la segmentación de clientes: "quién no vuelve desde…" ordena y filtra
+  // por la fecha en que se prestó el servicio, no por la agendada.
+  @@index([tenantId, branchId, servedAt])
+  @@index([customerId, servedAt])
   @@map("barber_appointments")
+}
+
+/**
+ * Histórico auditable de lo que le pasó a una cita. Calcado de
+ * `RetailSaleEvent`, por la misma razón: cuando alguien corrige la fecha de un
+ * servicio o lo deja más barato "porque es familiar", el número nuevo se ve pero
+ * el porqué se pierde. Cada hecho deja aquí su frase congelada y sus datos
+ * crudos, y nada de esto se edita después.
+ */
+model BarberAppointmentEvent {
+  id            String            @id @default(cuid())
+  tenantId      String
+  branchId      String
+  appointmentId String
+  appointment   BarberAppointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  kind    BarberAppointmentEventKind
+  /// Frase lista para mostrar, congelada en el momento en que pasó.
+  summary String
+  /// La nota que escribió quien lo hizo. Siempre opcional.
+  note    String?
+  /// Números crudos del hecho: fechas anterior y nueva, montos, ids.
+  detail  Json?
+
+  userId   String?
+  /// Nombre congelado de quien lo hizo: si después lo borran o le cambian el
+  /// nombre, el histórico sigue diciendo quién fue.
+  userName String?
+
+  occurredAt DateTime @default(now())
+
+  @@index([appointmentId, occurredAt])
+  @@index([tenantId, branchId, occurredAt])
+  @@map("barber_appointment_events")
+}
+
+/**
+ * Los hechos que le pueden pasar a una cita. Lista cerrada a propósito: si
+ * aparece uno nuevo tiene que nombrarse aquí, y así el histórico no se llena de
+ * cadenas sueltas que nadie puede filtrar después.
+ */
+enum BarberAppointmentEventKind {
+  CREATED // se registró la cita
+  COMPLETED // se prestó el servicio y se congelaron precio y costo
+  DATE_CHANGED // se corrigió el día en que se prestó el servicio
+  PRICE_CHANGED // se editó el precio cobrado
+  DISCOUNT_APPLIED // se dejó más barato, con motivo
+  LOYALTY_GRANTED // se canjeó un bono de lealtad
+  CANCELLED // se canceló
+  NO_SHOW // el cliente no llegó
+  NOTE // una anotación a mano, sin más consecuencia
 }
 
 // ─── Users & RBAC ────────────────────────────────────────────────────────────
@@ -2166,6 +2240,8 @@ model RetailProduct {
   purchaseItems         RetailPurchaseItem[]
   variants              RetailProductVariant[]
   retailSaleReturnItems RetailSaleReturnItem[]
+  balances              RetailStockBalance[]
+  priceHistory          RetailProductPriceHistory[]
 
   @@unique([tenantId, branchId, sku])
   @@index([tenantId, branchId, deletedAt])
@@ -2208,6 +2284,7 @@ model RetailProductVariant {
   saleItems             RetailSaleItem[]
   deliveries            RetailSaleDelivery[]
   retailSaleReturnItems RetailSaleReturnItem[]
+  balances              RetailStockBalance[]
 
   @@unique([productId, optionValueId])
   @@index([tenantId, branchId])
@@ -2221,34 +2298,156 @@ enum RetailStockMovementType {
   RETURN // devolución del cliente (reingresa)
   ADJUSTMENT // ajuste manual de conteo
   LOSS // pérdida, daño o robo
+  // Cambio de bodega. NO mueve el stock total ni la plata: la tienda sigue
+  // teniendo las mismas unidades, solo cambia el renglón que dice dónde están.
+  // Deja DOS filas —la salida de origen y la entrada en destino— para que el
+  // kardex de cada bodega cuadre por sí solo; se emparejan por `reference`.
+  TRANSFER
+}
+
+/**
+ * Dónde está físicamente la mercancía: la bodega propia, el salón de un tercero
+ * que exhibe producto, el carro del domiciliario.
+ * Es EXHIBICIÓN, NO CONSIGNACIÓN. La mercancía sigue siendo del dueño: no hay
+ * liquidaciones, ni cuentas por cobrar, ni comisiones. Llevar producto donde
+ * Nia no es venderlo ni prestarlo — no mueve plata, ni el stock total, ni
+ * finanzas, ni el costo. Solo cambia dónde figura.
+ * Toda tienda tiene una `isDefault` ("Bodega principal"). Mientras no se cree
+ * ninguna otra, nada cambia respecto a como funcionaba antes.
+ */
+model RetailStockLocation {
+  id         String  @id @default(cuid())
+  tenantId   String
+  tenant     Tenant  @relation(fields: [tenantId], references: [id])
+  branchId   String
+  branch     Branch  @relation(fields: [branchId], references: [id])
+  name       String
+  // A quién buscar en ese sitio. NULL = responde el sitio mismo, y la UI
+  // muestra el nombre de la bodega: en la principal el responsable es el dueño
+  // y obligar a escribirlo sería ruido.
+  holderName String?
+  phone      String?
+  // Texto libre. AQUÍ va la comisión el día que exista una: no se modela,
+  // porque hoy no hay ninguna y modelarla obligaría a liquidarla.
+  note       String?
+  // La principal. Exactamente una por tienda: es el destino y el origen por
+  // defecto de todo, y donde nace el stock que nadie repartió.
+  isDefault  Boolean @default(false)
+  // Se desactiva, no se borra: su kardex tiene que sobrevivir.
+  isActive   Boolean @default(true)
+  sortOrder  Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  balances      RetailStockBalance[]
+  movementsFrom RetailStockMovement[] @relation("RetailMovementLocation")
+  movementsTo   RetailStockMovement[] @relation("RetailMovementToLocation")
+  saleItems     RetailSaleItem[]
+
+  @@index([tenantId, branchId, isActive])
+  @@map("retail_stock_locations")
+}
+
+/**
+ * Cuánto hay de qué en cada sitio.
+ * `variantId` nulable resuelve los dos casos con una sola tabla: producto
+ * entero, o producto repartido por aroma. Los aromas SÍ se reparten por bodega
+ * —la maracuyá puede estar solo donde Nia—, que es justamente lo que hay que
+ * poder ver.
+ * `RetailProduct.stock` sigue siendo el total y la fuente de verdad de todas
+ * las pantallas; estas filas dicen DÓNDE están esas unidades. Se mantiene
+ * materializado, no calculado, por la misma razón que `paidCOP` en las ventas:
+ * el catálogo pinta cientos de productos y no puede agregar por cada uno.
+ */
+model RetailStockBalance {
+  id         String                @id @default(cuid())
+  tenantId   String
+  branchId   String
+  locationId String
+  location   RetailStockLocation   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  productId  String
+  product    RetailProduct         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId  String?
+  variant    RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  qty        Int                   @default(0)
+  // Mínimo POR SITIO: "cuando a Nia le queden 2, reponer". Distinto del mínimo
+  // del producto, que habla del total.
+  minQty     Int                   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // La unicidad real la dan dos índices parciales creados en la migración, uno
+  // para `variantId IS NULL` y otro para el resto: en Postgres un UNIQUE normal
+  // deja pasar NULLs repetidos, que es exactamente la fila que se duplicaría.
+  @@index([tenantId, branchId, productId])
+  @@index([locationId, productId])
+  @@map("retail_stock_balances")
+}
+
+/**
+ * Qué precio y qué costo tenía un producto, y desde cuándo.
+ * Sin esto, "¿por qué esta venta de marzo dejó menos margen?" no tiene
+ * respuesta: el producto solo guarda su precio de HOY. Se escribe una fila cada
+ * vez que cambia alguno de los dos, con lo que había antes, para que el
+ * histórico del producto pueda mostrar el salto y no solo el valor final.
+ */
+model RetailProductPriceHistory {
+  id           String        @id @default(cuid())
+  tenantId     String
+  branchId     String
+  productId    String
+  product      RetailProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  priceCOP     Int
+  prevPriceCOP Int?
+  // Costo de REPOSICIÓN. El promedio ponderado no se historia aquí: lo mueve
+  // cada entrada de mercancía y su rastro ya está en el kardex.
+  costCOP      Int
+  prevCostCOP  Int?
+  reason       String?
+  userId       String?
+  createdAt    DateTime      @default(now())
+
+  @@index([tenantId, productId, createdAt])
+  @@map("retail_product_price_history")
 }
 
 model RetailStockMovement {
-  id          String                  @id @default(cuid())
-  tenantId    String
-  tenant      Tenant                  @relation(fields: [tenantId], references: [id])
-  branchId    String
-  branch      Branch                  @relation(fields: [branchId], references: [id])
-  productId   String
-  product     RetailProduct           @relation(fields: [productId], references: [id])
+  id           String                  @id @default(cuid())
+  tenantId     String
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id])
+  branchId     String
+  branch       Branch                  @relation(fields: [branchId], references: [id])
+  productId    String
+  product      RetailProduct           @relation(fields: [productId], references: [id])
   // Valor que movió las existencias, cuando el producto reparte por opción.
   // NULL = movimiento del producto entero (todo lo anterior a este cambio, y
   // todo producto que no reparte).
-  variantId   String?
-  variant     RetailProductVariant?   @relation(fields: [variantId], references: [id], onDelete: SetNull)
-  type        RetailStockMovementType
+  variantId    String?
+  variant      RetailProductVariant?   @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  type         RetailStockMovementType
   // Firmado: positivo entra, negativo sale. Kardex auditable.
-  quantity    Int
-  stockAfter  Int
-  unitCostCOP Int?
-  reason      String?
+  quantity     Int
+  stockAfter   Int
+  // Bodega cuyo saldo movió esta fila. NULL = movimiento anterior a que
+  // existieran las bodegas (la migración los estampa en la principal).
+  locationId   String?
+  location     RetailStockLocation?    @relation("RetailMovementLocation", fields: [locationId], references: [id])
+  // El otro extremo de un traslado, solo en filas TRANSFER: en la salida es a
+  // dónde fue, en la entrada es de dónde vino.
+  toLocationId String?
+  toLocation   RetailStockLocation?    @relation("RetailMovementToLocation", fields: [toLocationId], references: [id])
+  unitCostCOP  Int?
+  reason       String?
   // Referencia al origen (id de venta, número de factura de compra...).
-  reference   String?
-  userId      String?
-  createdAt   DateTime                @default(now())
+  reference    String?
+  userId       String?
+  createdAt    DateTime                @default(now())
 
   @@index([tenantId, branchId, createdAt])
   @@index([productId, createdAt])
+  @@index([locationId, createdAt])
   @@map("retail_stock_movements")
 }
 
@@ -2831,6 +3030,10 @@ model RetailSaleItem {
   unitCostCOP  Int                   @default(0)
   discountCOP  Int                   @default(0)
   totalCOP     Int
+  // De qué bodega salió la mercancía de esta línea. NULL = venta anterior a las
+  // bodegas, o producto que no controla stock.
+  locationId   String?
+  location     RetailStockLocation?  @relation(fields: [locationId], references: [id])
 
   deliveries            RetailSaleDelivery[]
   retailSaleReturnItems RetailSaleReturnItem[]

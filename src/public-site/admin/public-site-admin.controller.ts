@@ -66,6 +66,20 @@ export class PublicSiteController {
     return this.publicSiteService.getPreview(ctx);
   }
 
+  /**
+   * Slug y estado del sitio, sin crearlo y sin permiso de Ajustes.
+   *
+   * Lo usa el front para invalidar el HTML cacheado del sitio público cuando se
+   * edita el catálogo. Es información del propio tenant y no expone nada que su
+   * gente no vea en la barra de direcciones, así que basta con estar dentro:
+   * exigir `settings:read` dejaría al encargado corrigiendo un precio sin poder
+   * refrescar el sitio, y `GET /admin/public-site` además crearía el borrador.
+   */
+  @Get('status')
+  status(@CurrentTenant() ctx: TenantContext) {
+    return this.publicSiteService.getSiteStatus(ctx);
+  }
+
   @Patch()
   @RequireAnyPermission('barber:settings:write', 'retail:settings:write')
   updateSite(

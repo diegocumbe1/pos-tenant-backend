@@ -13,6 +13,7 @@ import {
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import {
   RetailDeliveryStatus,
+  RetailPaymentMethod,
   RetailPaymentStatus,
   RetailSaleType,
 } from '@prisma/client';
@@ -68,6 +69,17 @@ function parsePaymentStatus(
     : undefined;
 }
 
+/** Medio del ABONO. Un valor desconocido se ignora, igual que los demás. */
+function parsePaymentMethod(value?: string): RetailPaymentMethod | undefined {
+  return value === 'CASH' ||
+    value === 'CARD' ||
+    value === 'TRANSFER' ||
+    value === 'MIXED' ||
+    value === 'OTHER'
+    ? value
+    : undefined;
+}
+
 @ApiTags('Retail')
 @ApiBearerAuth()
 @ApiSecurity('X-Tenant-Id')
@@ -97,6 +109,14 @@ export class RetailSalesController {
     enum: RetailPaymentStatus,
   })
   @ApiQuery({
+    name: 'paymentMethod',
+    required: false,
+    enum: RetailPaymentMethod,
+    description:
+      'Medio del ABONO, no el anotado al cerrar la venta: devuelve las ventas ' +
+      'que recibieron al menos un pago por ese medio.',
+  })
+  @ApiQuery({
     name: 'search',
     required: false,
     description:
@@ -112,6 +132,7 @@ export class RetailSalesController {
     @Query('saleType') saleType?: RetailSaleType,
     @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
     @Query('paymentStatus') paymentStatus?: string,
+    @Query('paymentMethod') paymentMethod?: string,
   ) {
     return this.sales.listSales(ctx, {
       from,
@@ -120,6 +141,7 @@ export class RetailSalesController {
       saleType: parseSaleType(saleType),
       deliveryStatus: parseDeliveryStatus(deliveryStatus),
       paymentStatus: parsePaymentStatus(paymentStatus),
+      paymentMethod: parsePaymentMethod(paymentMethod),
       search,
     });
   }
@@ -129,13 +151,27 @@ export class RetailSalesController {
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })
   @ApiQuery({ name: 'saleType', required: false, enum: RetailSaleType })
+  @ApiQuery({
+    name: 'paymentMethod',
+    required: false,
+    enum: RetailPaymentMethod,
+    description:
+      'Acota TODO el resumen a la plata que entró por ese medio (base abonos).',
+  })
   summary(
     @CurrentTenant() ctx: TenantContext,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('saleType') saleType?: RetailSaleType,
+    @Query('paymentMethod') paymentMethod?: string,
   ) {
-    return this.sales.getSummary(ctx, from, to, parseSaleType(saleType));
+    return this.sales.getSummary(
+      ctx,
+      from,
+      to,
+      parseSaleType(saleType),
+      parsePaymentMethod(paymentMethod),
+    );
   }
 
   @Get(':id')

@@ -311,6 +311,10 @@ export class FinanceService {
       }
     }
     // Servicios de barber como "productos" en el top de ingresos.
+    // Manda el precio congelado en la cita, igual que en `barberRevenue`. Con el
+    // del catálogo, subir un precio reescribía el histórico de este top y dejaba
+    // dos cifras distintas en la misma pantalla: el ingreso total (congelado) y
+    // este ranking (precio de hoy). Además un descuento quedaría invisible acá.
     for (const appt of barberAppointments) {
       if (!appt.service) continue;
       const entry = productMap.get(appt.service.id) ?? {
@@ -318,7 +322,7 @@ export class FinanceService {
         revenue: 0,
         quantity: 0,
       };
-      entry.revenue += appt.service.priceCOP;
+      entry.revenue += appt.priceCOP ?? appt.service.priceCOP;
       entry.quantity += 1;
       productMap.set(appt.service.id, entry);
     }
@@ -409,8 +413,14 @@ export class FinanceService {
       const itemQty = split.items.reduce((a, i) => a + i.qty, 0);
       bumpDay(split.paidAt, split.totalCOP, split.orderId, itemQty);
     }
+    // Mismo criterio que el ingreso total: manda el precio congelado en la cita.
     for (const appt of barberAppointments) {
-      bumpDay(appt.scheduledAt, appt.service?.priceCOP ?? 0, appt.id, 1);
+      bumpDay(
+        appt.scheduledAt,
+        appt.priceCOP ?? appt.service?.priceCOP ?? 0,
+        appt.id,
+        1,
+      );
     }
     // La serie diaria es de PLATA: cada abono pesa el día en que entró. Las
     // unidades solo se cuentan el día en que la venta se cierra, para no

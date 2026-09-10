@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -87,6 +88,20 @@ export class CreateBarberServiceDto {
   @MaxLength(200)
   retouchNote?: string;
 
+  // Cada cuántos días toca volver. Estos SÍ calculan: arman la lista de
+  // clientes por atender. null = este servicio no entra en esa lista.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  retouchAfterDays?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  maintenanceAfterDays?: number | null;
+
   @IsOptional()
   @IsUrl({ require_tld: false })
   primaryImageUrl?: string;
@@ -158,6 +173,20 @@ export class UpdateBarberServiceDto {
   @IsString()
   @MaxLength(200)
   retouchNote?: string;
+
+  // Cada cuántos días toca volver. Estos SÍ calculan: arman la lista de
+  // clientes por atender. null = este servicio no entra en esa lista.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  retouchAfterDays?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  maintenanceAfterDays?: number | null;
 
   @IsOptional()
   @IsUrl({ require_tld: false })

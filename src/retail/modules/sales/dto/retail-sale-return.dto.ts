@@ -59,6 +59,16 @@ export class ReplacementItemDto {
   variantId?: string;
 
   @ApiPropertyOptional({
+    example: 'loc_xxx',
+    description:
+      'Bodega de la que sale lo que se lleva a cambio. Omitirlo es lo normal: ' +
+      'sale de la principal mientras haya.',
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
+
+  @ApiPropertyOptional({
     example: 22000,
     description:
       'Precio con el que se valora lo que se lleva. Si se omite, el precio ' +

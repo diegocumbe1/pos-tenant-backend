@@ -14,6 +14,10 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { weightedAverageCost } from '../../shared/retail-costing';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import {
+  applyBalanceDelta,
+  resolveLocation,
+} from '../../shared/retail-stock-locations';
+import {
   CreateRetailPurchaseItemDto,
   LinkPurchaseExpenseDto,
   ReceiveRetailPurchaseItemDto,
@@ -482,6 +486,10 @@ export class RetailPurchasesService {
         // entran sobre un stock distinto.
         let avgCost = product.avgCostCOP ?? product.costCOP;
 
+        // Dónde se guarda lo que llegó. Sin bodega elegida entra a la principal:
+        // la mercancía que llega sin decir dónde se guarda, se guarda en la casa.
+        const locationId = await resolveLocation(tx, ctx, dto.locationId);
+
         if (paidUnits > 0) {
           avgCost = weightedAverageCost({
             stockBefore: stockAfter,
@@ -490,6 +498,12 @@ export class RetailPurchasesService {
             unitCostCOP: unitCost ?? avgCost,
           });
           stockAfter += paidUnits;
+          await applyBalanceDelta(
+            tx,
+            ctx,
+            { locationId, productId: product.id, variantId: null },
+            paidUnits,
+          );
           const movement = await tx.retailStockMovement.create({
             data: {
               tenantId: ctx.tenantId,
@@ -498,6 +512,7 @@ export class RetailPurchasesService {
               type: 'PURCHASE',
               quantity: paidUnits,
               stockAfter,
+              locationId,
               unitCostCOP: unitCost,
               reason: `Pedido recibido: ${current.name}`,
               reference: dto.reference ?? `purchase:${current.id}`,
@@ -517,6 +532,12 @@ export class RetailPurchasesService {
             unitCostCOP: 0,
           });
           stockAfter += freeUnits;
+          await applyBalanceDelta(
+            tx,
+            ctx,
+            { locationId, productId: product.id, variantId: null },
+            freeUnits,
+          );
           const movement = await tx.retailStockMovement.create({
             data: {
               tenantId: ctx.tenantId,
@@ -525,6 +546,7 @@ export class RetailPurchasesService {
               type: 'PURCHASE',
               quantity: freeUnits,
               stockAfter,
+              locationId,
               // CERO A PROPÓSITO. No se pagaron, así que valorarlas costaría
               // plata que nunca salió.
               unitCostCOP: 0,

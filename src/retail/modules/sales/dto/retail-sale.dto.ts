@@ -55,6 +55,18 @@ export class CreateRetailSaleItemDto {
   @IsOptional()
   @IsString()
   variantId?: string;
+
+  @ApiPropertyOptional({
+    example: 'loc_xxx',
+    description:
+      'Bodega de la que sale esta línea. Omitirlo es lo normal y NO es un ' +
+      'error: sale de la principal mientras haya, y si no hay se reparte solo ' +
+      'entre los sitios que sí tienen. Se manda únicamente cuando el cajero ' +
+      'eligió a mano de dónde sacarla.',
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 }
 
 export class CreateRetailSaleDto {

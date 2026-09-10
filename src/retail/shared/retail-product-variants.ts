@@ -185,7 +185,7 @@ export async function setVariantDistribution(
       expectedStock?: number;
     }>;
   },
-): Promise<void> {
+): Promise<Array<{ variantId: string; delta: number }>> {
   const variants = await tx.retailProductVariant.findMany({
     where: { productId: params.productId },
     select: { id: true, optionValueId: true, stock: true, label: true },
@@ -244,6 +244,11 @@ export async function setVariantDistribution(
     );
   }
 
+  // Cuánto se movió cada fila. Lo necesita quien llama para mover los saldos
+  // por bodega: repartir traslada unidades del renglón "sin repartir" al del
+  // aroma, y esas dos filas viven en `RetailStockBalance`.
+  const deltas: Array<{ variantId: string; delta: number }> = [];
+
   for (const item of resolved) {
     await tx.retailProductVariant.update({
       where: { id: item.row.id },
@@ -252,5 +257,13 @@ export async function setVariantDistribution(
         ...(item.minStock === undefined ? {} : { minStock: item.minStock }),
       },
     });
+    if (item.stock !== item.row.stock) {
+      deltas.push({
+        variantId: item.row.id,
+        delta: item.stock - item.row.stock,
+      });
+    }
   }
+
+  return deltas;
 }

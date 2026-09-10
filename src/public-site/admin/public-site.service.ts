@@ -715,6 +715,27 @@ export class PublicSiteService {
     return created;
   }
 
+  /**
+   * Slug y estado del sitio de la sede, SIN crearlo si no existe.
+   *
+   * Existe para que invalidar el caché del sitio público no tenga efectos: el
+   * front pide esto antes de tirar la copia cacheada, y ahora lo hace en cada
+   * edición del catálogo, no solo al publicar. `getAdminSite` habría servido,
+   * pero crea el borrador de sitio al vuelo —le materializaría un sitio a cada
+   * tienda que nunca abrió Ajustes— y exige permiso de settings, que el
+   * encargado que corrige un precio no tiene por qué tener.
+   *
+   * Devuelve `null` cuando la sede todavía no tiene sitio: no hay nada que
+   * invalidar, y eso no es un error.
+   */
+  async getSiteStatus(ctx: TenantContext) {
+    const site = await this.prisma.publicSite.findFirst({
+      where: { branchId: ctx.branchId, tenantId: ctx.tenantId },
+      select: { slug: true, publishedSlug: true, status: true },
+    });
+    return { site: site ?? null };
+  }
+
   private async ensureSiteForMutation(
     ctx: TenantContext,
   ): Promise<SiteMutationTarget> {

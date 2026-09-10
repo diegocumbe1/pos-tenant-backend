@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { RetailStockMovementType } from '@prisma/client';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
@@ -40,14 +41,34 @@ export class RetailInventoryController {
   @Get('movements')
   @RequirePermissions('retail:inventory:read')
   @ApiQuery({ name: 'productId', required: false })
+  @ApiQuery({ name: 'locationId', required: false })
+  @ApiQuery({ name: 'type', required: false, enum: RetailStockMovementType })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   movements(
     @CurrentTenant() ctx: TenantContext,
     @Query('productId') productId?: string,
+    @Query('locationId') locationId?: string,
+    @Query('type') type?: RetailStockMovementType,
     @Query('limit') limit?: string,
   ) {
     return this.inventory.listMovements(ctx, {
       productId,
+      locationId,
+      type,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  /** Compras, ventas, movimientos y cambios de precio de un producto, en orden. */
+  @Get('products/:productId/history')
+  @RequirePermissions('retail:inventory:read')
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  productHistory(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('productId') productId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.inventory.productHistory(ctx, productId, {
       limit: limit ? Number(limit) : undefined,
     });
   }

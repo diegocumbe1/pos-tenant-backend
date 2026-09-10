@@ -73,6 +73,17 @@ export class CreateRetailStockMovementDto {
   @IsOptional()
   @IsString()
   variantId?: string;
+
+  @ApiPropertyOptional({
+    example: 'loc_xxx',
+    description:
+      'Bodega a la que entra, o de la que sale, la mercancía. Omitirlo NO es ' +
+      'un error: una entrada sin bodega va a la principal, y una salida sale ' +
+      'de donde haya, empezando por la principal.',
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 }
 
 export class VariantDistributionItemDto {
@@ -139,4 +150,14 @@ export class SetVariantDistributionDto {
   @ValidateNested({ each: true })
   @Type(() => VariantDistributionItemDto)
   items!: VariantDistributionItemDto[];
+
+  @ApiPropertyOptional({
+    example: 'loc_xxx',
+    description:
+      'En qué bodega se está repartiendo. Por defecto la principal, que es ' +
+      'donde figura lo que nadie había repartido.',
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 }
