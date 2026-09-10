@@ -166,6 +166,38 @@ export class RetailCatalogService {
     );
   }
 
+  /**
+   * Un producto con TODO su detalle, incluidas las filas de variante.
+   *
+   * Existe para que el listado no tenga que traerlas: quien abre el selector del mostrador, el
+   * panel de reparto o el formulario de movimiento necesita las filas de UN producto, no las de
+   * todo el catálogo. Ver docs/PLAN_VARIANTES_MULTIDIMENSION_RETAIL.md §4.
+   *
+   * `committedStock` se calcula igual que en el listado: sin él, `availableStock` vendría inflado y
+   * el mostrador dejaría vender mercancía que ya tiene dueño.
+   */
+  async getProduct(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertRetailTenant(ctx.tenantId);
+    const product = await this.prisma.retailProduct.findFirst({
+      // tenantId + branchId en el WHERE, no solo el id: un id de otra tienda tiene que devolver
+      // 404, nunca el producto.
+      where: {
+        id,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
+      include: {
+        category: { select: { id: true, name: true, emoji: true } },
+        variants: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!product) throw new NotFoundException('Producto no encontrado');
+
+    const committed = await this.committedByProduct(ctx, [product.id]);
+    return this.toProductDto(product, committed.get(product.id) ?? 0);
+  }
+
   /** Búsqueda por código de barras para el escáner del POS. */
   async findByBarcode(ctx: TenantContext, barcode: string) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
@@ -582,6 +614,21 @@ export class RetailCatalogService {
         minStock: variant.minStock,
         isLowStock: product.trackStock && variant.stock <= variant.minStock,
       })),
+      /**
+       * Resumen del reparto, para que un LISTADO no necesite las filas completas.
+       *
+       * Las pantallas que muestran muchos productos solo preguntan "¿este reparte?" y "¿alguna de
+       * sus filas está en mínimo?"; las filas completas únicamente las usa la pantalla del producto
+       * que el usuario abrió. Con estos dos campos el listado deja de cargar con ellas.
+       *
+       * Importa de cara a las variantes de varias dimensiones: un producto con 3 colores × 5 tallas
+       * son 15 filas, y multiplicado por un catálogo entero es un JSON de varios MB en cada apertura
+       * del mostrador. Ver docs/PLAN_VARIANTES_MULTIDIMENSION_RETAIL.md §4.
+       */
+      variantCount: (product.variants ?? []).length,
+      hasLowStockVariant:
+        product.trackStock &&
+        (product.variants ?? []).some((variant) => variant.stock <= variant.minStock),
       ...variantStockSummary(product.stock, product.variants ?? []),
       isActive: product.isActive,
       isPublished: product.isPublished,

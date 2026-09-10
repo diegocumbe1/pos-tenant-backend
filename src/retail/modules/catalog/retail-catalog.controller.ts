@@ -102,6 +102,18 @@ export class RetailProductsController {
     return this.catalog.findByBarcode(ctx, barcode);
   }
 
+  /**
+   * Un producto con sus filas de variante.
+   *
+   * VA DESPUÉS de 'barcode/:barcode' a propósito: Nest resuelve por orden de declaración, y si
+   * ':id' fuera antes se tragaría la ruta del escáner tratando "barcode" como un id.
+   */
+  @Get(':id')
+  @RequirePermissions('retail:catalog:read')
+  byId(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.catalog.getProduct(ctx, id);
+  }
+
   @Post()
   @RequirePermissions('retail:catalog:write')
   create(
