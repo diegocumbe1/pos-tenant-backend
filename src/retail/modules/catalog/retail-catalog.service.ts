@@ -162,7 +162,9 @@ export class RetailCatalogService {
       visible.map((product) => product.id),
     );
     return visible.map((product) =>
-      this.toProductDto(product, committed.get(product.id) ?? 0),
+      // `false` = sin filas de reparto. El resumen (`variantCount`, `assignedStock`,
+      // `hasLowStockVariant`) sí viaja, que es lo único que un listado necesita.
+      this.toProductDto(product, committed.get(product.id) ?? 0, false),
     );
   }
 
@@ -546,6 +548,19 @@ export class RetailCatalogService {
       variants?: ProductVariantRow[];
     },
     committedStock = 0,
+    /**
+     * `false` en el LISTADO: ahí las filas de reparto no las usa nadie —solo se pregunta si el
+     * producto reparte y si alguna está en mínimo, y para eso están `variantCount` y
+     * `hasLowStockVariant`—. Las filas completas las pide la pantalla del producto abierto, por
+     * `GET /retail/products/:id`.
+     *
+     * Es lo que hace viable el reparto por varias opciones: 3 colores x 5 tallas son 15 filas por
+     * producto, y multiplicado por el catálogo entero es un JSON de varios MB en cada apertura del
+     * mostrador. Ver docs/PLAN_VARIANTES_MULTIDIMENSION_RETAIL.md §4.
+     *
+     * PARA REVERTIR: pasar `true` (o quitar el argumento) en `listProducts`. Nada más depende de esto.
+     */
+    includeVariants = true,
   ) {
     const margin = product.priceCOP - product.costCOP;
     return {
@@ -605,15 +620,17 @@ export class RetailCatalogService {
       // Reparto de existencias por opción. `stockOptionId` null y `variants`
       // vacío = el producto cuenta entero, que es el caso por defecto.
       stockOptionId: product.stockOptionId,
-      variants: (product.variants ?? []).map((variant) => ({
-        id: variant.id,
-        optionValueId: variant.optionValueId,
-        label: variant.label,
-        sku: variant.sku,
-        stock: variant.stock,
-        minStock: variant.minStock,
-        isLowStock: product.trackStock && variant.stock <= variant.minStock,
-      })),
+      variants: includeVariants
+        ? (product.variants ?? []).map((variant) => ({
+            id: variant.id,
+            optionValueId: variant.optionValueId,
+            label: variant.label,
+            sku: variant.sku,
+            stock: variant.stock,
+            minStock: variant.minStock,
+            isLowStock: product.trackStock && variant.stock <= variant.minStock,
+          }))
+        : [],
       /**
        * Resumen del reparto, para que un LISTADO no necesite las filas completas.
        *
