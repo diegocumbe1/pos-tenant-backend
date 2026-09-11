@@ -58,6 +58,10 @@ export class WhatsAppSessionManager
   private readonly dataPath = process.env.WA_SESSION_DIR
     ? path.resolve(process.env.WA_SESSION_DIR)
     : path.resolve(process.cwd(), '.wa-sessions');
+  // Versión de WhatsApp Web servida al Chromium. Ver el comentario del `Client`
+  // en pair(): es la causa número uno de "Execution context was destroyed".
+  private readonly webVersion =
+    process.env.WA_WEB_VERSION ?? '2.3000.1047296119-alpha';
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
   private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
   private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 2);
@@ -176,6 +180,7 @@ export class WhatsAppSessionManager
       dataPathWritable,
       sessionDir,
       sessionDirExists: fs.existsSync(sessionDir),
+      webVersion: this.webVersion,
       chromiumExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
       headless: (process.env.WA_PUPPETEER_HEADLESS ?? 'true') !== 'false',
       pairTimeoutMs: this.pairTimeoutMs,
@@ -227,7 +232,12 @@ export class WhatsAppSessionManager
       // archivo remoto para que funcione igual en local y en prod sin depender
       // de .wwebjs_cache. Si WhatsApp la retira (expiran ~2 meses), basta con
       // mover WA_WEB_VERSION a otra sin redeploy de código.
-      webVersion: process.env.WA_WEB_VERSION ?? '2.3000.1043890899-alpha',
+      //
+      // Fijada el 11-sep-2026; caduca el 11-nov-2026. Las vigentes y su fecha
+      // de caducidad están en versions.json del mismo repo: cuando esta expire,
+      // copia el `currentVersion` de ahí a WA_WEB_VERSION. El valor en uso se
+      // expone en /whatsapp/session/diagnostics para no tener que adivinarlo.
+      webVersion: this.webVersion,
       webVersionCache: {
         type: 'remote',
         remotePath:
@@ -318,12 +328,22 @@ export class WhatsAppSessionManager
       state.status = 'ready';
       state.phoneNumber = client.info?.wid?.user;
       this.emit(tenantId, branchId, state);
-      // Guarda el número (best-effort; la fila la crea el primer backup del store).
+      // Guarda el número (best-effort). Va como upsert y no como update porque
+      // en el PRIMER emparejamiento la fila todavía no existe: la crea el store
+      // en su primer backup, que RemoteAuth dispara 60s DESPUÉS de `ready`. Con
+      // un update el número se perdía en silencio y la consola mostraba la
+      // sesión conectada sin saber de qué número era.
       if (state.phoneNumber) {
         this.prisma.whatsappSession
-          .updateMany({
+          .upsert({
             where: { clientId },
-            data: { phoneNumber: state.phoneNumber },
+            create: {
+              clientId,
+              tenantId,
+              branchId,
+              phoneNumber: state.phoneNumber,
+            },
+            update: { phoneNumber: state.phoneNumber },
           })
           .catch(() => undefined);
       }
