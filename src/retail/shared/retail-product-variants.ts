@@ -1,15 +1,16 @@
 /**
- * Existencias repartidas por valor de opción.
+ * Existencias repartidas por COMBINACIÓN de opciones.
  *
- * Un producto puede señalar UN grupo de sus `options` como el que lleva el
- * inventario (`RetailProduct.stockOptionId`). Cuando lo hace, cada valor de ese
- * grupo se materializa en una fila de `RetailProductVariant` con su propio
- * conteo. Los demás grupos siguen siendo presentación: 6 aromas × 3 colores son
- * 6 filas, no 18.
+ * Un producto señala en `RetailProduct.stockOptionIds` qué grupos de sus
+ * `options` llevan el inventario. Con uno, cada valor se materializa en una fila
+ * (6 aromas = 6 filas) y es el comportamiento de siempre. Con varios, se
+ * materializa el PRODUCTO CARTESIANO: 3 colores × 5 tallas = 15 filas, una por
+ * combinación real. Los grupos que no están en esa lista siguen siendo pura
+ * presentación.
  *
  * Es opcional y por producto a propósito. En "Mantequilla Corporal" el grupo que
- * divide el inventario es Aromas; en una pijama con color y talla puede no haber
- * ninguno y el stock sigue siendo del producto, como siempre.
+ * divide el inventario es Aromas; en una pijama con color y talla pueden repartir
+ * los dos, o ninguno y el stock sigue siendo del producto.
  *
  * REGLA CENTRAL: `RetailProduct.stock` sigue siendo el total físico y la fuente
  * de verdad del número que se muestra en todas partes. Las variantes dicen
@@ -23,43 +24,118 @@ import { RetailProductOption } from './retail-product-options';
 
 export type ProductVariantRow = {
   id: string;
-  optionValueId: string;
+  /** DEPRECADO — ver el schema. Null en combinaciones de varias dimensiones. */
+  optionValueId: string | null;
+  /** Los valores que forman la combinación, en el orden de `stockOptionIds`. */
+  optionValueIds: string[];
+  /** Los mismos ids ordenados y unidos por "|". Identidad de la combinación. */
+  combinationKey: string;
   label: string;
   sku: string | null;
   stock: number;
   minStock: number;
 };
 
+/**
+ * Tope de combinaciones por producto.
+ *
+ * No es una limitación técnica —Postgres aguanta de sobra— sino operativa: un
+ * producto con 300 combinaciones no se puede contar en una estantería, y el
+ * catálogo que lo contenga pesará de más en cada apertura del mostrador. Si
+ * alguien llega acá, casi siempre es que ese producto en realidad son varios.
+ */
+export const MAX_VARIANT_COMBINATIONS = 200;
+
+/**
+ * La identidad de una combinación.
+ *
+ * Se ORDENA antes de unir, y ese detalle es la garantía del modelo: sin ordenar,
+ * (negro,38) y (38,negro) serían dos claves distintas, pasarían el unique las
+ * dos y el stock de esa combinación quedaría partido en dos filas sin que nadie
+ * lo note.
+ */
+export function combinationKeyOf(optionValueIds: string[]): string {
+  return [...optionValueIds].sort().join('|');
+}
+
 /** Cliente de Prisma dentro de una transacción. */
 type Tx = Prisma.TransactionClient;
 
 /**
- * Deja el grupo que reparte en un valor válido.
+ * Deja los grupos que reparten en valores válidos, conservando el orden pedido.
  *
  * Señalar un grupo que no existe dejaría un producto que dice repartir por algo
- * que nadie configuró: se trata como "no reparte" en vez de fallar, porque el
- * caso típico es que el admin borró el grupo y no volvió a tocar este campo.
+ * que nadie configuró: se descarta en vez de fallar, porque el caso típico es que
+ * el admin borró el grupo y no volvió a tocar este campo.
+ *
+ * El ORDEN se respeta porque manda en la etiqueta: [color, talla] produce
+ * "Negro · 38" y [talla, color] produce "38 · Negro".
  */
+export function resolveStockOptionIds(
+  stockOptionIds: string[] | null | undefined,
+  options: RetailProductOption[] | null,
+): string[] {
+  const live = new Set((options ?? []).map((option) => option.id));
+  // Deduplicado: el mismo grupo dos veces multiplicaría sus valores por sí mismos.
+  return [...new Set(stockOptionIds ?? [])].filter((id) => live.has(id));
+}
+
+/** Compatibilidad con el campo viejo mientras conviven los dos. */
 export function resolveStockOptionId(
   stockOptionId: string | null | undefined,
   options: RetailProductOption[] | null,
 ): string | null {
-  if (!stockOptionId) return null;
-  return (options ?? []).some((option) => option.id === stockOptionId)
-    ? stockOptionId
-    : null;
+  return (
+    resolveStockOptionIds(stockOptionId ? [stockOptionId] : [], options)[0] ??
+    null
+  );
 }
 
 /**
- * Sincroniza las filas de variante con los valores del grupo que reparte.
+ * El producto cartesiano de los valores de los grupos que reparten.
  *
- * - Sin grupo señalado: se borran todas y el producto vuelve a contar entero.
- * - Con grupo: una fila por valor. Se crean las que faltan en 0 y se borran las
- *   de valores que ya no existen.
+ * Con un grupo devuelve una entrada por valor —idéntico a lo de siempre—; con
+ * varios, una por combinación. Se omiten los grupos sin valores con nombre: un
+ * grupo a medio configurar multiplicaría por cero y borraría todas las filas.
+ */
+export function buildCombinations(
+  groups: RetailProductOption[],
+): Array<{ optionValueIds: string[]; label: string }> {
+  const usable = groups
+    .map((group) => group.values.filter((value) => value.label.trim()))
+    .filter((values) => values.length > 0);
+  if (usable.length === 0) return [];
+
+  let combos: Array<{ optionValueIds: string[]; label: string }> = [
+    { optionValueIds: [], label: '' },
+  ];
+  for (const values of usable) {
+    const next: typeof combos = [];
+    for (const combo of combos) {
+      for (const value of values) {
+        next.push({
+          optionValueIds: [...combo.optionValueIds, value.id],
+          // " · " es el separador que ya usa el mostrador para mostrar la variante.
+          label: combo.label ? `${combo.label} · ${value.label}` : value.label,
+        });
+      }
+    }
+    combos = next;
+  }
+  return combos;
+}
+
+/**
+ * Sincroniza las filas de variante con las combinaciones vigentes.
+ *
+ * - Sin grupos que repartan: se borran todas y el producto vuelve a contar entero.
+ * - Con grupos: una fila por combinación. Se crean las que faltan en 0 y se
+ *   borran las de combinaciones que ya no existen.
  *
  * NUNCA toca el `stock` de una fila que sobrevive: repartir es un acto explícito
  * del admin (ver `setVariantDistribution`), no un efecto secundario de guardar
- * el producto. Renombrar "Arrurú" no puede mover existencias.
+ * el producto. Renombrar "Arrurú" no puede mover existencias — por eso la
+ * identidad es `combinationKey` (ids) y no la etiqueta.
  *
  * Sí actualiza el `label`, que es una copia para que el kardex y el histórico de
  * ventas sigan siendo legibles.
@@ -70,32 +146,46 @@ export async function syncProductVariants(
     tenantId: string;
     branchId: string;
     productId: string;
-    stockOptionId: string | null;
+    stockOptionIds: string[];
     options: RetailProductOption[] | null;
   },
 ): Promise<void> {
-  const group = params.stockOptionId
-    ? (params.options ?? []).find(
-        (option) => option.id === params.stockOptionId,
-      )
-    : undefined;
+  const byId = new Map(
+    (params.options ?? []).map((option) => [option.id, option]),
+  );
+  const groups = params.stockOptionIds
+    .map((id) => byId.get(id))
+    .filter((group): group is RetailProductOption => Boolean(group));
 
-  if (!group) {
+  const combos = groups.length > 0 ? buildCombinations(groups) : [];
+
+  if (combos.length === 0) {
     await tx.retailProductVariant.deleteMany({
       where: { productId: params.productId },
     });
     return;
   }
 
+  // El tope se valida ANTES de escribir nada: fallar a mitad dejaría el producto
+  // con un reparto incompleto y el total descuadrado contra la suma de sus filas.
+  if (combos.length > MAX_VARIANT_COMBINATIONS) {
+    throw new BadRequestException(
+      `Ese reparto son ${combos.length} combinaciones y el máximo es ${MAX_VARIANT_COMBINATIONS}. ` +
+        'Con tantas, contarlas en la estantería es inviable: separa el producto en varios.',
+    );
+  }
+
   const existing = await tx.retailProductVariant.findMany({
     where: { productId: params.productId },
-    select: { id: true, optionValueId: true, label: true },
+    select: { id: true, combinationKey: true, label: true },
   });
-  const byValueId = new Map(existing.map((row) => [row.optionValueId, row]));
-  const liveValueIds = new Set(group.values.map((value) => value.id));
+  const byKey = new Map(existing.map((row) => [row.combinationKey, row]));
+  const liveKeys = new Set(
+    combos.map((combo) => combinationKeyOf(combo.optionValueIds)),
+  );
 
   const orphans = existing
-    .filter((row) => !liveValueIds.has(row.optionValueId))
+    .filter((row) => !liveKeys.has(row.combinationKey))
     .map((row) => row.id);
   if (orphans.length > 0) {
     await tx.retailProductVariant.deleteMany({
@@ -103,24 +193,30 @@ export async function syncProductVariants(
     });
   }
 
-  for (const value of group.values) {
-    const current = byValueId.get(value.id);
+  for (const combo of combos) {
+    const key = combinationKeyOf(combo.optionValueIds);
+    const current = byKey.get(key);
     if (!current) {
       await tx.retailProductVariant.create({
         data: {
           tenantId: params.tenantId,
           branchId: params.branchId,
           productId: params.productId,
-          optionValueId: value.id,
-          label: value.label,
+          optionValueIds: combo.optionValueIds,
+          combinationKey: key,
+          // Se sigue llenando mientras la columna vieja exista: un rollback del
+          // despliegue tiene que encontrar la fila utilizable.
+          optionValueId:
+            combo.optionValueIds.length === 1 ? combo.optionValueIds[0] : null,
+          label: combo.label,
           stock: 0,
           minStock: 0,
         },
       });
-    } else if (current.label !== value.label) {
+    } else if (current.label !== combo.label) {
       await tx.retailProductVariant.update({
         where: { id: current.id },
-        data: { label: value.label },
+        data: { label: combo.label },
       });
     }
   }

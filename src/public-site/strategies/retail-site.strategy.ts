@@ -179,7 +179,16 @@ export class RetailSiteStrategy implements VerticalSiteStrategy {
             options: toPublicProductOptions(
               options,
               stockOptionId && trackStock
-                ? new Map(variants.map((v) => [v.optionValueId, v.stock]))
+                ? // `optionValueId` es nullable desde el reparto por varias dimensiones: una
+                  // combinación no tiene UN valor. El sitio público solo sabe pintar una
+                  // dimensión, así que las combinaciones se omiten en vez de mostrarse a medias.
+                  new Map(
+                    variants
+                      .filter((v): v is typeof v & { optionValueId: string } =>
+                        Boolean(v.optionValueId),
+                      )
+                      .map((v) => [v.optionValueId, v.stock]),
+                  )
                 : undefined,
             ),
           }),

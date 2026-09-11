@@ -310,6 +310,19 @@ export class CreateRetailProductDto {
   @IsOptional()
   @IsString()
   stockOptionId?: string | null;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Grupos de `options` que reparten existencias, en orden. [] = el stock es del ' +
+      'producto entero. Uno = una dimensión (aroma). Varios = matriz: se crea una fila ' +
+      'por COMBINACIÓN (3 colores x 5 tallas = 15). El orden manda en la etiqueta ' +
+      '("Negro · 38"). Reemplaza a `stockOptionId`, que queda por compatibilidad.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  stockOptionIds?: string[] | null;
 }
 
 export class UpdateRetailProductDto extends PartialType(

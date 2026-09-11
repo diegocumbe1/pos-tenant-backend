@@ -16,7 +16,7 @@ import {
 import { wholesaleTiersOf } from '../../shared/retail-pricing';
 import {
   ProductVariantRow,
-  resolveStockOptionId,
+  resolveStockOptionIds,
   syncProductVariants,
   variantStockSummary,
 } from '../../shared/retail-product-variants';
@@ -233,7 +233,12 @@ export class RetailCatalogService {
     const initialStock = dto.trackStock === false ? 0 : (dto.stock ?? 0);
     const imageUrls = dto.imageUrls ?? [];
     const options = sanitizeProductOptions(dto.options, imageUrls);
-    const stockOptionId = resolveStockOptionId(dto.stockOptionId, options);
+    // `stockOptionIds` manda; `stockOptionId` se acepta por compatibilidad mientras los clientes
+    // viejos sigan mandándolo. Ver docs/PLAN_VARIANTES_MULTIDIMENSION_RETAIL.md.
+    const stockOptionIds = resolveStockOptionIds(
+      dto.stockOptionIds ?? (dto.stockOptionId ? [dto.stockOptionId] : []),
+      options,
+    );
 
     try {
       const product = await this.prisma.$transaction(async (tx) => {
@@ -268,7 +273,11 @@ export class RetailCatalogService {
             options: (options ?? undefined) as
               | Prisma.InputJsonValue
               | undefined,
-            stockOptionId,
+            stockOptionIds,
+            // Se sigue llenando mientras la columna vieja exista: un rollback del despliegue tiene
+            // que encontrar el producto utilizable. Solo tiene sentido con UNA dimensión.
+            stockOptionId:
+              stockOptionIds.length === 1 ? stockOptionIds[0] : null,
           },
           include: {
             category: { select: { id: true, name: true, emoji: true } },
@@ -283,7 +292,7 @@ export class RetailCatalogService {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           productId: created.id,
-          stockOptionId,
+          stockOptionIds,
           options,
         });
 
@@ -372,6 +381,7 @@ export class RetailCatalogService {
         imageUrls: true,
         options: true,
         stockOptionId: true,
+        stockOptionIds: true,
         priceCOP: true,
         costCOP: true,
       },
@@ -393,10 +403,20 @@ export class RetailCatalogService {
     // El grupo que reparte se valida contra las opciones que van a quedar
     // guardadas: si el admin borró el grupo de aromas en este mismo guardado,
     // el producto deja de repartir en vez de apuntar a un grupo fantasma.
-    const stockOptionId = resolveStockOptionId(
-      dto.stockOptionId === undefined
-        ? current.stockOptionId
-        : dto.stockOptionId,
+    const stockOptionIds = resolveStockOptionIds(
+      dto.stockOptionIds !== undefined
+        ? (dto.stockOptionIds ?? [])
+        : dto.stockOptionId !== undefined
+          ? dto.stockOptionId
+            ? [dto.stockOptionId]
+            : []
+          : // Sin nada en el dto se conserva lo guardado. `stockOptionIds` puede venir vacío en
+            // filas anteriores a la migración, y ahí manda el campo viejo.
+            current.stockOptionIds.length > 0
+            ? current.stockOptionIds
+            : current.stockOptionId
+              ? [current.stockOptionId]
+              : [],
       effectiveOptions,
     );
 
@@ -436,7 +456,9 @@ export class RetailCatalogService {
               | Prisma.InputJsonValue
               | undefined,
             options,
-            stockOptionId,
+            stockOptionIds,
+            stockOptionId:
+              stockOptionIds.length === 1 ? stockOptionIds[0] : null,
           },
         });
 
@@ -467,7 +489,7 @@ export class RetailCatalogService {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
           productId: id,
-          stockOptionId,
+          stockOptionIds,
           options: effectiveOptions,
         });
 
@@ -617,13 +639,24 @@ export class RetailCatalogService {
       committedStock,
       /** Lo que de verdad se puede vender hoy sin quedar mal con nadie. */
       availableStock: Math.max(0, product.stock - committedStock),
-      // Reparto de existencias por opción. `stockOptionId` null y `variants`
-      // vacío = el producto cuenta entero, que es el caso por defecto.
-      stockOptionId: product.stockOptionId,
+      // Reparto de existencias por opción. `stockOptionIds` vacío y `variants` vacío = el producto
+      // cuenta entero, que es el caso por defecto.
+      //
+      // `stockOptionId` sigue viajando para los clientes que todavía no leen el array. Se deriva:
+      // con varias dimensiones no hay UN grupo que quepa ahí, y mandar el primero sería mentir.
+      stockOptionIds: product.stockOptionIds,
+      stockOptionId:
+        product.stockOptionIds.length === 1
+          ? product.stockOptionIds[0]
+          : product.stockOptionIds.length === 0
+            ? null
+            : product.stockOptionId,
       variants: includeVariants
         ? (product.variants ?? []).map((variant) => ({
             id: variant.id,
             optionValueId: variant.optionValueId,
+            optionValueIds: variant.optionValueIds,
+            combinationKey: variant.combinationKey,
             label: variant.label,
             sku: variant.sku,
             stock: variant.stock,
@@ -645,7 +678,9 @@ export class RetailCatalogService {
       variantCount: (product.variants ?? []).length,
       hasLowStockVariant:
         product.trackStock &&
-        (product.variants ?? []).some((variant) => variant.stock <= variant.minStock),
+        (product.variants ?? []).some(
+          (variant) => variant.stock <= variant.minStock,
+        ),
       ...variantStockSummary(product.stock, product.variants ?? []),
       isActive: product.isActive,
       isPublished: product.isPublished,

@@ -2216,7 +2216,15 @@ model RetailProduct {
   //
   // `stock` sigue siendo el TOTAL físico: los `variants` reparten ese total, no
   // lo reemplazan. Lo que no se ha repartido es `stock - Σ variants.stock`.
+  // DEPRECADO — lo reemplaza `stockOptionIds`. Se conserva un despliegue para
+  // que un rollback no pierda nada.
   stockOptionId       String?
+  // Grupos de `options` que reparten existencias.
+  //   []        → el stock es del producto entero (por defecto)
+  //   [uno]     → una dimensión (el comportamiento histórico)
+  //   [a, b, …] → matriz: una fila por COMBINACIÓN de sus valores
+  // El ORDEN es el que eligió el admin y manda en la etiqueta ("Negro · 38").
+  stockOptionIds      String[]
   // isActive = vendible en el POS. isPublished = visible en el sitio público.
   isActive            Boolean        @default(true)
   isPublished         Boolean        @default(true)
@@ -2251,11 +2259,11 @@ model RetailProduct {
 }
 
 /**
- * Existencias de UN valor del grupo que reparte el inventario.
- * No es una matriz de variantes: hay una fila por valor del grupo señalado en
- * `RetailProduct.stockOptionId`, no una por combinación de todos los grupos. Un
- * producto con 6 aromas y 3 colores tiene 6 filas, no 18 — el color sigue
- * siendo presentación.
+ * Existencias de UNA COMBINACIÓN de valores de los grupos que reparten.
+ * Los grupos que reparten los señala `RetailProduct.stockOptionIds`. Con uno,
+ * hay una fila por valor (6 aromas = 6 filas) y es el comportamiento de
+ * siempre. Con varios, una fila por combinación: 3 colores × 5 tallas = 15.
+ * Los grupos que NO están en esa lista siguen siendo pura presentación.
  * `RetailProduct.stock` sigue siendo el total físico y la fuente de verdad del
  * número que se muestra en todas partes. Estas filas dicen CUÁLES son esas
  * unidades. La diferencia (`stock - Σ variants.stock`) es lo que todavía no se
@@ -2268,9 +2276,21 @@ model RetailProductVariant {
   branchId      String
   productId     String
   product       RetailProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
-  // `id` del valor dentro de `RetailProduct.options`. No es FK: las opciones
-  // viven en JSONB. Si el admin borra el valor, la fila se borra con él.
-  optionValueId String
+  // DEPRECADO — lo reemplaza `optionValueIds`. Se conserva un despliegue para que
+  // un rollback no pierda nada; se elimina en una migración posterior. Nullable
+  // porque una combinación de varias dimensiones no tiene UN valor único.
+  optionValueId String?
+  // Los valores que componen esta combinación, en el orden de
+  // `RetailProduct.stockOptionIds`. Un elemento = una dimensión (lo de siempre);
+  // dos o más = matriz (talla × color × medida…).
+  // No son FK: las opciones viven en JSONB.
+  optionValueIds String[]
+  // Los mismos ids ORDENADOS y unidos por "|". Existe solo para poder poner un
+  // UNIQUE sobre la combinación: Postgres no da un unique útil sobre un array, y
+  // sin él dos filas podrían reclamar el mismo (Negro, 38) y el stock quedaría
+  // partido en dos sin que nadie lo note. El ORDEN importa: sin ordenar,
+  // (negro,38) y (38,negro) serían dos filas distintas.
+  combinationKey String
   // Copia de la etiqueta ("Arrurú") para que el kardex y el histórico de ventas
   // sigan siendo legibles aunque después se renombre o se borre la opción.
   label         String
@@ -2286,8 +2306,10 @@ model RetailProductVariant {
   retailSaleReturnItems RetailSaleReturnItem[]
   balances              RetailStockBalance[]
 
-  @@unique([productId, optionValueId])
+  @@unique([productId, combinationKey])
   @@index([tenantId, branchId])
+  // Para "todo lo talla 38": busca por un valor suelto dentro del array.
+  @@index([optionValueIds], type: Gin)
   @@map("retail_product_variants")
 }
 
