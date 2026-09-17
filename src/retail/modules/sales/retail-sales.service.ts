@@ -25,6 +25,11 @@ import {
   formatCOP,
 } from '../../../common/date.util';
 import {
+  formatFeePct,
+  freezeTerms,
+  syncFinancingFeeExpense,
+} from '../../shared/retail-financing';
+import {
   CreateRetailSaleDto,
   CreateRetailSaleNoteDto,
   CreateRetailSalePaymentDto,
@@ -50,6 +55,7 @@ const PAYMENT_METHOD_LABEL: Record<RetailPaymentMethod, string> = {
   TRANSFER: 'transferencia',
   MIXED: 'mixto',
   OTHER: 'otro medio',
+  FINANCING: 'financiación',
 };
 
 /**
@@ -210,13 +216,18 @@ export class RetailSalesService {
     //
     // Por eso se piden ABONOS y no ventas. Los anulados no cuentan, y los de una
     // venta anulada tampoco: esa plata volvió.
+    //
+    // Y SE PIDEN POR `settledAt`, NO POR `paidAt`. Con financiación el cliente
+    // paga el 10 pero el giro del financiador llega el 18: la venta es del 10 y
+    // la plata del 18. Lo que todavía no ha girado tiene `settledAt` en NULL y
+    // queda fuera de todo período, en la bandeja "por desembolsar".
     const payments = await this.prisma.retailSalePayment.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         voidedAt: null,
         ...(paymentMethod ? { method: paymentMethod } : {}),
-        ...this.paidAtRange(from, to),
+        ...this.settledAtRange(from, to),
         sale: {
           status: 'COMPLETED',
           ...(saleType ? { saleType } : {}),
@@ -594,10 +605,54 @@ export class RetailSalesService {
         );
       }
 
+      // ABONO DE MOSTRADOR. El cliente deja una parte y se lleva la mercancía
+      // fiada, o la separa hasta terminar de pagarla. Nace aquí y no en una
+      // segunda llamada porque es el mismo acto: obligar a crear la venta y
+      // después abonarla es el doble de trabajo para el vendedor, y entre las
+      // dos llamadas la venta figura debiendo plata que ya está en la caja.
+      const depositCOP = dto.depositCOP ?? 0;
+      const depositMethod = dto.depositMethod ?? dto.paymentMethod ?? 'CASH';
+      if (depositCOP > 0) {
+        if ((dto.paymentStatus ?? 'PAID') !== 'PENDING') {
+          throw new BadRequestException(
+            "Un abono solo aplica a una venta que queda debiendo: manda paymentStatus 'PENDING'",
+          );
+        }
+        if (depositCOP >= totalCOP) {
+          throw new BadRequestException(
+            `El abono (${depositCOP}) cubre el total (${totalCOP}): registra la venta como cobrada`,
+          );
+        }
+        // Un abono financiado exige congelar la comisión sobre ESE monto y
+        // dejar el giro pendiente. Se registra con el endpoint de abonos, que
+        // es el que sabe hacerlo.
+        if (depositMethod === 'FINANCING') {
+          throw new BadRequestException(
+            'Un abono con financiación se registra aparte, sobre la venta ya creada',
+          );
+        }
+      }
+
       // La venta de ayer digitada hoy lleva la fecha de ayer: es el día en que
       // pasó, y finanzas cuenta por `soldAt`. Los sellos de cobro y entrega van
       // con ella —si se vendió y se entregó ayer, no se entregó hoy—.
       const soldAt = this.resolveSoldAt(dto.soldAt);
+
+      // FINANCIACIÓN: se congelan los términos que regían el día de la venta.
+      //
+      // La venta queda cobrada —al cliente no se le persigue, el riesgo es del
+      // financiador— pero la plata NO entra hoy: el abono nace con `settledAt`
+      // en NULL y solo pesa cuando se registre el giro.
+      const financing =
+        dto.paymentMethod === 'FINANCING'
+          ? await this.resolveFinancing(tx, ctx, {
+              providerId: dto.financingProviderId,
+              amountCOP: totalCOP,
+              at: soldAt,
+              paymentStatus: dto.paymentStatus,
+              authCode: dto.financingAuthCode,
+            })
+          : null;
 
       const created = await tx.retailSale.create({
         data: {
@@ -613,6 +668,16 @@ export class RetailSalesService {
           totalCOP,
           costCOP,
           paymentMethod: dto.paymentMethod ?? 'CASH',
+          ...(financing
+            ? {
+                financingProviderId: financing.terms.financingProviderId,
+                financingProviderName: financing.terms.financingProviderName,
+                financingFeeBps: financing.terms.financingFeeBps,
+                financingFeeCOP: financing.terms.financingFeeCOP,
+                financingAuthCode: dto.financingAuthCode,
+                financingStatus: dto.financingStatus ?? 'APPROVED',
+              }
+            : {}),
           saleType: dto.saleType ?? 'RETAIL',
           deliveryStatus: dto.deliveryStatus ?? 'DELIVERED',
           paymentStatus: dto.paymentStatus ?? 'PAID',
@@ -688,6 +753,33 @@ export class RetailSalesService {
             amountCOP: totalCOP,
             method: dto.paymentMethod ?? 'CASH',
             paidAt: soldAt,
+            // Cuándo entró la plata de verdad. En efectivo, tarjeta y
+            // transferencia es el mismo instante. En financiación NO: ese día
+            // queda abierto hasta que el financiador gire.
+            settledAt: financing ? null : soldAt,
+            ...(financing ? financing.terms : {}),
+            ...(financing ? { financingAuthCode: dto.financingAuthCode } : {}),
+            userId: ctx.userId,
+            userName: ctx.name,
+            cashSessionId: dto.cashSessionId,
+          },
+        });
+        await this.syncSalePayment(tx, created.id);
+      }
+
+      // El abono del separado o del fiado entra por la misma puerta que
+      // cualquier otro: fila en el ledger y `paymentStatus` derivado, que lo
+      // deja en PARTIAL. Nada de escribir el estado a mano.
+      if (!paidInFull && depositCOP > 0) {
+        await tx.retailSalePayment.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            saleId: created.id,
+            amountCOP: depositCOP,
+            method: depositMethod,
+            paidAt: soldAt,
+            settledAt: soldAt,
             userId: ctx.userId,
             userName: ctx.name,
             cashSessionId: dto.cashSessionId,
@@ -698,15 +790,22 @@ export class RetailSalesService {
 
       await this.logSaleEvent(tx, ctx, created.id, {
         kind: 'CREATED',
-        summary: paidInFull
-          ? `Venta registrada por ${formatCOP(totalCOP)}, cobrada (${PAYMENT_METHOD_LABEL[dto.paymentMethod ?? 'CASH']})`
-          : `Venta registrada por ${formatCOP(totalCOP)}, sin cobrar`,
+        summary: financing
+          ? `Venta registrada por ${formatCOP(totalCOP)}, financiada con ${financing.terms.financingProviderName} · comisión ${formatFeePct(financing.terms.financingFeeBps)} (${formatCOP(financing.terms.financingFeeCOP)}) · quedan ${formatCOP(totalCOP - financing.terms.financingFeeCOP)} por desembolsar`
+          : paidInFull
+            ? `Venta registrada por ${formatCOP(totalCOP)}, cobrada (${PAYMENT_METHOD_LABEL[dto.paymentMethod ?? 'CASH']})`
+            : depositCOP > 0
+              ? `Venta registrada por ${formatCOP(totalCOP)} · abonó ${formatCOP(depositCOP)} (${PAYMENT_METHOD_LABEL[depositMethod]}) · quedan ${formatCOP(totalCOP - depositCOP)}`
+              : `Venta registrada por ${formatCOP(totalCOP)}, sin cobrar`,
         note: dto.note,
         detail: {
           totalCOP,
           discountCOP: saleDiscountCOP,
           units: items.reduce((sum, item) => sum + item.quantity, 0),
           paid: paidInFull,
+          ...(depositCOP > 0
+            ? { depositCOP, depositMethod, balanceCOP: totalCOP - depositCOP }
+            : {}),
         },
         occurredAt: soldAt,
       });
@@ -1047,6 +1146,19 @@ export class RetailSalesService {
     const paidAt = this.resolveSoldAt(dto.paidAt);
 
     await this.prisma.$transaction(async (tx) => {
+      // La comisión se congela sobre EL ABONO, no sobre el total de la venta:
+      // si el cliente financia 800.000 de una venta de 1.200.000, el
+      // financiador solo cobra comisión por lo que prestó.
+      const financing =
+        method === 'FINANCING'
+          ? await this.resolveFinancing(tx, ctx, {
+              providerId: dto.financingProviderId,
+              amountCOP: dto.amountCOP,
+              at: paidAt,
+              authCode: dto.financingAuthCode,
+            })
+          : null;
+
       await tx.retailSalePayment.create({
         data: {
           tenantId: ctx.tenantId,
@@ -1055,6 +1167,9 @@ export class RetailSalesService {
           amountCOP: dto.amountCOP,
           method,
           paidAt,
+          settledAt: financing ? null : paidAt,
+          ...(financing ? financing.terms : {}),
+          ...(financing ? { financingAuthCode: dto.financingAuthCode } : {}),
           note: dto.note,
           userId: ctx.userId,
           userName: ctx.name,
@@ -1062,14 +1177,28 @@ export class RetailSalesService {
         },
       });
 
+      if (financing) {
+        await tx.retailSale.update({
+          where: { id },
+          data: {
+            financingProviderId: financing.terms.financingProviderId,
+            financingProviderName: financing.terms.financingProviderName,
+            financingAuthCode: dto.financingAuthCode,
+            financingStatus: 'APPROVED',
+          },
+        });
+      }
+
       const { paidCOP, totalCOP } = await this.syncSalePayment(tx, id);
       const complete = paidCOP >= totalCOP;
 
       await this.logSaleEvent(tx, ctx, id, {
         kind: 'PAYMENT',
-        summary: complete
-          ? `Cobro completo de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]})`
-          : `Abono de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]}) · quedan ${formatCOP(totalCOP - paidCOP)}`,
+        summary: financing
+          ? `Cobro de ${formatCOP(dto.amountCOP)} con ${financing.terms.financingProviderName} · comisión ${formatFeePct(financing.terms.financingFeeBps)} (${formatCOP(financing.terms.financingFeeCOP)}) · pendiente de desembolso`
+          : complete
+            ? `Cobro completo de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]})`
+            : `Abono de ${formatCOP(dto.amountCOP)} (${PAYMENT_METHOD_LABEL[method]}) · quedan ${formatCOP(totalCOP - paidCOP)}`,
         note: dto.note,
         detail: {
           amountCOP: dto.amountCOP,
@@ -1120,6 +1249,13 @@ export class RetailSalesService {
           voidedBy: ctx.userId,
         },
       });
+
+      // Si el abono anulado era de financiación, su comisión deja de ser un
+      // gasto: la venta no ocurrió como se registró. Sin esto quedaría un
+      // egreso huérfano hundiendo la utilidad del mes.
+      if (payment.method === 'FINANCING') {
+        await syncFinancingFeeExpense(tx, paymentId);
+      }
 
       const { paidCOP, totalCOP } = await this.syncSalePayment(tx, id);
 
@@ -1734,17 +1870,32 @@ export class RetailSalesService {
         detail: { totalCOP: existing.totalCOP, paidCOP: existing.paidCOP },
       });
 
-      return tx.retailSale.update({
+      const voided = await tx.retailSale.update({
         where: { id },
         data: {
           status: 'VOIDED',
           voidedAt: new Date(),
           voidedReason: dto.reason,
+          // La venta se anuló en Lynko, pero el crédito sigue vivo en el
+          // financiador hasta que alguien lo reverse allá. Se marca para que la
+          // bandeja lo muestre y no se dé por cerrado solo.
+          ...(existing.paymentMethod === 'FINANCING'
+            ? { financingStatus: 'REVERSED' as const }
+            : {}),
         },
         include: {
           ...SALE_INCLUDE,
         },
       });
+
+      // Sus comisiones dejan de ser gasto: la venta no existió.
+      for (const payment of voided.payments ?? []) {
+        if (payment.method === 'FINANCING') {
+          await syncFinancingFeeExpense(tx, payment.id);
+        }
+      }
+
+      return voided;
     }, this.txOptions);
 
     return this.toSaleDto(sale);
@@ -1957,11 +2108,77 @@ export class RetailSalesService {
     };
   }
 
-  /** Mismo rango, pero por la fecha en que ENTRÓ la plata. */
-  private paidAtRange(from?: string, to?: string) {
-    if (!from && !to) return {};
+  /**
+   * Valida un cobro con financiación y congela sus términos.
+   *
+   * Todo lo que puede salir mal se detiene acá, antes de escribir nada: sin
+   * convenio no se sabe qué comisión aplicar, y una venta financiada guardada
+   * sin comisión se contaría por su total —que NO es lo que el negocio recibe—
+   * y mostraría una utilidad que no existe.
+   */
+  private async resolveFinancing(
+    tx: Prisma.TransactionClient,
+    ctx: TenantContext,
+    params: {
+      providerId?: string;
+      amountCOP: number;
+      at: Date;
+      authCode?: string;
+      paymentStatus?: RetailPaymentStatus;
+    },
+  ) {
+    if (!params.providerId) {
+      throw new BadRequestException(
+        'Elige con qué financiador se hizo la venta',
+      );
+    }
+    if (!params.authCode?.trim()) {
+      // Es el único rastro de la transacción del lado del financiador. Sin él,
+      // cuando el giro no llegue no hay contra qué reclamar.
+      throw new BadRequestException(
+        'Falta el código de autorización que dio el financiador',
+      );
+    }
+    if (params.paymentStatus === 'PENDING') {
+      // Una venta financiada NO es un fiado: el financiador ya respondió por
+      // ella. Dejarla pendiente la mandaría a la bandeja de cobros y el dueño
+      // iría a cobrarle a un cliente que no le debe nada.
+      throw new BadRequestException(
+        'Una venta financiada no puede quedar fiada: el financiador ya respondió por ella',
+      );
+    }
+
+    const terms = await freezeTerms(tx, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      providerId: params.providerId,
+      amountCOP: params.amountCOP,
+      at: params.at,
+    });
+
+    const { settlementDays, ...frozen } = terms;
+    return { terms: frozen, settlementDays };
+  }
+
+  /**
+   * Mismo rango, pero por la fecha en que ENTRÓ LA PLATA A LA CUENTA.
+   *
+   * OJO: es `settledAt`, no `paidAt`, y la diferencia importa. `paidAt` es
+   * cuándo pagó el cliente; `settledAt` es cuándo el negocio tuvo la plata. En
+   * efectivo y transferencia son el mismo día —y el backfill de la migración
+   * los dejó iguales para todo el histórico—, pero en financiación la venta es
+   * del 10 y el giro del financiador llega el 18. Contar por `paidAt` le diría
+   * al dueño que tiene una plata que todavía no tiene.
+   *
+   * Un abono con `settledAt` en NULL no entra en ningún período: es plata
+   * reconocida como venta que aún no ha llegado. Aparece en la bandeja "por
+   * desembolsar", no en el ingreso.
+   */
+  private settledAtRange(from?: string, to?: string) {
+    if (!from && !to) return { settledAt: { not: null } };
     return {
-      paidAt: {
+      settledAt: {
+        not: null,
         ...(from ? { gte: new Date(from) } : {}),
         ...(to ? { lte: new Date(to) } : {}),
       },
@@ -2148,6 +2365,13 @@ export class RetailSalesService {
         amountCOP: payment.amountCOP,
         method: payment.method,
         paidAt: payment.paidAt,
+        // Cuándo entró la plata de verdad. NULL en un cobro con financiación
+        // que el financiador todavía no ha girado: la pantalla lo dice con
+        // todas las letras en vez de dejar creer que ya está en la cuenta.
+        settledAt: payment.settledAt,
+        financingProviderName: payment.financingProviderName,
+        financingFeeCOP: payment.financingFeeCOP,
+        financingAuthCode: payment.financingAuthCode,
         note: payment.note,
         userName: payment.userName,
         voidedAt: payment.voidedAt,
@@ -2157,6 +2381,20 @@ export class RetailSalesService {
       // El flete no es margen: lo que se cobra por él se va en pagar la guía.
       grossProfitCOP: sale.totalCOP - sale.shippingCOP - sale.costCOP,
       paymentMethod: sale.paymentMethod,
+      // Financiación: los términos CONGELADOS de esta venta, no los del
+      // convenio de hoy. Si el convenio se renegoció, esta venta sigue
+      // diciendo lo que costó cuando se hizo.
+      financingProviderId: sale.financingProviderId,
+      financingProviderName: sale.financingProviderName,
+      financingFeeBps: sale.financingFeeBps,
+      financingFeeCOP: sale.financingFeeCOP,
+      /** Lo que el negocio recibe por esta venta, ya descontada la comisión. */
+      financingNetCOP:
+        sale.financingFeeCOP === null
+          ? null
+          : sale.totalCOP - sale.financingFeeCOP,
+      financingAuthCode: sale.financingAuthCode,
+      financingStatus: sale.financingStatus,
       receivedCOP: sale.receivedCOP,
       changeCOP: sale.changeCOP,
       note: sale.note,

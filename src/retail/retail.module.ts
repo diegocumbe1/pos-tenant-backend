@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { RetailCatalogModule } from './modules/catalog/retail-catalog.module';
 import { RetailCustomersModule } from './modules/customers/retail-customers.module';
+import { RetailFinancingModule } from './modules/financing/retail-financing.module';
 import { RetailInventoryModule } from './modules/inventory/retail-inventory.module';
 import { RetailLocationsModule } from './modules/locations/retail-locations.module';
 import { RetailPurchasesModule } from './modules/purchases/retail-purchases.module';
@@ -24,6 +25,7 @@ import { RetailSuppliersModule } from './modules/suppliers/retail-suppliers.modu
     RetailSalesModule,
     RetailShipmentsModule,
     RetailCustomersModule,
+    RetailFinancingModule,
   ],
 })
 export class RetailModule {}

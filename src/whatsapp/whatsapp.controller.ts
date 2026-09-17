@@ -21,6 +21,7 @@ import {
   SendTestMessageDto,
 } from './dto/notify-appointment.dto';
 import { SendPaymentMethodsDto } from './dto/send-payment-methods.dto';
+import { NotifyOrderBodyDto } from './dto/notify-order.dto';
 
 interface StatusEvent {
   tenantId: string;
@@ -226,6 +227,30 @@ export class WhatsAppController {
   ) {
     const ctx = resolveCtx(tenantId, branchId);
     return this.whatsapp.sendAppointmentConfirmationToCustomer(ctx as any, dto);
+  }
+
+  // Retail: pedidos del catálogo público. Mismo par que en citas —uno avisa a la
+  // tienda, otro le confirma al cliente— pero con la plantilla de pedido.
+  @Post('orders/notify-business')
+  @HttpCode(HttpStatus.OK)
+  notifyOrderBusiness(
+    @Body() dto: NotifyOrderBodyDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+  ) {
+    const ctx = resolveCtx(tenantId, branchId);
+    return this.whatsapp.sendOrderCreatedToBusiness(ctx as any, dto);
+  }
+
+  @Post('orders/notify-customer')
+  @HttpCode(HttpStatus.OK)
+  notifyOrderCustomer(
+    @Body() dto: NotifyOrderBodyDto,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+  ) {
+    const ctx = resolveCtx(tenantId, branchId);
+    return this.whatsapp.sendOrderConfirmationToCustomer(ctx as any, dto);
   }
 
   // Medios de pago al cliente (Bre-B, Nequi, cuenta, QR) desde el WhatsApp del

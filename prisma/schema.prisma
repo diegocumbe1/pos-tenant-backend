@@ -73,6 +73,7 @@ model Tenant {
   notificationPrefs    NotificationPreference[]
   webPushSubscriptions WebPushSubscription[]
   platformMessages     PlatformMessage[]
+  whatsappTemplates    WhatsappTemplate[]
 
   @@index([plan])
   @@index([verticalId])
@@ -1200,12 +1201,24 @@ model Expense {
   isRecurring Boolean          @default(false)
   dueDate     DateTime? // próxima fecha de causación para recurrentes
   note        String?
+  // De dónde salió este gasto, cuando lo escribió el sistema y no una persona.
+  // 'RETAIL_SALE' | 'RETAIL_SHIPMENT' | 'FINANCING_SETTLEMENT'.
+  //
+  // POR QUÉ NO BASTA CON DERIVAR EL ID. `syncShippingExpense` deriva el id
+  // (`shipexp_<id>`) y con eso es idempotente, pero desde el gasto no hay forma
+  // de llegar al envío: el origen queda escondido dentro de un string. Con la
+  // comisión de financiación eso no alcanza — hay que abrir la venta desde el
+  // gasto, encontrar todos los gastos de un proveedor en un rango para
+  // recalcularlos, y colgar el ajuste del giro de la misma venta.
+  sourceType  String?
+  sourceId    String?
   createdAt   DateTime         @default(now())
 
   @@index([tenantId])
   @@index([tenantId, branchId, incurredAt])
   @@index([branchId, incurredAt])
   @@index([category])
+  @@index([tenantId, sourceType, sourceId])
   @@map("expenses")
 }
 
@@ -2092,6 +2105,38 @@ model WhatsappSession {
   @@map("whatsapp_sessions")
 }
 
+enum WhatsappTemplateKey {
+  APPOINTMENT_BUSINESS
+  APPOINTMENT_CUSTOMER
+  ORDER_BUSINESS
+  ORDER_CUSTOMER
+}
+
+// Texto de WhatsApp editado por el negocio desde Ajustes. Solo existe fila para
+// lo que el dueño cambió: sin fila, manda el default de
+// `src/whatsapp/templates/message-templates.ts`, y "Restaurar" borra la fila en
+// vez de copiar el default a la tabla. Así un cambio de redacción en el código
+// llega a todos los que nunca personalizaron su mensaje.
+//
+// El alcance es el tenant, no la sede: el texto es la voz del negocio, mientras
+// que el número emparejado (whatsapp_sessions) sí es por sede.
+model WhatsappTemplate {
+  id        String              @id @default(cuid())
+  tenantId  String
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  key       WhatsappTemplateKey
+  body      String
+  /// Apagado = ese aviso no se envía, aunque el texto siga guardado.
+  enabled   Boolean             @default(true)
+  updatedBy String?
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("whatsapp_templates")
+}
+
 model StaffLedgerEntry {
   id           String          @id @default(cuid())
   tenantId     String
@@ -2511,6 +2556,123 @@ enum RetailPaymentMethod {
   TRANSFER
   MIXED
   OTHER
+  // Crédito de un tercero (Sistecrédito, Addi). NO es un fiado: al cliente no
+  // se le cobra nada más. Lo que queda abierto es el giro del financiador, que
+  // llega en T+N días y NETO de comisión. Por eso una venta FINANCING nace
+  // cobrada pero con `settledAt` en NULL: la plata todavía no entró.
+  FINANCING
+}
+
+/// En qué va el crédito con el financiador. Es una pregunta distinta de
+/// "¿ya entró la plata?" (eso lo responde `settledAt` del abono).
+enum FinancingStatus {
+  /// Radicada, esperando respuesta del financiador.
+  PENDING_APPROVAL
+  /// Aprobada: la venta se puede cerrar.
+  APPROVED
+  /// Rechazada: hay que cobrar por otro medio o anular la venta.
+  REJECTED
+  /// El financiador ya giró la plata.
+  SETTLED
+  /// Se reversó (devolución, anulación acordada con el financiador).
+  REVERSED
+}
+
+/// Convenio de financiación de una sede: la IDENTIDAD del convenio, no sus
+/// números. Los números viven en `FinancingProviderTerm`, fechados, porque una
+/// renegociación no puede reescribir lo que costó una venta de hace tres meses.
+model FinancingProvider {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String
+  /// Código estable dentro de la sede: 'sistecredito' | 'addi' | slug propio.
+  code     String
+  /// Nombre visible en POS, recibo y reportes: "Sistecrédito".
+  label    String
+  /// Apagar un convenio sin tocar el histórico de ventas que lo usaron.
+  isActive Boolean @default(true)
+  /// Datos del asesor y número de contrato. NUNCA datos de clientes.
+  note     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  terms       FinancingProviderTerm[]
+  settlements FinancingSettlement[]
+  sales       RetailSale[]
+  payments    RetailSalePayment[]
+
+  @@unique([branchId, code])
+  @@index([tenantId, branchId, isActive])
+  @@map("financing_providers")
+}
+
+/// Términos vigentes a partir de una fecha.
+///
+/// APPEND-ONLY, igual que `plan_prices`: renegociar el convenio NO edita la fila
+/// anterior, escribe una nueva con su `effectiveFrom`. Así se puede responder
+/// "¿qué comisión regía el 14 de marzo?", que es justo lo que un JSON
+/// sobreescrito no puede.
+model FinancingProviderTerm {
+  id         String            @id @default(cuid())
+  providerId String
+  provider   FinancingProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  /// Comisión en PUNTOS BÁSICOS. 650 = 6,50%.
+  /// Entero a propósito: el resto del sistema trabaja en enteros y un 6.5
+  /// flotante termina produciendo comisiones de $44.999,99999.
+  feeBps         Int
+  /// Días hasta el desembolso, según convenio. Alimenta la fecha estimada de
+  /// giro que ve el dueño en el POS y en la bandeja.
+  settlementDays Int
+  /// Compra mínima financiable. 0 = sin mínimo.
+  minAmountCOP   Int               @default(0)
+  /// Si la comisión del proveedor llega con IVA (solo afecta la nota del gasto;
+  /// aquí no se modela nada fiscal).
+  feeHasVat      Boolean           @default(true)
+  /// Desde cuándo rige. LO ELIGE EL ADMIN: "cambiaron los términos" (desde hoy)
+  /// o "estaba mal digitado" (retroactivo).
+  effectiveFrom  DateTime
+  /// Por qué cambió: 'renegociación', 'corrección de digitación'.
+  reason         String?
+  createdBy      String?
+  createdAt      DateTime          @default(now())
+
+  @@index([providerId, effectiveFrom])
+  @@map("financing_provider_terms")
+}
+
+/// Un giro del financiador. Paga N ventas de una vez, que es como llegan.
+///
+/// Existe como entidad y no como un par de campos en la venta para que la
+/// relación sea navegable en los dos sentidos —del giro a sus ventas y de la
+/// venta a su giro— y para que la diferencia entre lo esperado y lo recibido
+/// tenga dónde vivir.
+model FinancingSettlement {
+  id         String            @id @default(cuid())
+  tenantId   String
+  branchId   String
+  providerId String
+  provider   FinancingProvider @relation(fields: [providerId], references: [id])
+
+  /// Lo que Lynko esperaba: suma de (abono − comisión) de las ventas incluidas.
+  expectedCOP Int
+  /// Lo que llegó de verdad al banco. Lo digita el dueño; en Fase 3 lo trae la API.
+  receivedCOP Int
+  /// Fecha del giro. ES LA QUE DEFINE EN QUÉ DÍA PESA LA PLATA: se copia al
+  /// `settledAt` de cada abono incluido.
+  settledAt   DateTime
+  /// Número de giro o comprobante del financiador.
+  reference   String?
+  note        String?
+  createdBy   String?
+  createdAt   DateTime          @default(now())
+
+  payments RetailSalePayment[]
+
+  @@index([tenantId, branchId, settledAt])
+  @@index([providerId, settledAt])
+  @@map("financing_settlements")
 }
 
 // Con qué lista de precios se cobró. El mayorista vende más barato por unidad,
@@ -2588,6 +2750,27 @@ model RetailSale {
   // Costo de la mercancía vendida, congelado al momento de la venta → margen real.
   costCOP        Int                  @default(0)
   paymentMethod  RetailPaymentMethod  @default(CASH)
+  // ─── Financiación (solo cuando paymentMethod = FINANCING) ─────────────────
+  // Los términos van CONGELADOS, igual que `unitCostCOP` en el kardex: se
+  // resuelven preguntándole a `FinancingProviderTerm` cuál regía el día de la
+  // venta, y a partir de ahí el dato es de la venta. Si el convenio se
+  // renegocia del 6,5% al 4%, esta venta sigue diciendo 6,5%, porque eso fue
+  // lo que pasó.
+  financingProviderId   String?
+  financingProvider     FinancingProvider? @relation(fields: [financingProviderId], references: [id])
+  /// Nombre congelado. Va además de la FK a propósito: la FK sirve para cruzar
+  /// y navegar, el nombre para que el reporte de marzo no cambie si el convenio
+  /// se renombra o se borra.
+  financingProviderName String?
+  /// Comisión congelada, en puntos básicos. 650 = 6,50%.
+  financingFeeBps       Int?
+  /// Comisión en pesos, calculada al guardar. No se recalcula nunca más.
+  financingFeeCOP       Int?
+  /// Código de autorización que devolvió la app del financiador.
+  /// ES EL ÚNICO DATO DEL CRÉDITO QUE GUARDAMOS: nada de cédula, ingresos,
+  /// score, cuotas ni tasa (Ley 1581 — ver docs/PLAN_PAGOS_FINANCIACION_*).
+  financingAuthCode     String?
+  financingStatus       FinancingStatus?
   receivedCOP    Int?
   changeCOP      Int?
   note           String?
@@ -2876,8 +3059,35 @@ model RetailSalePayment {
   amountCOP Int
   /// Con qué pagó ESTE abono. Puede ser distinto en cada uno.
   method    RetailPaymentMethod @default(CASH)
-  /// Cuándo entró la plata. Puede no ser hoy: se abonó ayer y se digita hoy.
+  /// Cuándo PAGÓ EL CLIENTE. Puede no ser hoy: se abonó ayer y se digita hoy.
+  /// Es lo que ve el cliente en su recibo.
   paidAt    DateTime            @default(now())
+
+  /// Cuándo la plata llegó DE VERDAD a la cuenta del negocio.
+  ///
+  /// ES LA FECHA QUE MANDA EN FINANZAS. Efectivo y transferencia: igual a
+  /// `paidAt`, la plata entra el mismo día. Financiación: el día del giro del
+  /// financiador, que es T+N. NULL = todavía no ha entrado, así que NO cuenta
+  /// como ingreso de ningún período.
+  ///
+  /// Separarla de `paidAt` es lo que permite decir las dos verdades a la vez:
+  /// "vendí $1.200.000 el 10" y "tengo la plata el 18". El día que se quiera
+  /// modelar el T+2 de las tarjetas, ya está resuelto acá.
+  settledAt DateTime?
+
+  // ─── Financiación (solo cuando method = FINANCING) ────────────────────────
+  // Mismos términos congelados que en la venta: es el abono el que reconoce el
+  // ingreso, así que es acá donde tiene que estar la comisión para poder
+  // encadenar su gasto.
+  financingProviderId   String?
+  financingProvider     FinancingProvider? @relation(fields: [financingProviderId], references: [id])
+  financingProviderName String?
+  financingFeeBps       Int?
+  financingFeeCOP       Int?
+  financingAuthCode     String?
+  /// El giro que trajo esta plata. NULL = pendiente de desembolso.
+  financingSettlementId String?
+  financingSettlement   FinancingSettlement? @relation(fields: [financingSettlementId], references: [id])
 
   /// Siempre opcional, siempre disponible: "mandó por Nequi", "le faltaron 2.000".
   note          String?
@@ -2896,6 +3106,11 @@ model RetailSalePayment {
   createdAt DateTime @default(now())
 
   @@index([tenantId, branchId, paidAt])
+  // El ingreso se consulta por `settledAt`, no por `paidAt`: sin este índice
+  // toda pantalla de finanzas haría scan de la tabla.
+  @@index([tenantId, branchId, settledAt])
+  // La bandeja "por desembolsar": abonos de financiación que todavía no giran.
+  @@index([tenantId, branchId, financingProviderId, settledAt])
   @@index([saleId])
   @@map("retail_sale_payments")
 }

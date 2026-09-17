@@ -435,13 +435,53 @@ export class AuthService {
 
   async recoverPassword(dto: RecoverPasswordDto) {
     const redirectTo = this.supabase.recoveryRedirectUrl;
+    await this.warnIfMissingFromAuth(dto.email, 'recoverPassword');
     await this.supabase.sendPasswordRecoveryEmail(dto.email, redirectTo);
     return {
       ok: true,
-      message: 'Password recovery email sent successfully',
+      // Neutro a propósito: Supabase responde 200 aunque el correo no exista en
+      // `auth.users`, así que aquí no hay forma de saber si se envió algo.
+      // Afirmar "sent successfully" era mentira en ese caso.
+      message: 'Password recovery request accepted',
       email: dto.email,
       redirectTo,
     };
+  }
+
+  /**
+   * Deja en el log del servidor los usuarios que existen en `users` pero no en
+   * `auth.users` (típicamente creados por un seed, con un id que no es el UUID
+   * de Auth). Para ellos Supabase acepta el recovery con 200 y no envía nada
+   * —es su anti-enumeración—, así que el correo nunca llega y no hay ningún
+   * error que lo delate: ni el usuario ni nosotros nos enteramos.
+   *
+   * La respuesta al cliente sigue siendo neutra: confirmarle a un desconocido
+   * qué correos tienen cuenta es una fuga, no una mejora de UX. El aviso va
+   * donde sí lo podemos ver.
+   *
+   * Best-effort: si esta comprobación falla, el recovery sigue su curso.
+   */
+  private async warnIfMissingFromAuth(email: string, context: string) {
+    try {
+      const user = await this.prisma.user.findFirst({
+        where: { email: { equals: email.trim(), mode: 'insensitive' } },
+        select: { id: true },
+      });
+      if (!user) return;
+      if (await this.supabase.authUserExists(user.id)) return;
+
+      this.logger.error(
+        `${context}: ${email} existe en users (id=${user.id}) pero no en auth.users. ` +
+          'Supabase no enviará ningún correo. Hay que crear el usuario en Auth y ' +
+          'repuntar users.id al UUID que devuelva.',
+      );
+    } catch (err) {
+      this.logger.warn(
+        `${context}: no se pudo verificar el vínculo con auth.users para ${email}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**
@@ -470,11 +510,12 @@ export class AuthService {
     const redirectTo = this.supabase.recoveryRedirectUrl;
     // Supabase responde OK aunque el correo no exista (evita enumeración),
     // por eso devolvemos un mensaje neutro al frontend.
+    await this.warnIfMissingFromAuth(email, 'resendInvitation');
     await this.supabase.sendPasswordRecoveryEmail(email, redirectTo);
 
     return {
       ok: true,
-      message: 'Invitation email resent successfully',
+      message: 'Invitation email resend requested',
       email,
       redirectTo,
     };

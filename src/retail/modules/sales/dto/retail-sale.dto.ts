@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  FinancingStatus,
   RetailDeliveryStatus,
   RetailPaymentMethod,
   RetailPaymentStatus,
@@ -88,6 +89,39 @@ export class CreateRetailSaleDto {
   paymentMethod?: RetailPaymentMethod;
 
   @ApiPropertyOptional({
+    example: 'fin_xxx',
+    description:
+      'Convenio con el que se financió. OBLIGATORIO cuando paymentMethod es ' +
+      'FINANCING: sin él no se sabe qué comisión congelar y la venta se ' +
+      'contaría por su total, que no es lo que el negocio recibe.',
+  })
+  @IsOptional()
+  @IsString()
+  financingProviderId?: string;
+
+  @ApiPropertyOptional({
+    example: '884213',
+    description:
+      'Código de autorización que devolvió la app del financiador. Es el ' +
+      'ÚNICO dato del crédito que se guarda: nada de cédula, cuotas ni tasa.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  financingAuthCode?: string;
+
+  @ApiPropertyOptional({
+    enum: FinancingStatus,
+    example: 'APPROVED',
+    description:
+      'Omitido = APPROVED. PENDING_APPROVAL deja la venta marcada mientras el ' +
+      'financiador responde, que en el mostrador pasa.',
+  })
+  @IsOptional()
+  @IsEnum(FinancingStatus)
+  financingStatus?: FinancingStatus;
+
+  @ApiPropertyOptional({
     enum: RetailSaleType,
     example: 'RETAIL',
     description:
@@ -119,6 +153,33 @@ export class CreateRetailSaleDto {
   @IsOptional()
   @IsEnum(RetailPaymentStatus)
   paymentStatus?: RetailPaymentStatus;
+
+  @ApiPropertyOptional({
+    example: 50000,
+    description:
+      'Plata que el cliente deja EN EL MOMENTO de una venta que no queda ' +
+      'cobrada completa: el abono del separado o del fiado. Solo tiene sentido ' +
+      "con `paymentStatus: 'PENDING'` y tiene que ser menor al total —si " +
+      'alcanza para todo, la venta es PAID y no hay abono que registrar—. ' +
+      'Nace como un abono normal, así que la venta queda en PARTIAL y el saldo ' +
+      'lo deriva el backend.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  depositCOP?: number;
+
+  @ApiPropertyOptional({
+    enum: RetailPaymentMethod,
+    example: 'CASH',
+    description:
+      'Con qué pagó el abono. Omitido = el medio de la venta. Es aparte porque ' +
+      'el medio de la venta es la suposición de con qué va a terminar de pagar, ' +
+      'y el abono es plata que YA entró por un medio concreto.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPaymentMethod)
+  depositMethod?: RetailPaymentMethod;
 
   @ApiPropertyOptional({
     example: 'Pasa el viernes · Cra 12 #3-45',
@@ -224,6 +285,20 @@ export class CreateRetailSalePaymentDto {
   @IsOptional()
   @IsEnum(RetailPaymentMethod)
   paymentMethod?: RetailPaymentMethod;
+
+  @ApiPropertyOptional({
+    example: 'fin_xxx',
+    description: 'Convenio. Obligatorio si el abono es con FINANCING.',
+  })
+  @IsOptional()
+  @IsString()
+  financingProviderId?: string;
+
+  @ApiPropertyOptional({ example: '884213' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  financingAuthCode?: string;
 
   @ApiPropertyOptional({
     example: '2026-09-03',

@@ -151,17 +151,24 @@ export class FinanceService {
       // TIENDA: SE PIDEN LOS ABONOS, NO LAS VENTAS. El ingreso del período es
       // la plata que entró en el período. Los anulados no cuentan y los de una
       // venta anulada tampoco: esa plata volvió.
+      //
+      // POR `settledAt`, NO POR `paidAt` — la misma regla que usa el resumen de
+      // ventas (`retail-sales.service.ts`). Con financiación el cliente paga el
+      // 10 y el financiador gira el 18: si el dashboard contara por `paidAt` y
+      // la pantalla de ventas por `settledAt`, habría dos cifras distintas para
+      // la misma pregunta. Lo que no ha girado tiene `settledAt` en NULL y no
+      // entra en ningún período.
       includeRetail
         ? this.prisma.retailSalePayment.findMany({
             where: {
               tenantId: ctx.tenantId,
               branchId: ctx.branchId,
               voidedAt: null,
-              paidAt: { gte: range.from, lte: range.to },
+              settledAt: { gte: range.from, lte: range.to },
               sale: { status: 'COMPLETED' },
             },
             include: { sale: { include: { items: true } } },
-            orderBy: { paidAt: 'asc' },
+            orderBy: { settledAt: 'asc' },
           })
         : Promise.resolve([] as DashboardRetailPayment[]),
       // Las devoluciones del período. Restan el día en que OCURREN, no el de
@@ -589,7 +596,10 @@ export class FinanceService {
       result.cogsCOP += costShare;
       if (closes) result.closedSales.push(sale);
       result.recognized.push({
-        paidAt: payment.paidAt,
+        // La serie diaria se agrupa por el día en que ENTRÓ la plata. Un abono
+        // sin girar no llega hasta acá (queda fuera del rango), así que el
+        // `?? paidAt` es solo defensa por si algún día entra uno.
+        paidAt: payment.settledAt ?? payment.paidAt,
         // La serie diaria también va sin flete: si el total de arriba lo
         // descuenta y las barras no, la suma del gráfico no da el KPI.
         amountCOP: soldCOP,

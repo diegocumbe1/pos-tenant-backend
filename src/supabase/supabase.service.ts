@@ -234,6 +234,20 @@ export class SupabaseService {
     return { session: data.session, user: data.user };
   }
 
+  /**
+   * `true` si el id existe en `auth.users`. Nunca lanza: un id con formato
+   * inválido (por ejemplo el `user-001` de un seed, que no es UUID) cuenta como
+   * inexistente, que es justo lo que quien llama necesita saber.
+   */
+  async authUserExists(id: string): Promise<boolean> {
+    try {
+      const { data, error } = await this.admin.auth.admin.getUserById(id);
+      return !error && Boolean(data?.user);
+    } catch {
+      return false;
+    }
+  }
+
   async sendPasswordRecoveryEmail(email: string, redirectTo?: string) {
     const { error } = await this.admin.auth.resetPasswordForEmail(email, {
       redirectTo: redirectTo || this.recoveryRedirectUrl,

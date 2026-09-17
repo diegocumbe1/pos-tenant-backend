@@ -471,6 +471,36 @@ export class RetailSaleReturnsService {
         },
       });
 
+      /**
+       * Venta financiada: la reversión con el financiador SE GESTIONA POR FUERA.
+       *
+       * Lynko no puede reversar un crédito de Sistecrédito o Addi — el contrato
+       * es entre el cliente y ellos, y el comercio ya recibió (o va a recibir)
+       * su giro. Si no quedara anotado, la devolución se vería resuelta en el
+       * sistema mientras el cliente sigue pagando cuotas de algo que devolvió.
+       *
+       * Se escribe como HECHO en el histórico, no como estado: la venta no se
+       * marca REVERSED porque nadie sabe todavía si el financiador aceptó.
+       */
+      if (sale.paymentMethod === 'FINANCING' && returnedCOP > 0) {
+        await tx.retailSaleEvent.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            saleId,
+            kind: 'NOTE',
+            summary:
+              `Ojo: esta venta se financió con ${sale.financingProviderName ?? 'un financiador'}. ` +
+              'La reversión del crédito hay que gestionarla con ellos: Lynko no la hace.' +
+              (sale.financingAuthCode
+                ? ` Autorización ${sale.financingAuthCode}.`
+                : ''),
+            userId: ctx.userId,
+            userName: ctx.name,
+          },
+        });
+      }
+
       return tx.retailSaleReturn.findUniqueOrThrow({
         where: { id: created.id },
         include: RETURN_INCLUDE,
