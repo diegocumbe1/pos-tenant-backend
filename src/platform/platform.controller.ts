@@ -22,6 +22,8 @@ import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformActor } from './decorators/platform-actor.decorator';
 import {
   CreatePlanPriceDto,
+  CreateTermDiscountDto,
+  TermDiscountHistoryQueryDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
   CreateRecurringExpenseDto,
@@ -78,9 +80,13 @@ export class PlatformController {
   // ─── Precios de planes por vertical (con fecha efectiva) ─────────────────────
 
   @Get('plan-prices')
-  @ApiOperation({ summary: 'Current plan price matrix (vertical x plan)' })
+  @ApiOperation({
+    summary: 'Current plan price matrix (vertical x plan x prepay term)',
+  })
   getPlanPrices() {
-    return this.pricing.getPriceMatrixAt();
+    // Misma fuente que la landing: el super-admin ve exactamente el número que
+    // ve el cliente, no una aproximación calculada aparte.
+    return this.pricing.getTermPricingMatrixAt();
   }
 
   @Get('plan-prices/history')
@@ -101,6 +107,35 @@ export class PlatformController {
     @PlatformActor() actor: AuthenticatedUser,
   ) {
     return this.platform.createPlanPrice(dto, actor.id);
+  }
+
+  // ─── Descuentos por pago anticipado (3 / 6 / 12 meses) ───────────────────────
+
+  @Get('term-discounts')
+  @ApiOperation({ summary: 'Current prepay discount policy (global + overrides)' })
+  getTermDiscounts() {
+    return this.pricing.getTermDiscountMatrixAt();
+  }
+
+  @Get('term-discounts/history')
+  @ApiOperation({ summary: 'Prepay discount history (super admin only)' })
+  @ApiQuery({ name: 'verticalCode', required: false })
+  @ApiQuery({ name: 'planCode', required: false })
+  @ApiQuery({ name: 'termMonths', required: false })
+  getTermDiscountHistory(@Query() query: TermDiscountHistoryQueryDto) {
+    return this.pricing.getTermDiscountHistory(query);
+  }
+
+  @Post('term-discounts')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Set a prepay discount from a date (append-only, never overwrites)',
+  })
+  createTermDiscount(
+    @Body() dto: CreateTermDiscountDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.createTermDiscount(dto, actor.id);
   }
 
   @Patch('pricing-config')

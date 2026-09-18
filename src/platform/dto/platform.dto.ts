@@ -93,6 +93,67 @@ export class PlanPriceHistoryQueryDto {
   planCode?: string;
 }
 
+const TERMS = [3, 6, 12] as const;
+
+export class CreateTermDiscountDto {
+  @ApiPropertyOptional({
+    enum: VERTICALS,
+    description: 'Vacío = la política aplica a todas las verticales',
+  })
+  @IsOptional()
+  @IsIn(VERTICALS)
+  verticalCode?: string;
+
+  @ApiPropertyOptional({
+    enum: PLANS,
+    description: 'Vacío = la política aplica a todos los planes',
+  })
+  @IsOptional()
+  @IsIn(PLANS)
+  planCode?: string;
+
+  @ApiProperty({ enum: TERMS, description: 'Meses que paga por adelantado' })
+  @IsIn(TERMS)
+  termMonths!: (typeof TERMS)[number];
+
+  @ApiProperty({
+    example: 1700,
+    description: 'Descuento en puntos básicos (1700 = 17%). Máximo 3000.',
+  })
+  @IsInt()
+  @Min(0)
+  discountBps!: number;
+
+  @ApiPropertyOptional({
+    description: 'Desde cuándo rige el descuento. Por defecto, ya mismo.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional({ description: 'Motivo del cambio (queda en histórico)' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class TermDiscountHistoryQueryDto {
+  @ApiPropertyOptional({ enum: VERTICALS })
+  @IsOptional()
+  @IsIn(VERTICALS)
+  verticalCode?: string;
+
+  @ApiPropertyOptional({ enum: PLANS })
+  @IsOptional()
+  @IsIn(PLANS)
+  planCode?: string;
+
+  @ApiPropertyOptional({ enum: TERMS })
+  @IsOptional()
+  @IsInt()
+  termMonths?: number;
+}
+
 export class UpdatePlanDto {
   @ApiProperty({ enum: PLANS })
   @IsIn(PLANS)

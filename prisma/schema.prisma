@@ -2012,6 +2012,36 @@ model PlanPrice {
   @@map("plan_prices")
 }
 
+/// Descuento por pago anticipado (3, 6 o 12 meses) a partir de una fecha.
+///
+/// Append-only igual que `plan_prices` y `platform_rates`: editar un descuento
+/// es insertar una fila nueva. Un cobro pregunta el descuento vigente A SU
+/// FECHA, así que cambiar la política en octubre no reescribe lo que se cobró
+/// en junio.
+///
+/// `verticalCode` y `planCode` en NULL significan "para todos". La resolución
+/// va de lo específico a lo general: (vertical, plan) > (vertical, null) >
+/// (null, null). Eso permite una política global —que es lo normal— y
+/// excepciones puntuales sin duplicar nueve filas por cada cambio.
+model PlanTermDiscount {
+  id            String   @id @default(cuid())
+  /// NULL = aplica a todas las verticales.
+  verticalCode  String?
+  /// NULL = aplica a todos los planes.
+  planCode      String?
+  /// 3 | 6 | 12. El término 1 nunca lleva descuento: es el precio de lista.
+  termMonths    Int
+  /// Puntos básicos (1700 = 17%). En bps y no en % para no guardar decimales.
+  discountBps   Int
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([verticalCode, planCode, termMonths, effectiveFrom])
+  @@map("plan_term_discounts")
+}
+
 /// Tasa USD→COP a partir de una fecha.
 model PlatformRate {
   id            String   @id @default(cuid())

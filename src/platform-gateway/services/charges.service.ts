@@ -8,6 +8,7 @@ import { Prisma, SubscriptionCharge } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformService } from '../../platform/platform.service';
+import { PlanPricingService } from '../../platform/pricing/plan-pricing.service';
 import { calendarDayCO } from '../../common/date.util';
 import { buildReference, copToCents } from '../checkout-url';
 import {
@@ -51,6 +52,7 @@ export class ChargesService {
     private readonly wompi: WompiClient,
     private readonly settings: GatewaySettingsService,
     private readonly platform: PlatformService,
+    private readonly pricing: PlanPricingService,
   ) {}
 
   // ─── Cobros ─────────────────────────────────────────────────────────────────
@@ -62,6 +64,36 @@ export class ChargesService {
       take: 50,
     });
     return { charges };
+  }
+
+  /**
+   * Cuánto costaría cobrarle N meses por adelantado a este tenant, hoy.
+   *
+   * El super-admin ya no tiene que sacar la cuenta a mano: el formulario pide
+   * esto al cambiar el término y muestra lista / descuento comercial /
+   * descuento por anticipo / total. Antes el monto se escribía a ojo, y como el
+   * formulario no mandaba `listAmount`, TODO cobro quedaba con `discountAmount
+   * = 0` — o sea, la rebaja por pagar seis meses no existía en los libros.
+   */
+  async quote(tenantId: string, termMonths: number) {
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: tenantId, deletedAt: null },
+      include: { subscription: true, vertical: { select: { code: true } } },
+    });
+    if (!tenant) throw new NotFoundException(`Tenant ${tenantId} not found`);
+    if (!tenant.vertical?.code) {
+      throw new BadRequestException('El tenant no tiene vertical asignada');
+    }
+
+    return this.pricing.quoteCharge({
+      verticalCode: tenant.vertical.code,
+      planCode: tenant.plan,
+      termMonths,
+      // El precio pactado manda sobre el de lista: un cliente con tarifa
+      // negociada no debe recibir la rebaja comercial dos veces.
+      agreedMonthlyCOP:
+        tenant.subscription?.agreedPriceCOP ?? tenant.subscription?.priceCOP,
+    });
   }
 
   async create(tenantId: string, dto: CreateChargeDto, actorUserId: string) {

@@ -85,6 +85,18 @@ export class PlatformGatewayController {
     return this.charges.list(tenantId);
   }
 
+  @Get('tenants/:id/charges/quote')
+  @ApiOperation({
+    summary: 'Cuánto cobrarle por N meses: lista, descuentos y total',
+  })
+  @ApiQuery({ name: 'termMonths', required: false, example: 6 })
+  quoteCharge(
+    @Param('id') tenantId: string,
+    @Query('termMonths') termMonths?: string,
+  ) {
+    return this.charges.quote(tenantId, Number(termMonths) || 1);
+  }
+
   @Post('tenants/:id/charges')
   @ApiOperation({ summary: 'Crea el cobro y devuelve el link de pago' })
   createCharge(

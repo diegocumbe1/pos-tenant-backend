@@ -19,6 +19,7 @@ import {
 import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlanPriceDto,
+  CreateTermDiscountDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
   CreateRecurringExpenseDto,
@@ -174,6 +175,33 @@ export class PlatformService {
       'plan_price',
       created.id,
       { priceUSD: before },
+      created,
+    );
+    return created;
+  }
+
+  // ─── Descuentos por anticipo ────────────────────────────────────────────────
+
+  async createTermDiscount(dto: CreateTermDiscountDto, actorUserId: string) {
+    // El "antes" solo se puede resolver cuando la fila es específica: para una
+    // política global, preguntar por un vertical+plan cualquiera devolvería el
+    // valor de una excepción y la bitácora quedaría mintiendo.
+    const before =
+      dto.verticalCode && dto.planCode
+        ? await this.pricing.getTermDiscountBpsAt(
+            dto.verticalCode,
+            dto.planCode,
+            dto.termMonths,
+          )
+        : null;
+    const created = await this.pricing.createTermDiscount(dto, actorUserId);
+
+    await this.audit(
+      actorUserId,
+      'platform.term-discount.create',
+      'plan_term_discount',
+      created.id,
+      { discountBps: before },
       created,
     );
     return created;

@@ -19,8 +19,14 @@ export class PublicPricingController {
 
   @Get()
   @Header('Cache-Control', 'public, max-age=60')
-  @ApiOperation({ summary: 'Current plan prices per vertical (public)' })
+  @ApiOperation({
+    summary: 'Current plan prices per vertical, with prepay terms (public)',
+  })
   getCurrentPrices() {
-    return this.pricing.getPriceMatrixAt();
+    // Superconjunto de la matriz mensual: incluye, por plan, cuánto queda
+    // pagando 3, 6 o 12 meses. La landing no calcula el descuento por su
+    // cuenta — si lo hiciera, tarde o temprano mostraría un número distinto al
+    // que emite el cobro.
+    return this.pricing.getTermPricingMatrixAt();
   }
 }
