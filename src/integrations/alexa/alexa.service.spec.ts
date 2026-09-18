@@ -8,6 +8,7 @@ import {
   SkillRequestSignatureVerifier,
   TimestampVerifier,
 } from 'ask-sdk-express-adapter';
+import { AssistantScopeService } from '../../assistant/assistant-scope.service';
 import { AssistantService } from '../../assistant/assistant.service';
 import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
@@ -31,7 +32,9 @@ describe('AlexaService', () => {
     activate: jest.Mock;
     logout: jest.Mock;
   };
-  let assistant: { platformOverview: jest.Mock };
+  let assistant: { platformOverview: jest.Mock; pendingPayment: jest.Mock };
+  let scope: { resolveBusiness: jest.Mock };
+  const bella = { id: 't1', name: 'Bella Chic' };
   let signature: jest.SpyInstance;
   const skillId = 'test-skill';
   const actor = { id: 'user-1', name: 'Diego Cumbe' } as AuthenticatedUser;
@@ -65,6 +68,7 @@ describe('AlexaService', () => {
       }),
       auth as unknown as AlexaAuthService,
       assistant as unknown as AssistantService,
+      scope as unknown as AssistantScopeService,
     );
   };
 
@@ -74,7 +78,24 @@ describe('AlexaService', () => {
       activate: jest.fn().mockResolvedValue('active'),
       logout: jest.fn().mockResolvedValue(undefined),
     };
-    assistant = { platformOverview: jest.fn().mockResolvedValue(overview) };
+    assistant = {
+      platformOverview: jest.fn().mockResolvedValue(overview),
+      pendingPayment: jest.fn().mockResolvedValue({
+        business: bella,
+        totalCOP: 180000,
+        salesCount: 3,
+        customers: [
+          { name: 'Marcela Ruiz', amountCOP: 120000, salesCount: 2 },
+          { name: 'Iván Pardo', amountCOP: 60000, salesCount: 1 },
+        ],
+        unidentified: { amountCOP: 0, salesCount: 0 },
+      }),
+    };
+    scope = {
+      resolveBusiness: jest
+        .fn()
+        .mockResolvedValue({ status: 'resolved', business: bella }),
+    };
     build();
     signature = jest
       .spyOn(SkillRequestSignatureVerifier.prototype, 'verify')
@@ -92,7 +113,7 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'GetSubscriptionsIntent',
-      'Tienes 3 suscripciones activas, sobre 4 negocios en total. Tu ingreso mensual recurrente es de 450000 pesos.',
+      'Tienes 3 suscripciones activas, sobre 4 negocios en total. Este mes has recibido 2 pagos por 300000 pesos.',
       false,
     ],
     [
@@ -225,6 +246,109 @@ describe('AlexaService', () => {
     });
   });
 
+  describe('pending payment', () => {
+    const askDebt = async (negocio?: string) => {
+      const result = await send(
+        envelope(
+          'IntentRequest',
+          'pending_payment',
+          negocio
+            ? { negocio: { name: 'negocio', value: negocio } }
+            : undefined,
+        ),
+      );
+      return (result.response.outputSpeech as { text: string }).text;
+    };
+
+    it('names the two biggest debtors and the total', async () => {
+      expect(await askDebt('bella chic')).toBe(
+        'En Bella Chic te deben 180000 pesos en 3 ventas. Deben Marcela Ruiz, 120000 pesos y Iván Pardo, 60000 pesos.',
+      );
+      expect(scope.resolveBusiness).toHaveBeenCalledWith(actor, 'bella chic');
+      expect(assistant.pendingPayment).toHaveBeenCalledWith(actor, bella);
+    });
+
+    it('counts the remaining debtors instead of listing them', async () => {
+      assistant.pendingPayment.mockResolvedValue({
+        business: bella,
+        totalCOP: 200000,
+        salesCount: 4,
+        customers: [
+          { name: 'Marcela Ruiz', amountCOP: 120000, salesCount: 2 },
+          { name: 'Iván Pardo', amountCOP: 60000, salesCount: 1 },
+          { name: 'Sofía Gil', amountCOP: 20000, salesCount: 1 },
+        ],
+        unidentified: { amountCOP: 0, salesCount: 0 },
+      });
+      expect(await askDebt('bella chic')).toContain('y 1 cliente más.');
+    });
+
+    it('separates counter sales with no customer', async () => {
+      assistant.pendingPayment.mockResolvedValue({
+        business: bella,
+        totalCOP: 50000,
+        salesCount: 1,
+        customers: [],
+        unidentified: { amountCOP: 50000, salesCount: 1 },
+      });
+      expect(await askDebt('bella chic')).toBe(
+        'En Bella Chic te deben 50000 pesos en 1 venta. Hay 50000 pesos en ventas de mostrador sin cliente registrado.',
+      );
+    });
+
+    it('says so plainly when nothing is owed', async () => {
+      assistant.pendingPayment.mockResolvedValue({
+        business: bella,
+        totalCOP: 0,
+        salesCount: 0,
+        customers: [],
+        unidentified: { amountCOP: 0, salesCount: 0 },
+      });
+      expect(await askDebt('bella chic')).toBe(
+        'En Bella Chic no te deben nada. Todas las ventas están cobradas.',
+      );
+    });
+
+    it('offers the authorized businesses when none was said', async () => {
+      scope.resolveBusiness.mockResolvedValue({
+        status: 'missing',
+        available: [bella, { id: 't2', name: 'DC Tech' }],
+      });
+      expect(await askDebt()).toBe(
+        '¿De cuál negocio? Puedo consultar Bella Chic, DC Tech.',
+      );
+      expect(assistant.pendingPayment).not.toHaveBeenCalled();
+    });
+
+    it('does not accept a business outside the authorized ones', async () => {
+      scope.resolveBusiness.mockResolvedValue({
+        status: 'unknown',
+        available: [bella],
+      });
+      expect(await askDebt('ferretería ajena')).toBe(
+        'No reconozco ese negocio. Puedo consultar Bella Chic.',
+      );
+      expect(assistant.pendingPayment).not.toHaveBeenCalled();
+    });
+
+    it('asks again when the name matches more than one', async () => {
+      scope.resolveBusiness.mockResolvedValue({
+        status: 'ambiguous',
+        matches: [bella, { id: 't3', name: 'Bella Chic Norte' }],
+      });
+      expect(await askDebt('bella')).toBe(
+        '¿Te refieres a Bella Chic, Bella Chic Norte?',
+      );
+    });
+
+    it('requires an active grant like any other query', async () => {
+      auth.actor.mockResolvedValue(null);
+      await askDebt('bella chic');
+      expect(scope.resolveBusiness).not.toHaveBeenCalled();
+      expect(assistant.pendingPayment).not.toHaveBeenCalled();
+    });
+  });
+
   describe('platform overview speech', () => {
     const ask = async () => {
       const result = await send(
@@ -244,14 +368,21 @@ describe('AlexaService', () => {
         subscriptions: { active: 1, trialing: 2, pastDue: 1, billable: 4 },
       });
       expect(await ask()).toBe(
-        'Tienes 1 suscripción activa, 2 en prueba y 1 en mora, sobre 4 negocios en total. Tu ingreso mensual recurrente es de 450000 pesos.',
+        'Tienes 1 suscripción activa, 2 en prueba y 1 en mora, sobre 4 negocios en total. Este mes has recibido 2 pagos por 300000 pesos.',
       );
     });
 
-    it('omits the revenue sentence when there is none', async () => {
-      assistant.platformOverview.mockResolvedValue({ ...overview, mrrCOP: 0 });
+    it('never speaks the MRR: counts list price, not collected money', async () => {
+      expect(await ask()).not.toContain('450000');
+    });
+
+    it('says plainly when nothing was collected this month', async () => {
+      assistant.platformOverview.mockResolvedValue({
+        ...overview,
+        payments: { month: '2026-09', count: 0, totalCOP: 0 },
+      });
       expect(await ask()).toBe(
-        'Tienes 3 suscripciones activas, sobre 4 negocios en total.',
+        'Tienes 3 suscripciones activas, sobre 4 negocios en total. Este mes todavía no has recibido pagos.',
       );
     });
   });

@@ -1,0 +1,126 @@
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { PermissionsCacheService } from '../auth/services/permissions-cache.service';
+import {
+  AuthenticatedUser,
+  TenantContext,
+} from '../auth/types/tenant-context.interface';
+import { PrismaService } from '../prisma/prisma.service';
+
+export interface BusinessRef {
+  id: string;
+  name: string;
+}
+
+export type BusinessResolution =
+  | { status: 'resolved'; business: BusinessRef }
+  | { status: 'missing'; available: BusinessRef[] }
+  | { status: 'unknown'; available: BusinessRef[] }
+  | { status: 'ambiguous'; matches: BusinessRef[] };
+
+/** Alexa transcribe distinto cada vez: se compara sin tildes ni puntuación. */
+function normalize(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * De un nombre hablado al tenant, y del tenant al contexto que esperan los
+ * servicios existentes.
+ *
+ * La lista de negocios sale SIEMPRE de los que el actor tiene autorizados, no
+ * de los valores del slot `BUSINESS` del modelo de Alexa. Ese slot solo ayuda
+ * al reconocimiento de voz: un tenant que no esté ahí debe seguir siendo
+ * accesible, y uno que esté ahí pero no sea del usuario debe ser rechazado.
+ */
+@Injectable()
+export class AssistantScopeService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly permissionsCache: PermissionsCacheService,
+  ) {}
+
+  async accessibleBusinesses(actor: AuthenticatedUser): Promise<BusinessRef[]> {
+    const listed = { deletedAt: null, status: 'ACTIVE' as const };
+    const query = {
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' as const },
+    };
+    if (actor.isPlatformAdmin) {
+      return this.prisma.tenant.findMany({ where: listed, ...query });
+    }
+    // Un admin de plataforma puede no tener tenant propio; un usuario normal
+    // sin tenant no tiene nada que consultar.
+    if (!actor.tenantId) return [];
+    return this.prisma.tenant.findMany({
+      where: { ...listed, id: actor.tenantId },
+      ...query,
+    });
+  }
+
+  async resolveBusiness(
+    actor: AuthenticatedUser,
+    spoken: string | undefined,
+  ): Promise<BusinessResolution> {
+    const available = await this.accessibleBusinesses(actor);
+    // Con un solo negocio no hay nada que preguntar, aunque no lo hayan dicho.
+    if (!spoken?.trim()) {
+      return available.length === 1
+        ? { status: 'resolved', business: available[0] }
+        : { status: 'missing', available };
+    }
+
+    const said = normalize(spoken);
+    const exact = available.filter((b) => normalize(b.name) === said);
+    if (exact.length === 1) return { status: 'resolved', business: exact[0] };
+
+    const partial = available.filter((b) => {
+      const name = normalize(b.name);
+      return (
+        name.startsWith(said) || said.startsWith(name) || name.includes(said)
+      );
+    });
+    if (partial.length === 1)
+      return { status: 'resolved', business: partial[0] };
+    if (partial.length > 1) return { status: 'ambiguous', matches: partial };
+    return { status: 'unknown', available };
+  }
+
+  /**
+   * Contexto equivalente al que arma `TenantGuard`, para poder reusar los
+   * servicios de cada vertical sin duplicar sus reglas.
+   *
+   * `branchId` va vacío a propósito: las consultas del asistente son de todo el
+   * negocio. Un servicio que exija sucursal debe recibirla explícitamente.
+   */
+  async contextFor(
+    actor: AuthenticatedUser,
+    tenantId: string,
+  ): Promise<TenantContext> {
+    const permissions = actor.isRoot
+      ? new Set<string>() // ROOT bypasea checks, igual que en TenantGuard
+      : await this.permissionsCache.getForRole(actor.roleId);
+    return {
+      userId: actor.id,
+      email: actor.email,
+      name: actor.name,
+      tenantId,
+      branchId: '',
+      roleId: actor.roleId,
+      roleCode: actor.roleCode,
+      isRoot: actor.isRoot,
+      permissions,
+      accessibleBranches: actor.accessibleBranches,
+    };
+  }
+
+  /** Misma regla que `@RequirePermissions` en los controladores. */
+  assertPermission(ctx: TenantContext, code: string): void {
+    if (ctx.isRoot || ctx.permissions.has(code)) return;
+    throw new ForbiddenException(`Missing permission: ${code}`);
+  }
+}

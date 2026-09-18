@@ -16,12 +16,20 @@ import {
   ResponseEnvelope,
 } from 'ask-sdk-model';
 import { IncomingHttpHeaders } from 'http';
+import {
+  AssistantScopeService,
+  BusinessResolution,
+} from '../../assistant/assistant-scope.service';
 import { AssistantService } from '../../assistant/assistant.service';
-import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
+import {
+  PendingPaymentAnswer,
+  PlatformOverviewAnswer,
+} from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 
 const ACTIVATION_SLOT = 'codigo';
+const BUSINESS_SLOT = 'negocio';
 const ASK_FOR_CODE =
   'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
 const DENIED = 'Esta cuenta de Alexa no está autorizada para usar Lynko.';
@@ -44,6 +52,7 @@ export class AlexaService {
     private readonly config: ConfigService,
     private readonly auth: AlexaAuthService,
     private readonly assistant: AssistantService,
+    private readonly scope: AssistantScopeService,
   ) {}
 
   async handleRequest(
@@ -139,6 +148,22 @@ export class AlexaService {
             '¿Quieres preguntar algo más?',
           ),
         );
+      case 'pending_payment':
+        this.logger.log('IntentRequest: pending_payment');
+        return this.guarded(envelope, async (actor) => {
+          const spoken = request.intent.slots?.[BUSINESS_SLOT]?.value;
+          const resolution = await this.scope.resolveBusiness(actor, spoken);
+          if (resolution.status !== 'resolved') {
+            return this.speak(this.businessPrompt(resolution), false);
+          }
+          return this.speak(
+            this.debtSpeech(
+              await this.assistant.pendingPayment(actor, resolution.business),
+            ),
+            false,
+            '¿Quieres preguntar algo más?',
+          );
+        });
       case 'AMAZON.HelpIntent':
         this.logger.log('IntentRequest: AMAZON.HelpIntent');
         return this.speak(
@@ -241,6 +266,58 @@ export class AlexaService {
     }
   }
 
+  /** Los nombres salen de los negocios autorizados, nunca del slot del modelo. */
+  private businessPrompt(
+    resolution: Exclude<BusinessResolution, { status: 'resolved' }>,
+  ): string {
+    const names = (list: { name: string }[]) =>
+      list.map((b) => b.name).join(', ');
+    switch (resolution.status) {
+      case 'missing':
+        return resolution.available.length
+          ? `¿De cuál negocio? Puedo consultar ${names(resolution.available)}.`
+          : 'Tu usuario no tiene negocios asignados.';
+      case 'ambiguous':
+        return `¿Te refieres a ${names(resolution.matches)}?`;
+      default:
+        return resolution.available.length
+          ? `No reconozco ese negocio. Puedo consultar ${names(resolution.available)}.`
+          : 'Tu usuario no tiene negocios asignados.';
+    }
+  }
+
+  /** Nombra a los dos que más deben: por voz, una lista larga no se retiene. */
+  private debtSpeech(answer: PendingPaymentAnswer): string {
+    const { business, customers, unidentified } = answer;
+    if (answer.totalCOP === 0) {
+      return `En ${business.name} no te deben nada. Todas las ventas están cobradas.`;
+    }
+
+    const head = `En ${business.name} te deben ${answer.totalCOP} pesos en ${
+      answer.salesCount === 1 ? '1 venta' : `${answer.salesCount} ventas`
+    }.`;
+
+    const top = customers
+      .slice(0, 2)
+      .map((c) => `${c.name}, ${c.amountCOP} pesos`);
+    const rest = customers.length - top.length;
+    const detail = top.length
+      ? ` ${top.length === 1 ? 'Debe' : 'Deben'} ${top.join(' y ')}${
+          rest > 0
+            ? `, y ${rest} ${rest === 1 ? 'cliente más' : 'clientes más'}`
+            : ''
+        }.`
+      : '';
+
+    // Sin cliente asociado no hay a quién llamar: decirlo evita que el total
+    // parezca no cuadrar con los nombres.
+    const counter = unidentified.amountCOP
+      ? ` Hay ${unidentified.amountCOP} pesos en ventas de mostrador sin cliente registrado.`
+      : '';
+
+    return `${head}${detail}${counter}`;
+  }
+
   /** Dos frases como mucho: por voz, un listado largo no se retiene. */
   private overviewSpeech(answer: PlatformOverviewAnswer): string {
     const { subscriptions: subs, tenants } = answer;
@@ -256,10 +333,17 @@ export class AlexaService {
       detail.length ? `, ${detail.join(' y ')}` : ''
     }, sobre ${plural(tenants.total, 'negocio', 'negocios')} en total.`;
 
-    // Sin separadores de miles: Alexa lee mejor el número crudo.
-    return answer.mrrCOP > 0
-      ? `${first} Tu ingreso mensual recurrente es de ${answer.mrrCOP} pesos.`
-      : first;
+    // Pagos cobrados, no MRR. El MRR suma el precio de lista de toda suscripción
+    // activa, incluidas las que nunca pagaron —descuento del 100%, cortesías, el
+    // tenant propio—, así que por voz suena a ingreso y no lo es. `amount` de
+    // SubscriptionPayment es plata recibida neta, y los bonos quedan fuera por
+    // `countsAsRevenue`. Sin separadores de miles: Alexa lee mejor el número crudo.
+    const { count, totalCOP } = answer.payments;
+    const second = count
+      ? `Este mes has recibido ${plural(count, 'pago', 'pagos')} por ${totalCOP} pesos.`
+      : 'Este mes todavía no has recibido pagos.';
+
+    return `${first} ${second}`;
   }
 
   private async resolveActor(envelope: RequestEnvelope): Promise<ActorResult> {

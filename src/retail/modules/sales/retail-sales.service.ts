@@ -181,6 +181,82 @@ export class RetailSalesService {
     return sales.map((sale) => this.toSaleDto(sale));
   }
 
+  /**
+   * Quién debe y cuánto, sin acotar a un período.
+   *
+   * "¿Quién me debe?" no es una pregunta de rango: la venta fiada de marzo
+   * sigue debiéndose en septiembre. Por eso aquí no hay `from`/`to`, a
+   * diferencia de `getSummary`, cuyo `pendingPayment` mira solo el rango
+   * consultado.
+   *
+   * Mismas reglas de deuda que `getSummary`: solo ventas COMPLETED que no están
+   * cobradas del todo, y el saldo es `totalCOP - paidCOP`. Sin `branchId` suma
+   * todo el tenant, que es lo que significa "en Bella Chic" para quien pregunta.
+   */
+  async pendingPaymentByCustomer(
+    ctx: TenantContext,
+    opts: { branchId?: string } = {},
+  ) {
+    await this.tenantHelper.assertRetailTenant(ctx.tenantId);
+    const open = await this.prisma.retailSale.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        ...(opts.branchId ? { branchId: opts.branchId } : {}),
+        status: 'COMPLETED',
+        paymentStatus: { not: 'PAID' },
+      },
+      select: {
+        totalCOP: true,
+        paidCOP: true,
+        customerId: true,
+        customer: { select: { name: true } },
+      },
+    });
+
+    // Las ventas de mostrador no tienen cliente. Van aparte y no inventan un
+    // nombre: son deuda real, pero nadie a quien llamar.
+    const byCustomer = new Map<
+      string,
+      { name: string; amountCOP: number; salesCount: number }
+    >();
+    let unidentifiedCOP = 0;
+    let unidentifiedSales = 0;
+    let totalCOP = 0;
+
+    for (const sale of open) {
+      const balance = Math.max(0, sale.totalCOP - sale.paidCOP);
+      if (balance === 0) continue;
+      totalCOP += balance;
+      if (!sale.customerId) {
+        unidentifiedCOP += balance;
+        unidentifiedSales += 1;
+        continue;
+      }
+      const entry = byCustomer.get(sale.customerId) ?? {
+        name: sale.customer?.name ?? 'Cliente',
+        amountCOP: 0,
+        salesCount: 0,
+      };
+      entry.amountCOP += balance;
+      entry.salesCount += 1;
+      byCustomer.set(sale.customerId, entry);
+    }
+
+    const customers = [...byCustomer.values()].sort(
+      (a, b) => b.amountCOP - a.amountCOP,
+    );
+    return {
+      totalCOP,
+      salesCount:
+        customers.reduce((n, c) => n + c.salesCount, 0) + unidentifiedSales,
+      customers,
+      unidentified: {
+        amountCOP: unidentifiedCOP,
+        salesCount: unidentifiedSales,
+      },
+    };
+  }
+
   async getSale(ctx: TenantContext, id: string) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
     const sale = await this.prisma.retailSale.findUniqueOrThrow({

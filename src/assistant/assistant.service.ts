@@ -1,7 +1,12 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformService } from '../platform/platform.service';
-import { PlatformOverviewAnswer } from './assistant.types';
+import { RetailSalesService } from '../retail/modules/sales/retail-sales.service';
+import { AssistantScopeService, BusinessRef } from './assistant-scope.service';
+import {
+  PendingPaymentAnswer,
+  PlatformOverviewAnswer,
+} from './assistant.types';
 
 /**
  * Capacidad de consulta compartida entre canales (Alexa, chat web).
@@ -11,7 +16,22 @@ import { PlatformOverviewAnswer } from './assistant.types';
  */
 @Injectable()
 export class AssistantService {
-  constructor(private readonly platform: PlatformService) {}
+  constructor(
+    private readonly platform: PlatformService,
+    private readonly scope: AssistantScopeService,
+    private readonly retailSales: RetailSalesService,
+  ) {}
+
+  /** Saldos pendientes actuales de un negocio, no vencimientos del día. */
+  async pendingPayment(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+  ): Promise<PendingPaymentAnswer> {
+    const ctx = await this.scope.contextFor(actor, business.id);
+    this.scope.assertPermission(ctx, 'retail:sales:read');
+    const debt = await this.retailSales.pendingPaymentByCustomer(ctx);
+    return { business, ...debt };
+  }
 
   /** Consulta de ámbito plataforma: exige `isPlatformAdmin`, como `/platform/*`. */
   async platformOverview(

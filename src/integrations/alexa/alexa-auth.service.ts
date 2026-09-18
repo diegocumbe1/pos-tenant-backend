@@ -160,14 +160,21 @@ export class AlexaAuthService {
     return result.count ? 'active' : 'invalid';
   }
 
+  /**
+   * Revoca la autorización vigente y nada más.
+   *
+   * No toca `attempts` ni `windowStartedAt` a propósito, en las dos
+   * direcciones: subirlos bloquearía quince minutos a quien acaba de revocar
+   * —que es justamente quien sabe la frase—, y bajarlos convertiría "cierra mi
+   * acceso" en una forma de reiniciar el contador y seguir probando frases sin
+   * límite. Revocar no es un intento de autenticación.
+   */
   async logout(envelope: RequestEnvelope) {
     const settings = this.settings(envelope);
     await this.prisma.alexaAuthorization.updateMany({
       where: { id: settings.id },
       data: {
         expiresAt: null,
-        windowStartedAt: new Date(),
-        attempts: MAX_ATTEMPTS,
       },
     });
   }
