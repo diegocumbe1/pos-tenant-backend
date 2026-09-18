@@ -5,6 +5,38 @@
  * Ver docs/ALEXA_VOICE_ACTIVATION.md §"Plan siguiente".
  */
 
+export interface SalesTodayAnswer {
+  business: { id: string; name: string };
+  salesCount: number;
+  /** Ventas netas: los abonos del día menos devoluciones, como en el dashboard. */
+  revenueCOP: number;
+  unitsSold: number;
+  averageTicketCOP: number;
+  marginPct: number;
+  /** Deuda generada por las ventas del día, no la cartera total. */
+  pendingTodayCOP: number;
+}
+
+export interface PendingDeliveryAnswer {
+  business: { id: string; name: string };
+  salesCount: number;
+  totalCOP: number;
+  /** Clientes con entregas pendientes, de mayor a menor monto. */
+  customers: { name: string; salesCount: number; totalCOP: number }[];
+}
+
+export interface InventoryStatusAnswer {
+  business: { id: string; name: string };
+  trackedProducts: number;
+  totalUnits: number;
+  valueAtCostCOP: number;
+  valueAtPriceCOP: number;
+  /** Por debajo del mínimo, agotados incluidos. De menor a mayor stock. */
+  lowStock: { name: string; stock: number; minStock: number }[];
+  lowStockCount: number;
+  outOfStockCount: number;
+}
+
 export interface PendingPaymentAnswer {
   business: { id: string; name: string };
   totalCOP: number;

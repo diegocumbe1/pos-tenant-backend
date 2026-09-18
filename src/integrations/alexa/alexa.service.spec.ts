@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -32,8 +33,14 @@ describe('AlexaService', () => {
     activate: jest.Mock;
     logout: jest.Mock;
   };
-  let assistant: { platformOverview: jest.Mock; pendingPayment: jest.Mock };
-  let scope: { resolveBusiness: jest.Mock };
+  let assistant: {
+    platformOverview: jest.Mock;
+    pendingPayment: jest.Mock;
+    inventoryStatus?: jest.Mock;
+    salesToday?: jest.Mock;
+    pendingDelivery?: jest.Mock;
+  };
+  let scope: { resolveBusiness: jest.Mock; accessibleBusinesses: jest.Mock };
   const bella = { id: 't1', name: 'Bella Chic' };
   let signature: jest.SpyInstance;
   const skillId = 'test-skill';
@@ -91,10 +98,46 @@ describe('AlexaService', () => {
         unidentified: { amountCOP: 0, salesCount: 0 },
       }),
     };
+    assistant.inventoryStatus = jest.fn().mockResolvedValue({
+      business: bella,
+      trackedProducts: 40,
+      totalUnits: 320,
+      valueAtCostCOP: 4500000,
+      valueAtPriceCOP: 7200000,
+      lowStock: [
+        { name: 'Base líquida', stock: 0, minStock: 3 },
+        { name: 'Rímel negro', stock: 2, minStock: 5 },
+        { name: 'Labial rojo', stock: 4, minStock: 6 },
+        { name: 'Polvo compacto', stock: 5, minStock: 8 },
+      ],
+      lowStockCount: 4,
+      outOfStockCount: 1,
+    });
+    assistant.salesToday = jest.fn().mockResolvedValue({
+      business: bella,
+      salesCount: 6,
+      revenueCOP: 840000,
+      unitsSold: 14,
+      averageTicketCOP: 140000,
+      marginPct: 38.5,
+      pendingTodayCOP: 120000,
+    });
+    assistant.pendingDelivery = jest.fn().mockResolvedValue({
+      business: bella,
+      salesCount: 3,
+      totalCOP: 260000,
+      customers: [
+        { name: 'Marcela Ruiz', salesCount: 2, totalCOP: 200000 },
+        { name: 'Iván Pardo', salesCount: 1, totalCOP: 60000 },
+      ],
+    });
     scope = {
       resolveBusiness: jest
         .fn()
         .mockResolvedValue({ status: 'resolved', business: bella }),
+      accessibleBusinesses: jest
+        .fn()
+        .mockResolvedValue([bella, { id: 't2', name: 'DC Tech' }]),
     };
     build();
     signature = jest
@@ -119,7 +162,7 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.HelpIntent',
-      'Puedes preguntarme cuántas suscripciones tienes. Para activar el acceso di: mi código es, y tu frase. Para revocarlo di: cierra mi acceso.',
+      'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
       false,
     ],
     ['IntentRequest', 'AMAZON.StopIntent', 'Hasta luego.', true],
@@ -309,14 +352,14 @@ describe('AlexaService', () => {
       );
     });
 
-    it('offers the authorized businesses when none was said', async () => {
+    it('asks which business without reciting the whole list', async () => {
       scope.resolveBusiness.mockResolvedValue({
         status: 'missing',
         available: [bella, { id: 't2', name: 'DC Tech' }],
       });
-      expect(await askDebt()).toBe(
-        '¿De cuál negocio? Puedo consultar Bella Chic, DC Tech.',
-      );
+      const speech = await askDebt();
+      expect(speech).toBe('¿De cuál negocio?');
+      expect(speech).not.toContain('DC Tech');
       expect(assistant.pendingPayment).not.toHaveBeenCalled();
     });
 
@@ -326,18 +369,25 @@ describe('AlexaService', () => {
         available: [bella],
       });
       expect(await askDebt('ferretería ajena')).toBe(
-        'No reconozco ese negocio. Puedo consultar Bella Chic.',
+        'No reconozco ese negocio. Puedes decir: lista mis negocios.',
       );
       expect(assistant.pendingPayment).not.toHaveBeenCalled();
     });
 
-    it('asks again when the name matches more than one', async () => {
+    it('names only the candidates when the name is ambiguous', async () => {
       scope.resolveBusiness.mockResolvedValue({
         status: 'ambiguous',
         matches: [bella, { id: 't3', name: 'Bella Chic Norte' }],
       });
       expect(await askDebt('bella')).toBe(
-        '¿Te refieres a Bella Chic, Bella Chic Norte?',
+        '¿Te refieres a Bella Chic o a Bella Chic Norte?',
+      );
+    });
+
+    it('lists the businesses only when asked for them', async () => {
+      const result = await send(envelope('IntentRequest', 'list_businesses'));
+      expect((result.response.outputSpeech as { text: string }).text).toBe(
+        'Tienes 2 negocios: Bella Chic, DC Tech.',
       );
     });
 
@@ -346,6 +396,126 @@ describe('AlexaService', () => {
       await askDebt('bella chic');
       expect(scope.resolveBusiness).not.toHaveBeenCalled();
       expect(assistant.pendingPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sales and delivery', () => {
+    const ask = async (intent: string) => {
+      const result = await send(
+        envelope('IntentRequest', intent, {
+          negocio: { name: 'negocio', value: 'bella chic' },
+        }),
+      );
+      return (result.response.outputSpeech as { text: string }).text;
+    };
+
+    it("separates today's credit from the whole receivable", async () => {
+      expect(await ask('sales_summary')).toBe(
+        'Hoy en Bella Chic llevas 840000 pesos en 6 ventas, con un ticket promedio de 140000 pesos. De eso, 120000 pesos quedaron fiados hoy.',
+      );
+    });
+
+    it('omits the credit sentence when everything was collected', async () => {
+      assistant.salesToday!.mockResolvedValue({
+        business: bella,
+        salesCount: 2,
+        revenueCOP: 100000,
+        unitsSold: 3,
+        averageTicketCOP: 50000,
+        marginPct: 40,
+        pendingTodayCOP: 0,
+      });
+      expect(await ask('sales_summary')).toBe(
+        'Hoy en Bella Chic llevas 100000 pesos en 2 ventas, con un ticket promedio de 50000 pesos.',
+      );
+    });
+
+    it('does not pretend there were sales when there were none', async () => {
+      assistant.salesToday!.mockResolvedValue({
+        business: bella,
+        salesCount: 0,
+        revenueCOP: 0,
+        unitsSold: 0,
+        averageTicketCOP: 0,
+        marginPct: 0,
+        pendingTodayCOP: 0,
+      });
+      expect(await ask('sales_summary')).toBe(
+        'Hoy todavía no hay ventas en Bella Chic.',
+      );
+    });
+
+    it('lists who is waiting for a delivery', async () => {
+      expect(await ask('pending_delivery')).toBe(
+        'En Bella Chic tienes 3 ventas por entregar, por 260000 pesos. Marcela Ruiz, Iván Pardo.',
+      );
+    });
+
+    it('says so when there is nothing to deliver', async () => {
+      assistant.pendingDelivery!.mockResolvedValue({
+        business: bella,
+        salesCount: 0,
+        totalCOP: 0,
+        customers: [],
+      });
+      expect(await ask('pending_delivery')).toBe(
+        'En Bella Chic no tienes entregas pendientes.',
+      );
+    });
+  });
+
+  describe('inventory', () => {
+    const ask = async (intent: string) => {
+      const result = await send(
+        envelope('IntentRequest', intent, {
+          negocio: { name: 'negocio', value: 'bella chic' },
+        }),
+      );
+      return (result.response.outputSpeech as { text: string }).text;
+    };
+
+    it('names at most three low stock products and flags the sold out ones', async () => {
+      expect(await ask('low_stock')).toBe(
+        'En Bella Chic hay 4 productos bajos de stock, 1 de ellos agotados. Los más bajos: Base líquida, agotado; Rímel negro, 2; Labial rojo, 4.',
+      );
+    });
+
+    it('values the inventory at cost, not at sale price', async () => {
+      const speech = await ask('inventory_value');
+      expect(speech).toBe(
+        'En Bella Chic tienes 320 unidades en 40 productos, por 4500000 pesos al costo.',
+      );
+      expect(speech).not.toContain('7200000');
+    });
+
+    it('says so when nothing is below the minimum', async () => {
+      assistant.inventoryStatus!.mockResolvedValue({
+        business: bella,
+        trackedProducts: 40,
+        totalUnits: 320,
+        valueAtCostCOP: 4500000,
+        valueAtPriceCOP: 7200000,
+        lowStock: [],
+        lowStockCount: 0,
+        outOfStockCount: 0,
+      });
+      expect(await ask('low_stock')).toBe(
+        'En Bella Chic ningún producto está por debajo del mínimo.',
+      );
+    });
+
+    it('explains a retail query aimed at another vertical', async () => {
+      assistant.inventoryStatus!.mockRejectedValue(
+        new BadRequestException('Tenant is not a retail vertical'),
+      );
+      const result = await send(
+        envelope('IntentRequest', 'low_stock', {
+          negocio: { name: 'negocio', value: 'malexca' },
+        }),
+      );
+      expect((result.response.outputSpeech as { text: string }).text).toBe(
+        'Esa consulta es de tiendas, y ese negocio no lo es.',
+      );
     });
   });
 

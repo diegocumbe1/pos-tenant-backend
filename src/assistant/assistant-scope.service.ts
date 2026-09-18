@@ -91,15 +91,34 @@ export class AssistantScopeService {
   }
 
   /**
+   * Sucursales del negocio.
+   *
+   * Casi todo retail filtra por `ctx.branchId`, así que una consulta de negocio
+   * completo se resuelve corriendo la del servicio una vez por sucursal y
+   * sumando. Es la única forma de reusar sus reglas sin reescribirlas.
+   */
+  async branchesOf(tenantId: string): Promise<string[]> {
+    const branches = await this.prisma.branch.findMany({
+      where: { tenantId },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return branches.map((b) => b.id);
+  }
+
+  /**
    * Contexto equivalente al que arma `TenantGuard`, para poder reusar los
    * servicios de cada vertical sin duplicar sus reglas.
    *
-   * `branchId` va vacío a propósito: las consultas del asistente son de todo el
-   * negocio. Un servicio que exija sucursal debe recibirla explícitamente.
+   * OJO con `branchId`: vacío NO significa "todas las sucursales". Los
+   * servicios lo ponen tal cual en el `where`, así que un contexto sin sucursal
+   * devuelve cero filas sin error. Solo se deja vacío para métodos que se
+   * escribieron explícitamente para todo el tenant.
    */
   async contextFor(
     actor: AuthenticatedUser,
     tenantId: string,
+    branchId = '',
   ): Promise<TenantContext> {
     const permissions = actor.isRoot
       ? new Set<string>() // ROOT bypasea checks, igual que en TenantGuard
@@ -109,7 +128,7 @@ export class AssistantScopeService {
       email: actor.email,
       name: actor.name,
       tenantId,
-      branchId: '',
+      branchId,
       roleId: actor.roleId,
       roleCode: actor.roleCode,
       isRoot: actor.isRoot,

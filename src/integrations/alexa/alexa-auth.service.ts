@@ -1,6 +1,7 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,6 +16,8 @@ const MAX_ATTEMPTS = 5;
 
 @Injectable()
 export class AlexaAuthService {
+  private readonly logger = new Logger('AlexaAuth');
+
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
@@ -60,10 +63,27 @@ export class AlexaAuthService {
       userId,
       ttl,
       id: digest(`${get('ALEXA_SKILL_ID')}:${allowed}`),
-      configDigest: digest(
-        JSON.stringify([hash, allowed, device, userId, ttl]),
-      ),
+      // Sin el TTL: cambiar la duración es ajustar una política, no rotar una
+      // credencial, y no tiene por qué tumbar la sesión vigente. Sí entran el
+      // hash de la frase, la cuenta y el dispositivo permitidos y el usuario
+      // Lynko: cambiar cualquiera de esos sí debe revocar lo que esté abierto.
+      configDigest: digest(JSON.stringify([hash, allowed, device, userId])),
     };
+  }
+
+  /**
+   * Por qué no hay sesión vigente. Se registra para no tener que consultar la
+   * base a mano: las tres causas se arreglan distinto y suenan igual por voz.
+   */
+  private explainMissingGrant(
+    grant: { configDigest: string; expiresAt: Date | null } | null,
+    expected: string,
+  ): string {
+    if (!grant) return 'no grant row';
+    if (grant.configDigest !== expected)
+      return 'config changed since activation';
+    if (!grant.expiresAt) return 'revoked';
+    return `expired at ${grant.expiresAt.toISOString()}`;
   }
 
   async actor(envelope: RequestEnvelope): Promise<AuthenticatedUser | null> {
@@ -76,8 +96,12 @@ export class AlexaAuthService {
       grant.configDigest !== settings.configDigest ||
       !grant.expiresAt ||
       grant.expiresAt.getTime() <= Date.now()
-    )
+    ) {
+      this.logger.warn(
+        `No active grant: ${this.explainMissingGrant(grant, settings.configDigest)}`,
+      );
       return null;
+    }
     return this.loadActor(settings.userId);
   }
 

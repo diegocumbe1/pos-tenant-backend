@@ -1,12 +1,18 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { PlatformModule } from '../platform/platform.module';
+import { RetailInventoryModule } from '../retail/modules/inventory/retail-inventory.module';
 import { RetailSalesModule } from '../retail/modules/sales/retail-sales.module';
 import { AssistantScopeService } from './assistant-scope.service';
 import { AssistantService } from './assistant.service';
 
 @Module({
-  imports: [PlatformModule, RetailSalesModule, AuthModule],
+  imports: [
+    PlatformModule,
+    RetailSalesModule,
+    RetailInventoryModule,
+    AuthModule,
+  ],
   providers: [AssistantService, AssistantScopeService],
   exports: [AssistantService, AssistantScopeService],
 })
