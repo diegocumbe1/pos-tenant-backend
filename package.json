@@ -23,6 +23,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "alexa:hash": "ts-node scripts/alexa-activation-hash.ts",
     "bootstrap:root": "ts-node scripts/bootstrap-root.ts",
     "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
     "migrate:wa-session": "ts-node scripts/migrate-wa-session-to-storage.ts",

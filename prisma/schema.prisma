@@ -3857,3 +3857,15 @@ model CatalogServicePrice {
   @@index([serviceCode, effectiveFrom])
   @@map("catalog_service_prices")
 }
+
+// Persistent voice authorization; never stores activation phrases or Alexa tokens.
+model AlexaAuthorization {
+  id              String   @id
+  configDigest    String
+  expiresAt       DateTime?
+  attempts        Int      @default(0)
+  windowStartedAt DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("alexa_authorizations")
+}

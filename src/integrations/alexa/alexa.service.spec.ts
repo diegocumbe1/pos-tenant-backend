@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -7,26 +8,62 @@ import {
   SkillRequestSignatureVerifier,
   TimestampVerifier,
 } from 'ask-sdk-express-adapter';
+import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
+import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaService } from './alexa.service';
+
+const ASK_FOR_CODE =
+  'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
 
 describe('AlexaService', () => {
   let service: AlexaService;
+  let auth: {
+    actor: jest.Mock;
+    activate: jest.Mock;
+    logout: jest.Mock;
+  };
   let signature: jest.SpyInstance;
   const skillId = 'test-skill';
-  const envelope = (type = 'LaunchRequest', name?: string) => ({
+  const actor = { id: 'user-1', name: 'Diego Cumbe' } as AuthenticatedUser;
+  const envelope = (
+    type = 'LaunchRequest',
+    name?: string,
+    slots?: Record<string, { name: string; value: string }>,
+  ) => ({
     version: '1.0',
     context: { System: { application: { applicationId: skillId } } },
     request: {
       type,
       timestamp: new Date().toISOString(),
-      ...(name && { intent: { name } }),
+      ...(name && { intent: { name, ...(slots && { slots }) } }),
     },
   });
   const send = (body: unknown) =>
     service.handleRequest(Buffer.from(JSON.stringify(body)), {});
+  const activation = (value: string) =>
+    send(
+      envelope('IntentRequest', 'ActivarLynkoIntent', {
+        codigo: { name: 'codigo', value },
+      }),
+    );
+  const build = (env: Record<string, string> = {}) => {
+    service = new AlexaService(
+      new ConfigService({
+        ALEXA_SKILL_ID: skillId,
+        ALEXA_AUTH_TTL_DAYS: '7',
+        ...env,
+      }),
+      auth as unknown as AlexaAuthService,
+    );
+  };
 
   beforeEach(() => {
-    service = new AlexaService(new ConfigService({ ALEXA_SKILL_ID: skillId }));
+    auth = {
+      actor: jest.fn().mockResolvedValue(actor),
+      activate: jest.fn().mockResolvedValue('active'),
+      logout: jest.fn().mockResolvedValue(undefined),
+    };
+    build();
     signature = jest
       .spyOn(SkillRequestSignatureVerifier.prototype, 'verify')
       .mockResolvedValue(undefined);
@@ -37,7 +74,7 @@ describe('AlexaService', () => {
     [
       'LaunchRequest',
       undefined,
-      'Hola. Lynko está conectado correctamente. Puedes preguntarme por tus suscripciones.',
+      'Hola Diego. Lynko está listo. Puedes preguntarme por tus suscripciones.',
       false,
     ],
     [
@@ -49,7 +86,7 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.HelpIntent',
-      'Puedes preguntarme cuántas suscripciones tienes.',
+      'Puedes preguntarme cuántas suscripciones tienes. Para activar el acceso di: mi código es, y tu frase. Para revocarlo di: cierra mi acceso.',
       false,
     ],
     ['IntentRequest', 'AMAZON.StopIntent', 'Hasta luego.', true],
@@ -67,6 +104,93 @@ describe('AlexaService', () => {
       response: { outputSpeech: { type: 'PlainText', text }, shouldEndSession },
     });
     expect(Boolean(result.response.reprompt)).toBe(!shouldEndSession);
+  });
+
+  describe('voice authorization', () => {
+    const speech = (result: { response: { outputSpeech?: unknown } }) =>
+      (result.response.outputSpeech as { text: string }).text;
+
+    it.each(['LaunchRequest', 'IntentRequest'])(
+      'asks for the activation code on %s when the grant expired',
+      async (type) => {
+        auth.actor.mockResolvedValue(null);
+        const result = await send(envelope(type, 'GetSubscriptionsIntent'));
+        expect(speech(result)).toBe(ASK_FOR_CODE);
+        expect(result.response.shouldEndSession).toBe(false);
+      },
+    );
+
+    it.each([
+      [
+        new ForbiddenException(),
+        'Esta cuenta de Alexa no está autorizada para usar Lynko.',
+      ],
+      [
+        new ServiceUnavailableException(),
+        'La autorización por voz de Lynko todavía no está configurada.',
+      ],
+    ])(
+      'rejects with a spoken reason instead of an error',
+      async (error, text) => {
+        auth.actor.mockRejectedValue(error);
+        const result = await send(envelope());
+        expect(speech(result)).toBe(text);
+        expect(result.response.shouldEndSession).toBe(true);
+      },
+    );
+
+    it('grants access for the configured window', async () => {
+      const result = await activation('mi frase secreta larga');
+      expect(auth.activate).toHaveBeenCalledWith(
+        expect.objectContaining({ version: '1.0' }),
+        'mi frase secreta larga',
+      );
+      expect(speech(result)).toBe(
+        'Listo. Tu acceso a Lynko queda activo 7 días. Puedes preguntarme por tus suscripciones.',
+      );
+      expect(result.response.shouldEndSession).toBe(false);
+    });
+
+    it('keeps the session open after a wrong code', async () => {
+      auth.activate.mockResolvedValue('invalid');
+      const result = await activation('frase equivocada aqui');
+      expect(speech(result)).toBe(
+        'Ese código no coincide. Inténtalo otra vez.',
+      );
+      expect(result.response.shouldEndSession).toBe(false);
+    });
+
+    it('ends the session once attempts are exhausted', async () => {
+      auth.activate.mockResolvedValue('locked');
+      const result = await activation('frase equivocada aqui');
+      expect(speech(result)).toBe(
+        'Demasiados intentos fallidos. Espera quince minutos antes de volver a intentarlo.',
+      );
+      expect(result.response.shouldEndSession).toBe(true);
+    });
+
+    it('never calls activate without a spoken phrase', async () => {
+      const result = await send(
+        envelope('IntentRequest', 'ActivarLynkoIntent'),
+      );
+      expect(auth.activate).not.toHaveBeenCalled();
+      expect(speech(result)).toBe(ASK_FOR_CODE);
+    });
+
+    it('revokes access on request', async () => {
+      const result = await send(
+        envelope('IntentRequest', 'CerrarAccesoIntent'),
+      );
+      expect(auth.logout).toHaveBeenCalled();
+      expect(speech(result)).toBe('Listo. Cerré tu acceso a Lynko.');
+      expect(result.response.shouldEndSession).toBe(true);
+    });
+
+    it('does not reach services before the grant is checked', async () => {
+      auth.actor.mockResolvedValue(null);
+      await send(envelope('IntentRequest', 'GetSubscriptionsIntent'));
+      expect(auth.actor).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('ends a session without speech', async () => {
@@ -139,7 +263,7 @@ describe('AlexaService', () => {
     },
   );
   it('fails closed when not configured', async () => {
-    service = new AlexaService(new ConfigService({ ALEXA_SKILL_ID: '' }));
+    build({ ALEXA_SKILL_ID: '' });
     await expect(send(envelope())).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
