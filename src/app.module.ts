@@ -24,6 +24,7 @@ import { PlatformGatewayModule } from './platform-gateway/platform-gateway.modul
 import { StaffCompensationModule } from './staff-compensation/staff-compensation.module';
 import { LoggingInterceptor } from './monitoring/logging.interceptor';
 import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
+import { AlexaModule } from './integrations/alexa/alexa.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
     PlatformMessagingModule,
     PlatformGatewayModule,
     StaffCompensationModule,
+    AlexaModule,
   ],
   controllers: [AppController],
   providers: [

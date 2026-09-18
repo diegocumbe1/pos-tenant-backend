@@ -1923,16 +1923,15 @@ export class RetailSalesService {
         }
 
         const variantId = line.variantId ?? existing?.variantId ?? null;
-        // Solo se exige el valor cuando la mercancía de verdad se mueve. En una
-        // venta pendiente nada ha salido todavía y de cuál aroma sale se decide
-        // en la entrega, igual que al crearla.
-        const needsVariant =
-          saleWasDelivered && !!product.stockOptionId && product.trackStock;
-        if (needsVariant && !variantId) {
-          throw new BadRequestException(
-            `"${product.name}" reparte existencias por opción: indica cuál`,
-          );
-        }
+        // NO se exige el valor acá. El valor solo hace falta cuando hay que
+        // SACAR más mercancía, y eso se sabe más abajo, comparando lo entregado
+        // antes contra lo entregado después.
+        //
+        // Exigirlo siempre rompía la corrección de ventas viejas: una línea
+        // registrada antes de que el producto repartiera por opción tiene
+        // `variantId` en NULL para siempre, así que cambiar el flete —que no
+        // mueve una sola unidad— quedaba bloqueado pidiendo un aroma que esa
+        // venta nunca tuvo.
         const variant = variantId ? variantById.get(variantId) : undefined;
         if (variantId && (!variant || variant.productId !== product.id)) {
           throw new BadRequestException(
@@ -2048,7 +2047,16 @@ export class RetailSalesService {
       }
       for (const [key, quantity] of extraOut) {
         const { productId, variantId } = splitStockKey(key);
-        if (!variantId || !byId.get(productId)!.trackStock) continue;
+        const product = byId.get(productId)!;
+        if (!product.trackStock) continue;
+        // AQUÍ sí es obligatorio: va a salir mercancía y hay que saber de qué
+        // fila de inventario descontarla. Solo aplica a lo que sale de más.
+        if (!variantId && product.stockOptionId) {
+          throw new BadRequestException(
+            `"${product.name}" reparte existencias por opción: indica de cuál salen las ${quantity} unidad(es) que agregaste`,
+          );
+        }
+        if (!variantId) continue;
         const variant = variantById.get(variantId)!;
         if (variant.stock < quantity) {
           throw new BadRequestException(
@@ -2134,7 +2142,13 @@ export class RetailSalesService {
         0,
       );
       const saleDiscountCOP = dto.discountCOP ?? sale.discountCOP;
-      const totalCOP = subtotalCOP - saleDiscountCOP + sale.shippingCOP;
+      // El flete va DENTRO del total porque es plata que el cliente debe igual
+      // que la mercancía. Se corrige acá y en ningún otro lado: el flujo del
+      // envío deja intacta toda venta ya cobrada (`if (paymentStatus === 'PAID')
+      // continue`), así que un flete mal cargado a una venta cobrada no tenía
+      // forma de deshacerse. No toca el costo de la guía, que es gasto aparte.
+      const shippingCOP = dto.shippingCOP ?? sale.shippingCOP;
+      const totalCOP = subtotalCOP - saleDiscountCOP + shippingCOP;
       if (totalCOP < 0) {
         throw new BadRequestException(
           'El descuento supera el total de la venta',
@@ -2153,6 +2167,7 @@ export class RetailSalesService {
         data: {
           subtotalCOP,
           discountCOP: saleDiscountCOP,
+          shippingCOP,
           totalCOP,
           costCOP,
           deliveryStatus: fullyDelivered ? 'DELIVERED' : 'PENDING',
@@ -2279,6 +2294,9 @@ export class RetailSalesService {
         summary:
           `Productos corregidos: ${before} → ${after} unidad(es), ` +
           `${formatCOP(sale.totalCOP)} → ${formatCOP(totalCOP)}` +
+          (shippingCOP !== sale.shippingCOP
+            ? ` · flete ${formatCOP(sale.shippingCOP)} → ${formatCOP(shippingCOP)}`
+            : '') +
           (methodChanged
             ? ` · medio corregido a ${PAYMENT_METHOD_LABEL[dto.paymentMethod!]}`
             : '') +
@@ -2292,6 +2310,9 @@ export class RetailSalesService {
           diffCOP: diff,
           unitsBefore: before,
           units: after,
+          ...(shippingCOP !== sale.shippingCOP
+            ? { shippingBeforeCOP: sale.shippingCOP, shippingCOP }
+            : {}),
           ...(methodChanged
             ? {
                 paymentMethodBefore: sale.paymentMethod,

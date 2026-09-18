@@ -45,6 +45,8 @@
     "@prisma/client": "^6.19.3",
     "@supabase/supabase-js": "^2.103.3",
     "archiver": "^5.3.2",
+    "ask-sdk-express-adapter": "^2.14.0",
+    "ask-sdk-model": "^1.86.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.4",
     "dotenv": "^17.4.1",

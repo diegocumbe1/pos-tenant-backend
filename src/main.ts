@@ -11,13 +11,15 @@ import './load-env';
 import { ValidationPipe } from '@nestjs/common';
 import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import * as bodyParser from 'body-parser';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { corsOrigins } from './common/cors-origins';
 import { PrismaExceptionFilter } from './prisma/prisma-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   app.setGlobalPrefix('api/v1');
 
@@ -40,8 +42,8 @@ async function bootstrap() {
 
   // Read body parser limit from env (e.g. BODY_PARSER_LIMIT='10mb'), default to 10mb
   const bodyParserLimit = process.env.BODY_PARSER_LIMIT ?? '10mb';
-  app.use(bodyParser.json({ limit: bodyParserLimit }));
-  app.use(bodyParser.urlencoded({ limit: bodyParserLimit, extended: true }));
+  app.useBodyParser('json', { limit: bodyParserLimit });
+  app.useBodyParser('urlencoded', { limit: bodyParserLimit, extended: true });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -62,8 +64,14 @@ async function bootstrap() {
     .setDescription('API documentation for POS System Backend')
     .setVersion('1.0.0')
     .addBearerAuth()
-    .addApiKey({ type: 'apiKey', in: 'header', name: 'X-Tenant-Id' }, 'X-Tenant-Id')
-    .addApiKey({ type: 'apiKey', in: 'header', name: 'X-Branch-Id' }, 'X-Branch-Id')
+    .addApiKey(
+      { type: 'apiKey', in: 'header', name: 'X-Tenant-Id' },
+      'X-Tenant-Id',
+    )
+    .addApiKey(
+      { type: 'apiKey', in: 'header', name: 'X-Branch-Id' },
+      'X-Branch-Id',
+    )
     .build();
 
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);

@@ -551,6 +551,20 @@ export class UpdateRetailSaleItemsDto {
   refundMethod?: RetailPaymentMethod;
 
   @ApiPropertyOptional({
+    example: 0,
+    description:
+      'Corrige el FLETE cobrado al cliente dentro de esta venta. Se manda ' +
+      'cuando el envío le cargó un flete que no correspondía: una venta ya ' +
+      'cobrada conserva su flete pase lo que pase en el envío, así que este es ' +
+      'el único sitio donde se puede deshacer. No toca el costo de la guía, ' +
+      'que es un gasto aparte.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  shippingCOP?: number;
+
+  @ApiPropertyOptional({
     enum: RetailPaymentMethod,
     example: 'CASH',
     description:
