@@ -456,3 +456,185 @@ export class VoidRetailSaleDto {
   @MaxLength(200)
   reason?: string;
 }
+
+export class EditRetailSaleItemDto {
+  @ApiPropertyOptional({
+    example: 'item_xxx',
+    description:
+      'Línea que ya existe en la venta. Omitirlo significa que es una línea ' +
+      'nueva. Las líneas existentes que NO vengan en la lista se eliminan: el ' +
+      'cuerpo describe cómo queda la venta, no lo que cambia.',
+  })
+  @IsOptional()
+  @IsString()
+  saleItemId?: string;
+
+  @ApiProperty({ example: 'prod_xxx' })
+  @IsString()
+  productId!: string;
+
+  @ApiProperty({ example: 2 })
+  @IsInt()
+  @Min(1)
+  quantity!: number;
+
+  @ApiPropertyOptional({
+    example: 18000,
+    description:
+      'Precio unitario. Si se omite, se conserva el de la línea; en una línea ' +
+      'nueva se toma el precio actual del producto.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  unitPriceCOP?: number;
+
+  @ApiPropertyOptional({ example: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountCOP?: number;
+
+  @ApiPropertyOptional({ example: 'var_xxx' })
+  @IsOptional()
+  @IsString()
+  variantId?: string;
+
+  @ApiPropertyOptional({ example: 'loc_xxx' })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
+}
+
+export class UpdateRetailSaleItemsDto {
+  @ApiProperty({
+    type: [EditRetailSaleItemDto],
+    description:
+      'Cómo queda la venta. Puede ir vacío solo si se va a anular la venta ' +
+      'entera, cosa que este endpoint NO hace: para eso está /void.',
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => EditRetailSaleItemDto)
+  items!: EditRetailSaleItemDto[];
+
+  @ApiPropertyOptional({
+    example: 0,
+    description: 'Descuento de la venta completa. Si se omite, se conserva.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountCOP?: number;
+
+  @ApiProperty({
+    example: 'El cliente al final no se llevó el splash',
+    description:
+      'Obligatorio. Editar una venta ya registrada cambia plata y stock: sin ' +
+      'el motivo escrito, el histórico no sirve para entender por qué un ' +
+      'número dejó de ser el que era.',
+  })
+  @IsString()
+  @MaxLength(300)
+  reason!: string;
+
+  @ApiPropertyOptional({
+    enum: RetailPaymentMethod,
+    example: 'CASH',
+    description:
+      'Con qué se le devuelve la diferencia cuando la edición deja el total ' +
+      'POR DEBAJO de lo que el cliente ya pagó. Obligatorio en ese caso.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPaymentMethod)
+  refundMethod?: RetailPaymentMethod;
+
+  @ApiPropertyOptional({
+    enum: RetailPaymentMethod,
+    example: 'CASH',
+    description:
+      'Corrige CON QUÉ se pagó, cuando se eligió mal en el mostrador ' +
+      '("marqué transferencia y fue efectivo"). Reescribe el medio de la venta ' +
+      'y el de los abonos vigentes, que es de donde finanzas saca el desglose ' +
+      'por medio. No sirve para financiación: esos abonos llevan comisión y ' +
+      'giro congelados.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPaymentMethod)
+  paymentMethod?: RetailPaymentMethod;
+}
+
+export class VoidRetailSaleReturnDto {
+  @ApiProperty({
+    example:
+      'Se registró como devolución algo que era una corrección de la venta',
+    description:
+      'Obligatorio: una devolución anulada sin motivo no se puede auditar.',
+  })
+  @IsString()
+  @MaxLength(300)
+  reason!: string;
+}
+
+export class GroupPaymentSaleDto {
+  @ApiProperty({ example: 'sale_xxx' })
+  @IsString()
+  saleId!: string;
+
+  @ApiPropertyOptional({
+    example: 36000,
+    description:
+      'Cuánto de este pago se imputa a esta venta. Si se omite en TODAS las ' +
+      'ventas, el monto se reparte solo: salda en orden hasta agotarse.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  amountCOP?: number;
+}
+
+export class CreateGroupPaymentDto {
+  @ApiProperty({
+    type: [GroupPaymentSaleDto],
+    description: 'Ventas que cubre este pago, en el orden en que se saldan.',
+  })
+  @IsArray()
+  @ArrayMinSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => GroupPaymentSaleDto)
+  sales!: GroupPaymentSaleDto[];
+
+  @ApiProperty({
+    example: 66000,
+    description:
+      'Lo que el cliente entregó, en total. Es el número que él reconoce: una ' +
+      'transferencia de $66.000, no dos cobros que coincidieron.',
+  })
+  @IsInt()
+  @Min(1)
+  amountCOP!: number;
+
+  @ApiProperty({ enum: RetailPaymentMethod, example: 'TRANSFER' })
+  @IsEnum(RetailPaymentMethod)
+  method!: RetailPaymentMethod;
+
+  @ApiPropertyOptional({
+    example: '2026-09-17T18:00:00.000Z',
+    description: 'Cuándo pagó el cliente. Por defecto, ahora.',
+  })
+  @IsOptional()
+  @IsString()
+  paidAt?: string;
+
+  @ApiPropertyOptional({ example: 'Transferencia Nequi 4021' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+
+  @ApiPropertyOptional({ example: 'cash_xxx' })
+  @IsOptional()
+  @IsString()
+  cashSessionId?: string;
+}

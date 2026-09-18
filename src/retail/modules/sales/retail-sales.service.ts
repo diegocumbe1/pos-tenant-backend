@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   Prisma,
@@ -30,6 +31,7 @@ import {
   syncFinancingFeeExpense,
 } from '../../shared/retail-financing';
 import {
+  CreateGroupPaymentDto,
   CreateRetailSaleDto,
   CreateRetailSaleNoteDto,
   CreateRetailSalePaymentDto,
@@ -37,8 +39,10 @@ import {
   PayRetailSaleDto,
   UpdateRetailSaleCustomerDto,
   UpdateRetailSaleDateDto,
+  UpdateRetailSaleItemsDto,
   VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
+  VoidRetailSaleReturnDto,
 } from './dto/retail-sale.dto';
 
 /** 'YYYY-MM-DD' suelto, sin hora. */
@@ -303,6 +307,9 @@ export class RetailSalesService {
             tenantId: ctx.tenantId,
             branchId: ctx.branchId,
             ...this.returnedAtRange(from, to),
+            // Una devolución anulada no resta del período: su mercancía volvió
+            // a salir y su plata nunca se movió.
+            voidedAt: null,
           },
           include: { items: true },
         });
@@ -1747,6 +1754,804 @@ export class RetailSalesService {
     return parsed;
   }
 
+  /**
+   * Corrige los productos de una venta ya registrada.
+   *
+   * EL CASO. El cliente aparta dos kits y un splash, la venta queda por cobrar,
+   * y cuando pasa a pagar decide que el splash no. Hasta ahora la única salida
+   * era registrar una DEVOLUCIÓN, y eso escribe algo que no pasó: que se le
+   * devolvió una plata que nunca entró. Además no ajusta el saldo, así que la
+   * bandeja de cobros seguía pidiéndole el total viejo.
+   *
+   * EL CUERPO DESCRIBE CÓMO QUEDA LA VENTA, no lo que cambia. Las líneas que no
+   * vengan se eliminan. Es más simple de razonar que un diff y hace imposible la
+   * clase de error en que el cliente manda una operación y el servidor aplica
+   * otra.
+   *
+   * SE PUEDE AUNQUE LA VENTA ESTÉ COBRADA. Un error se corrige donde está: dejar
+   * la venta congelada en cuanto entra plata obliga a inventar una devolución
+   * para arreglarla, que es exactamente el problema del que venimos. Si la
+   * edición deja el total por debajo de lo ya pagado, la diferencia es plata que
+   * el negocio le debe al cliente: se anulan los abonos que sobran —dejan de
+   * contar como ingreso, que es lo correcto— y se reescribe el que quede a
+   * medias. Por eso `refundMethod` es obligatorio en ese caso.
+   *
+   * LO QUE MUEVE INVENTARIO ES LO ENTREGADO, no lo vendido. Bajar de 2 a 1 una
+   * línea que ya salió reingresa una unidad; bajarla en una venta pendiente que
+   * nunca salió no mueve nada, porque esa mercancía jamás se descontó.
+   *
+   * LO QUE NO HACE: tocar una línea que ya tiene devolución vigente. Esa
+   * mercancía volvió por su propio camino y con su propio documento; corregir la
+   * venta por debajo de lo devuelto contaría el reingreso dos veces. Primero se
+   * anula la devolución.
+   */
+  async updateSaleItems(
+    ctx: TenantContext,
+    id: string,
+    dto: UpdateRetailSaleItemsDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
+
+    await this.prisma.$transaction(async (tx) => {
+      const sale = await tx.retailSale.findUniqueOrThrow({
+        where: { id },
+        include: {
+          items: true,
+          payments: { where: { voidedAt: null }, orderBy: { paidAt: 'asc' } },
+        },
+      });
+      if (sale.status === 'VOIDED') {
+        throw new BadRequestException(
+          'La venta está anulada: no se pueden editar sus productos',
+        );
+      }
+
+      // Cuánto de cada línea ya volvió por una devolución VIGENTE. Una anulada
+      // no cuenta: su mercancía ya salió de nuevo cuando se anuló.
+      const returnedRows = await tx.retailSaleReturnItem.findMany({
+        where: {
+          direction: 'IN',
+          return: { saleId: id, voidedAt: null },
+        },
+        select: { saleItemId: true, quantity: true },
+      });
+      const returnedByItem = new Map<string, number>();
+      for (const row of returnedRows) {
+        if (!row.saleItemId) continue;
+        returnedByItem.set(
+          row.saleItemId,
+          (returnedByItem.get(row.saleItemId) ?? 0) + row.quantity,
+        );
+      }
+
+      const itemById = new Map(sale.items.map((item) => [item.id, item]));
+      const seen = new Set<string>();
+      for (const line of dto.items) {
+        if (!line.saleItemId) continue;
+        if (!itemById.has(line.saleItemId)) {
+          throw new BadRequestException(
+            'Hay una línea que no pertenece a esta venta',
+          );
+        }
+        if (seen.has(line.saleItemId)) {
+          throw new BadRequestException(
+            'La misma línea viene dos veces: júntalas en una sola',
+          );
+        }
+        seen.add(line.saleItemId);
+      }
+
+      const productIds = [...new Set(dto.items.map((line) => line.productId))];
+      const products = await tx.retailProduct.findMany({
+        where: {
+          id: { in: productIds },
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          deletedAt: null,
+        },
+      });
+      if (products.length !== productIds.length) {
+        throw new BadRequestException(
+          'Hay productos que no existen en esta tienda',
+        );
+      }
+      const byId = new Map(products.map((product) => [product.id, product]));
+      const variants = await tx.retailProductVariant.findMany({
+        where: { productId: { in: productIds } },
+      });
+      const variantById = new Map(
+        variants.map((variant) => [variant.id, variant]),
+      );
+
+      // ── Cómo queda cada línea ────────────────────────────────────────────
+      type Resolved = {
+        saleItemId: string | null;
+        productId: string;
+        variantId: string | null;
+        variantLabel: string | null;
+        name: string;
+        sku: string | null;
+        quantity: number;
+        deliveredQty: number;
+        unitPriceCOP: number;
+        unitCostCOP: number;
+        discountCOP: number;
+        totalCOP: number;
+        locationId: string | null;
+      };
+
+      const saleWasDelivered = sale.deliveryStatus !== 'PENDING';
+      const resolved: Resolved[] = dto.items.map((line) => {
+        const product = byId.get(line.productId)!;
+        const existing = line.saleItemId
+          ? itemById.get(line.saleItemId)!
+          : null;
+
+        if (existing && existing.productId !== line.productId) {
+          throw new BadRequestException(
+            'No se puede cambiar el producto de una línea: quítala y agrega la nueva',
+          );
+        }
+
+        const returned = existing ? (returnedByItem.get(existing.id) ?? 0) : 0;
+        if (returned > 0 && line.quantity < returned) {
+          throw new BadRequestException(
+            `"${existing!.name}" tiene ${returned} unidad(es) devuelta(s): ` +
+              'anula la devolución antes de bajar la cantidad',
+          );
+        }
+
+        const variantId = line.variantId ?? existing?.variantId ?? null;
+        // Solo se exige el valor cuando la mercancía de verdad se mueve. En una
+        // venta pendiente nada ha salido todavía y de cuál aroma sale se decide
+        // en la entrega, igual que al crearla.
+        const needsVariant =
+          saleWasDelivered && !!product.stockOptionId && product.trackStock;
+        if (needsVariant && !variantId) {
+          throw new BadRequestException(
+            `"${product.name}" reparte existencias por opción: indica cuál`,
+          );
+        }
+        const variant = variantId ? variantById.get(variantId) : undefined;
+        if (variantId && (!variant || variant.productId !== product.id)) {
+          throw new BadRequestException(
+            `La opción elegida no pertenece a "${product.name}"`,
+          );
+        }
+
+        const unitPriceCOP =
+          line.unitPriceCOP ?? existing?.unitPriceCOP ?? product.priceCOP;
+        const discountCOP = line.discountCOP ?? existing?.discountCOP ?? 0;
+        const totalCOP = unitPriceCOP * line.quantity - discountCOP;
+        if (totalCOP < 0) {
+          throw new BadRequestException(
+            `El descuento de "${product.name}" supera el valor de la línea`,
+          );
+        }
+
+        return {
+          saleItemId: existing?.id ?? null,
+          productId: product.id,
+          variantId,
+          variantLabel: variant?.label ?? existing?.variantLabel ?? null,
+          name: existing?.name ?? product.name,
+          sku: existing?.sku ?? product.sku,
+          quantity: line.quantity,
+          // Lo entregado nunca puede superar lo vendido. En una línea nueva
+          // sobre una venta ya entregada, el cliente se lo lleva ahora.
+          deliveredQty: existing
+            ? Math.min(existing.deliveredQty, line.quantity)
+            : saleWasDelivered
+              ? line.quantity
+              : 0,
+          unitPriceCOP,
+          // El costo de una línea que ya existe NO se recalcula: quedó
+          // congelado el día de la venta y ese es el que mide la utilidad.
+          unitCostCOP: existing?.unitCostCOP ?? costingCostCOP(product),
+          discountCOP,
+          totalCOP,
+          locationId: line.locationId ?? existing?.locationId ?? null,
+        };
+      });
+
+      const removed = sale.items.filter((item) => !seen.has(item.id));
+      for (const item of removed) {
+        const returned = returnedByItem.get(item.id) ?? 0;
+        if (returned > 0) {
+          throw new BadRequestException(
+            `"${item.name}" tiene una devolución vigente: anúlala antes de quitar la línea`,
+          );
+        }
+      }
+
+      // ── Qué se mueve en inventario ───────────────────────────────────────
+      // Solo cuenta lo ENTREGADO: es lo único que salió de la estantería.
+      const outBefore = new Map<string, number>();
+      for (const item of sale.items) {
+        if (item.deliveredQty <= 0) continue;
+        const key = stockKey(item.productId, item.variantId);
+        outBefore.set(key, (outBefore.get(key) ?? 0) + item.deliveredQty);
+      }
+      const outAfter = new Map<string, number>();
+      for (const line of resolved) {
+        if (line.deliveredQty <= 0) continue;
+        const key = stockKey(line.productId, line.variantId);
+        outAfter.set(key, (outAfter.get(key) ?? 0) + line.deliveredQty);
+      }
+
+      /** Con qué costo salió cada grupo: es con el que tiene que volver. */
+      const returnUnitCostByKey = new Map<string, number>();
+      for (const item of sale.items) {
+        returnUnitCostByKey.set(
+          stockKey(item.productId, item.variantId),
+          item.unitCostCOP,
+        );
+      }
+      const preferredLocationByKey = new Map<string, string | null>();
+      for (const line of resolved) {
+        if (!line.locationId) continue;
+        preferredLocationByKey.set(
+          stockKey(line.productId, line.variantId),
+          line.locationId,
+        );
+      }
+
+      const extraOut = new Map<string, number>();
+      const backIn = new Map<string, number>();
+      for (const key of new Set([...outBefore.keys(), ...outAfter.keys()])) {
+        const delta = (outAfter.get(key) ?? 0) - (outBefore.get(key) ?? 0);
+        if (delta > 0) extraOut.set(key, delta);
+        if (delta < 0) backIn.set(key, -delta);
+      }
+
+      // Lo que sale de más se valida como cualquier venta: no se puede entregar
+      // mercancía que no hay.
+      const extraByProduct = new Map<string, number>();
+      for (const [key, quantity] of extraOut) {
+        const { productId } = splitStockKey(key);
+        extraByProduct.set(
+          productId,
+          (extraByProduct.get(productId) ?? 0) + quantity,
+        );
+      }
+      for (const [productId, quantity] of extraByProduct) {
+        const product = byId.get(productId)!;
+        if (!product.isActive) {
+          throw new BadRequestException(`"${product.name}" no está disponible`);
+        }
+        if (product.trackStock && product.stock < quantity) {
+          throw new BadRequestException(
+            `Stock insuficiente de "${product.name}": hay ${product.stock}, faltan ${quantity}`,
+          );
+        }
+      }
+      for (const [key, quantity] of extraOut) {
+        const { productId, variantId } = splitStockKey(key);
+        if (!variantId || !byId.get(productId)!.trackStock) continue;
+        const variant = variantById.get(variantId)!;
+        if (variant.stock < quantity) {
+          throw new BadRequestException(
+            `Stock insuficiente de "${byId.get(productId)!.name} · ${variant.label}": ` +
+              `hay ${variant.stock}, faltan ${quantity}`,
+          );
+        }
+      }
+
+      if (backIn.size > 0) {
+        await this.applyStockDelta(
+          tx,
+          ctx,
+          id,
+          backIn,
+          byId,
+          1,
+          returnUnitCostByKey,
+          undefined,
+        );
+      }
+      if (extraOut.size > 0) {
+        await this.applyStockDelta(
+          tx,
+          ctx,
+          id,
+          extraOut,
+          byId,
+          -1,
+          undefined,
+          preferredLocationByKey,
+        );
+      }
+
+      // ── Escribir las líneas ──────────────────────────────────────────────
+      if (removed.length > 0) {
+        await tx.retailSaleItem.deleteMany({
+          where: { id: { in: removed.map((item) => item.id) } },
+        });
+      }
+      for (const line of resolved) {
+        if (line.saleItemId) {
+          await tx.retailSaleItem.update({
+            where: { id: line.saleItemId },
+            data: {
+              quantity: line.quantity,
+              deliveredQty: line.deliveredQty,
+              unitPriceCOP: line.unitPriceCOP,
+              discountCOP: line.discountCOP,
+              totalCOP: line.totalCOP,
+              variantId: line.variantId,
+              variantLabel: line.variantLabel,
+              ...(line.locationId ? { locationId: line.locationId } : {}),
+            },
+          });
+          continue;
+        }
+        await tx.retailSaleItem.create({
+          data: {
+            saleId: id,
+            productId: line.productId,
+            variantId: line.variantId,
+            variantLabel: line.variantLabel,
+            name: line.name,
+            sku: line.sku,
+            quantity: line.quantity,
+            deliveredQty: line.deliveredQty,
+            unitPriceCOP: line.unitPriceCOP,
+            unitCostCOP: line.unitCostCOP,
+            discountCOP: line.discountCOP,
+            totalCOP: line.totalCOP,
+            locationId: line.locationId,
+          },
+        });
+      }
+
+      // ── Recalcular la venta ──────────────────────────────────────────────
+      const subtotalCOP = resolved.reduce(
+        (sum, line) => sum + line.totalCOP,
+        0,
+      );
+      const saleDiscountCOP = dto.discountCOP ?? sale.discountCOP;
+      const totalCOP = subtotalCOP - saleDiscountCOP + sale.shippingCOP;
+      if (totalCOP < 0) {
+        throw new BadRequestException(
+          'El descuento supera el total de la venta',
+        );
+      }
+      const costCOP = resolved.reduce(
+        (sum, line) => sum + line.unitCostCOP * line.quantity,
+        0,
+      );
+      const fullyDelivered = resolved.every(
+        (line) => line.deliveredQty >= line.quantity,
+      );
+
+      await tx.retailSale.update({
+        where: { id },
+        data: {
+          subtotalCOP,
+          discountCOP: saleDiscountCOP,
+          totalCOP,
+          costCOP,
+          deliveryStatus: fullyDelivered ? 'DELIVERED' : 'PENDING',
+          deliveredAt: fullyDelivered ? (sale.deliveredAt ?? new Date()) : null,
+        },
+      });
+
+      // ── Reconciliar la plata ─────────────────────────────────────────────
+      const paidCOP = sale.payments.reduce(
+        (sum, payment) => sum + payment.amountCOP,
+        0,
+      );
+      let refundedCOP = 0;
+      if (paidCOP > totalCOP) {
+        if (!dto.refundMethod) {
+          throw new BadRequestException(
+            `La venta queda en ${formatCOP(totalCOP)} y el cliente ya pagó ` +
+              `${formatCOP(paidCOP)}: indica con qué se le devuelven ` +
+              `${formatCOP(paidCOP - totalCOP)}`,
+          );
+        }
+        refundedCOP = paidCOP - totalCOP;
+
+        // FINANCIACIÓN: NO SE TOCA DESDE ACÁ. Un abono financiado lleva la
+        // comisión congelada, el giro pendiente y un gasto encadenado
+        // (`syncFinancingFeeExpense`). Anularlo aquí dejaría ese gasto huérfano
+        // hundiendo la utilidad del mes, y reescribir el que queda a medias
+        // exigiría volver a congelar términos sobre el monto nuevo. Eso es una
+        // operación propia, no un efecto secundario de corregir productos.
+        const financedToVoid = sale.payments.some(
+          (payment) => payment.method === 'FINANCING',
+        );
+        if (financedToVoid) {
+          throw new BadRequestException(
+            'Esta venta se pagó con financiación: anula primero el abono ' +
+              'financiado (queda su comisión por deshacer) y después corrige ' +
+              'los productos',
+          );
+        }
+
+        // Se anulan los abonos más recientes primero: es la plata que menos
+        // tiempo lleva contada y la que el cliente acaba de entregar.
+        let pending = refundedCOP;
+        const newestFirst = [...sale.payments].reverse();
+        for (const payment of newestFirst) {
+          if (pending <= 0) break;
+          await tx.retailSalePayment.update({
+            where: { id: payment.id },
+            data: {
+              voidedAt: new Date(),
+              voidedReason: `Se corrigieron los productos de la venta: ${dto.reason}`,
+              voidedBy: ctx.userId,
+            },
+          });
+          if (payment.amountCOP > pending) {
+            // El abono solo sobraba en parte: se reescribe por lo que sí cubre.
+            await tx.retailSalePayment.create({
+              data: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                saleId: id,
+                amountCOP: payment.amountCOP - pending,
+                method: payment.method,
+                paidAt: payment.paidAt,
+                settledAt: payment.settledAt,
+                note: `Reemplaza el abono corregido al editar la venta`,
+                userId: ctx.userId,
+                userName: ctx.name,
+                cashSessionId: payment.cashSessionId,
+                groupId: payment.groupId,
+              },
+            });
+          }
+          pending -= payment.amountCOP;
+        }
+      }
+      // ── Corregir con qué se pagó ─────────────────────────────────────────
+      // "Marqué transferencia y fue efectivo". El medio vive en DOS sitios: en
+      // la venta, que es lo que se lee en el recibo, y en cada abono, que es de
+      // donde finanzas saca el desglose por medio y el arqueo saca lo que
+      // debería haber en la gaveta. Corregir solo uno deja las dos pantallas
+      // contándose historias distintas.
+      let methodChanged = false;
+      if (dto.paymentMethod && dto.paymentMethod !== sale.paymentMethod) {
+        // Un abono financiado lleva comisión y fecha de giro congeladas, y su
+        // gasto encadenado. Cambiarle el medio desde acá dejaría esa comisión
+        // colgando de un pago que ya no es de financiación.
+        const financed = sale.payments.some(
+          (payment) => payment.method === 'FINANCING',
+        );
+        if (financed || dto.paymentMethod === 'FINANCING') {
+          throw new BadRequestException(
+            'La financiación congela comisión y giro: su medio no se corrige acá',
+          );
+        }
+        methodChanged = true;
+        await tx.retailSale.update({
+          where: { id },
+          data: { paymentMethod: dto.paymentMethod },
+        });
+        await tx.retailSalePayment.updateMany({
+          where: { saleId: id, voidedAt: null },
+          data: { method: dto.paymentMethod },
+        });
+      }
+
+      await this.syncSalePayment(tx, id);
+
+      // Lo que el cliente lleva gastado tiene que seguir el total real.
+      if (sale.customerId && totalCOP !== sale.totalCOP) {
+        await tx.retailCustomer.update({
+          where: { id: sale.customerId },
+          data: {
+            totalSpentCOP: { increment: totalCOP - sale.totalCOP },
+          },
+        });
+      }
+
+      const before = sale.items.reduce((sum, item) => sum + item.quantity, 0);
+      const after = resolved.reduce((sum, line) => sum + line.quantity, 0);
+      const diff = totalCOP - sale.totalCOP;
+      await this.logSaleEvent(tx, ctx, id, {
+        kind: 'ITEMS_EDITED',
+        summary:
+          `Productos corregidos: ${before} → ${after} unidad(es), ` +
+          `${formatCOP(sale.totalCOP)} → ${formatCOP(totalCOP)}` +
+          (methodChanged
+            ? ` · medio corregido a ${PAYMENT_METHOD_LABEL[dto.paymentMethod!]}`
+            : '') +
+          (refundedCOP > 0
+            ? ` · se le devuelven ${formatCOP(refundedCOP)} (${PAYMENT_METHOD_LABEL[dto.refundMethod!]})`
+            : ''),
+        note: dto.reason,
+        detail: {
+          totalBeforeCOP: sale.totalCOP,
+          totalCOP,
+          diffCOP: diff,
+          unitsBefore: before,
+          units: after,
+          ...(methodChanged
+            ? {
+                paymentMethodBefore: sale.paymentMethod,
+                paymentMethod: dto.paymentMethod,
+              }
+            : {}),
+          ...(refundedCOP > 0
+            ? { refundedCOP, refundMethod: dto.refundMethod }
+            : {}),
+        },
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, id);
+  }
+
+  /**
+   * Anula una devolución mal registrada.
+   *
+   * POR QUÉ HACE FALTA. Sin `updateSaleItems` la devolución era la única
+   * herramienta a mano para corregir una venta, y se usó para eso. El resultado
+   * es un documento que afirma que salió plata de la caja por mercancía que el
+   * cliente nunca pagó. Ese documento no se puede borrar —se registró, y eso es
+   * un hecho— pero sí dejar de contar.
+   *
+   * QUÉ DESHACE. La mercancía que había vuelto vuelve a salir, y la que se
+   * entregó a cambio regresa al inventario. El `returnedQty` de cada línea baja,
+   * que es lo que libera a la venta para poder editarse.
+   */
+  async voidReturn(
+    ctx: TenantContext,
+    saleId: string,
+    returnId: string,
+    dto: VoidRetailSaleReturnDto,
+  ) {
+    await this.tenantHelper.assertScopedRecord(
+      'retailSale',
+      ctx,
+      saleId,
+      'Sale',
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      const record = await tx.retailSaleReturn.findUniqueOrThrow({
+        where: { id: returnId },
+        include: { items: true },
+      });
+      if (record.saleId !== saleId || record.tenantId !== ctx.tenantId) {
+        throw new BadRequestException(
+          'Esa devolución no pertenece a esta venta',
+        );
+      }
+      if (record.voidedAt) {
+        throw new BadRequestException('La devolución ya está anulada');
+      }
+
+      // Lo que entró vuelve a salir; lo que salió vuelve a entrar.
+      const outAgain = new Map<string, number>();
+      const backIn = new Map<string, number>();
+      const costByKey = new Map<string, number>();
+      for (const item of record.items) {
+        const key = stockKey(item.productId, item.variantId);
+        costByKey.set(key, item.unitCostCOP);
+        const target = item.direction === 'IN' ? outAgain : backIn;
+        target.set(key, (target.get(key) ?? 0) + item.quantity);
+      }
+
+      const productIds = [
+        ...new Set(record.items.map((item) => item.productId)),
+      ];
+      const products = await tx.retailProduct.findMany({
+        where: { id: { in: productIds } },
+      });
+      const byId = new Map(products.map((product) => [product.id, product]));
+
+      for (const [key, quantity] of outAgain) {
+        const { productId } = splitStockKey(key);
+        const product = byId.get(productId);
+        if (!product?.trackStock) continue;
+        if (product.stock < quantity) {
+          throw new BadRequestException(
+            `Para anular la devolución hay que volver a sacar ${quantity} de ` +
+              `"${product.name}", y solo hay ${product.stock}`,
+          );
+        }
+      }
+
+      if (outAgain.size > 0) {
+        await this.applyStockDelta(tx, ctx, saleId, outAgain, byId, -1);
+      }
+      if (backIn.size > 0) {
+        await this.applyStockDelta(tx, ctx, saleId, backIn, byId, 1, costByKey);
+      }
+
+      for (const item of record.items) {
+        if (item.direction !== 'IN' || !item.saleItemId) continue;
+        await tx.retailSaleItem.update({
+          where: { id: item.saleItemId },
+          data: { returnedQty: { decrement: item.quantity } },
+        });
+      }
+
+      await tx.retailSaleReturn.update({
+        where: { id: returnId },
+        data: {
+          voidedAt: new Date(),
+          voidedReason: dto.reason,
+          voidedBy: ctx.userId,
+        },
+      });
+
+      await this.logSaleEvent(tx, ctx, saleId, {
+        kind: 'RETURN_VOIDED',
+        summary: `Devolución ${record.code} anulada (${formatCOP(record.returnedCOP)})`,
+        note: dto.reason,
+        detail: {
+          returnId,
+          code: record.code,
+          returnedCOP: record.returnedCOP,
+          replacedCOP: record.replacedCOP,
+          settlement: record.settlement,
+        },
+      });
+    }, this.txOptions);
+
+    return this.getSale(ctx, saleId);
+  }
+
+  /**
+   * Un solo pago que salda varias ventas.
+   *
+   * EL CASO. El cliente compró el martes y el jueves, y el sábado paga todo
+   * junto con una transferencia. Antes había que registrar dos cobros sueltos: el
+   * negocio veía dos movimientos donde el cliente hizo uno, y ninguno de los dos
+   * recibos cuadraba con lo que él había transferido.
+   *
+   * SIGUE HABIENDO UN ABONO POR VENTA. Es innegociable: el saldo, la bandeja de
+   * cobros y el arqueo se responden por venta, y un pago colgado de varias las
+   * dejaría a todas sin saldo propio. Lo que los une es `groupId`, y es lo que
+   * permite decir "esto fue un solo pago de $66.000".
+   *
+   * EL REPARTO. Si no se dice cuánto va a cada una, se salda en el orden en que
+   * llegan hasta agotar el monto: primero la más vieja, que es como se cobra de
+   * verdad. Lo que sobre del monto es un error de digitación y se rechaza — un
+   * abono a cuenta de nada no es plata que el negocio pueda explicar.
+   */
+  async createGroupPayment(ctx: TenantContext, dto: CreateGroupPaymentDto) {
+    await this.tenantHelper.assertRetailTenant(ctx.tenantId);
+
+    if (dto.method === 'FINANCING') {
+      throw new BadRequestException(
+        'Un pago financiado congela comisión y giro por venta: regístralo venta por venta',
+      );
+    }
+
+    const ids = dto.sales.map((row) => row.saleId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Hay una venta repetida en el pago');
+    }
+
+    const groupId = randomUUID();
+    const paidAt = this.resolveSoldAt(dto.paidAt);
+
+    await this.prisma.$transaction(async (tx) => {
+      const sales = await tx.retailSale.findMany({
+        where: {
+          id: { in: ids },
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+        },
+        include: { payments: { where: { voidedAt: null } } },
+      });
+      if (sales.length !== ids.length) {
+        throw new BadRequestException(
+          'Hay ventas que no existen en esta tienda',
+        );
+      }
+
+      const byId = new Map(sales.map((sale) => [sale.id, sale]));
+      // El orden lo manda quien llama: la pantalla lista de más vieja a más
+      // nueva, que es el orden en que se salda una cuenta.
+      const ordered = dto.sales.map((row) => ({
+        row,
+        sale: byId.get(row.saleId)!,
+      }));
+
+      for (const { sale } of ordered) {
+        if (sale.status === 'VOIDED') {
+          throw new BadRequestException(
+            `${sale.code} está anulada: no se puede cobrar`,
+          );
+        }
+      }
+
+      const balanceOf = (sale: (typeof sales)[number]) =>
+        sale.totalCOP -
+        sale.payments.reduce((sum, payment) => sum + payment.amountCOP, 0);
+
+      const totalBalance = ordered.reduce(
+        (sum, { sale }) => sum + Math.max(balanceOf(sale), 0),
+        0,
+      );
+      if (dto.amountCOP > totalBalance) {
+        throw new BadRequestException(
+          `El pago (${formatCOP(dto.amountCOP)}) supera lo que deben esas ` +
+            `ventas (${formatCOP(totalBalance)})`,
+        );
+      }
+
+      const explicit = ordered.some(({ row }) => row.amountCOP !== undefined);
+      if (explicit) {
+        const sum = ordered.reduce(
+          (acc, { row }) => acc + (row.amountCOP ?? 0),
+          0,
+        );
+        if (sum !== dto.amountCOP) {
+          throw new BadRequestException(
+            `Lo repartido (${formatCOP(sum)}) no cuadra con el pago (${formatCOP(dto.amountCOP)})`,
+          );
+        }
+      }
+
+      let pending = dto.amountCOP;
+      const applied: { code: string; amountCOP: number }[] = [];
+
+      for (const { row, sale } of ordered) {
+        const balance = Math.max(balanceOf(sale), 0);
+        const amountCOP = explicit
+          ? (row.amountCOP ?? 0)
+          : Math.min(pending, balance);
+        if (amountCOP <= 0) continue;
+        if (amountCOP > balance) {
+          throw new BadRequestException(
+            `${sale.code} debe ${formatCOP(balance)} y se le están imputando ${formatCOP(amountCOP)}`,
+          );
+        }
+
+        await tx.retailSalePayment.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            saleId: sale.id,
+            amountCOP,
+            method: dto.method,
+            paidAt,
+            settledAt: paidAt,
+            note: dto.note,
+            userId: ctx.userId,
+            userName: ctx.name,
+            cashSessionId: dto.cashSessionId,
+            groupId,
+          },
+        });
+        await this.syncSalePayment(tx, sale.id);
+
+        pending -= amountCOP;
+        applied.push({ code: sale.code, amountCOP });
+      }
+
+      const codes = applied.map((row) => row.code).join(', ');
+      for (const { sale } of ordered) {
+        const mine = applied.find((row) => row.code === sale.code);
+        if (!mine) continue;
+        await this.logSaleEvent(tx, ctx, sale.id, {
+          kind: 'PAYMENT',
+          summary:
+            `Abono de ${formatCOP(mine.amountCOP)} (${PAYMENT_METHOD_LABEL[dto.method]}) ` +
+            `dentro de un pago único de ${formatCOP(dto.amountCOP)} por ${codes}`,
+          note: dto.note,
+          detail: {
+            groupId,
+            amountCOP: mine.amountCOP,
+            groupAmountCOP: dto.amountCOP,
+            method: dto.method,
+            sales: applied,
+          },
+          occurredAt: paidAt,
+        });
+      }
+    }, this.txOptions);
+
+    return { groupId, amountCOP: dto.amountCOP, method: dto.method };
+  }
+
   /** Anula una venta: devuelve el stock al inventario y la saca de finanzas. */
   async voidSale(ctx: TenantContext, id: string, dto: VoidRetailSaleDto) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
@@ -1764,7 +2569,7 @@ export class RetailSalesService {
       // documento de la devolución quedaría apuntando a una venta que el
       // sistema dice que nunca existió.
       const returnsCount = await tx.retailSaleReturn.count({
-        where: { saleId: id },
+        where: { saleId: id, voidedAt: null },
       });
       if (returnsCount > 0) {
         throw new BadRequestException(
@@ -2407,6 +3212,12 @@ export class RetailSalesService {
         variantId: item.variantId,
         variantLabel: item.variantLabel,
         deliveredQty: item.deliveredQty,
+        /**
+         * Cuántas volvieron por una devolución vigente. Viaja porque es el PISO
+         * al corregir la venta: esa mercancía ya se reingresó por su propio
+         * documento y bajar de ahí la contaría dos veces.
+         */
+        returnedQty: item.returnedQty,
         /** Lo que la tienda todavía le debe al cliente de esta línea. */
         pendingQty: Math.max(0, item.quantity - item.deliveredQty),
         name: item.name,

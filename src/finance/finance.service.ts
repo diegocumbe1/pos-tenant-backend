@@ -181,6 +181,10 @@ export class FinanceService {
               tenantId: ctx.tenantId,
               branchId: ctx.branchId,
               returnedAt: { gte: range.from, lte: range.to },
+              // Una devolución anulada no resta: su mercancía volvió a salir y
+              // su plata nunca se movió. Sigue en el histórico de la venta,
+              // pero no en los números del período.
+              voidedAt: null,
             },
             include: { items: true },
           })

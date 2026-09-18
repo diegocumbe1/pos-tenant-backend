@@ -3103,6 +3103,15 @@ model RetailSalePayment {
   voidedReason String?
   voidedBy     String?
 
+  /// Pago que cubrió VARIAS ventas de una sola vez.
+  ///
+  /// El caso: el cliente hizo dos compras en la semana y el sábado paga todo
+  /// junto con una transferencia. Sigue habiendo un abono POR VENTA —si no, el
+  /// saldo de cada una dejaría de cuadrar y la bandeja de cobros mentiría— pero
+  /// todos comparten este id, que es lo que permite decir "esto fue un solo
+  /// pago de $66.000" en el recibo y no dos cobros sueltos que coincidieron.
+  groupId String?
+
   createdAt DateTime @default(now())
 
   @@index([tenantId, branchId, paidAt])
@@ -3112,6 +3121,7 @@ model RetailSalePayment {
   // La bandeja "por desembolsar": abonos de financiación que todavía no giran.
   @@index([tenantId, branchId, financingProviderId, settledAt])
   @@index([saleId])
+  @@index([groupId])
   @@map("retail_sale_payments")
 }
 
@@ -3167,6 +3177,8 @@ enum RetailSaleEventKind {
   PAYMENT_VOIDED // se anuló un abono mal digitado
   DELIVERY // salió mercancía, total o parcial
   RETURN // el cliente devolvió o cambió
+  RETURN_VOIDED // se anuló una devolución mal registrada
+  ITEMS_EDITED // se corrigieron los productos de la venta
   DATE_CHANGED // se corrigió el día de la venta
   CUSTOMER_CHANGED // se le cambió (o se le puso) el cliente a la venta
   SHIPPING_CHARGED // el envío le cargó el flete a esta venta
@@ -3203,6 +3215,15 @@ model RetailSaleReturn {
   returnedAt DateTime @default(now())
   userId     String?
   createdAt  DateTime @default(now())
+
+  /// Anulada: sigue en el histórico pero deja de contar, igual que un abono
+  /// anulado. Existe porque la devolución se estaba usando como sustituto de
+  /// editar la venta —"el cliente al final no se llevó el splash"— y eso deja
+  /// escrito que se le devolvió una plata que nunca entró. Anular es la única
+  /// forma de deshacer ese documento sin borrar el hecho de que se registró.
+  voidedAt     DateTime?
+  voidedReason String?
+  voidedBy     String?
 
   items RetailSaleReturnItem[]
 

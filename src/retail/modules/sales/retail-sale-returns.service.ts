@@ -551,12 +551,16 @@ export class RetailSaleReturnsService {
       reason: row.reason,
       note: row.note,
       returnedAt: row.returnedAt,
+      // Anulada: viaja para que el detalle la muestre tachada, igual que un
+      // abono anulado. No se filtra de la lista — el histórico no se esconde.
+      voidedAt: row.voidedAt,
+      voidedReason: row.voidedReason,
       /**
        * Lo que esta devolución le hace al ingreso del día en que ocurrió.
        * Negativo = ese día se vendió menos. Va resuelto acá para que finanzas y
        * el resumen de ventas no lo calculen cada uno por su lado.
        */
-      revenueImpactCOP: row.replacedCOP - row.returnedCOP,
+      revenueImpactCOP: row.voidedAt ? 0 : row.replacedCOP - row.returnedCOP,
       items: row.items.map((item) => ({
         id: item.id,
         direction: item.direction,

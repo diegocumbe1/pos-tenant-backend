@@ -25,6 +25,7 @@ import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import {
+  CreateGroupPaymentDto,
   CreateRetailSaleDto,
   CreateRetailSaleNoteDto,
   CreateRetailSalePaymentDto,
@@ -32,8 +33,10 @@ import {
   PayRetailSaleDto,
   UpdateRetailSaleCustomerDto,
   UpdateRetailSaleDateDto,
+  UpdateRetailSaleItemsDto,
   VoidRetailSalePaymentDto,
   VoidRetailSaleDto,
+  VoidRetailSaleReturnDto,
 } from './dto/retail-sale.dto';
 import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
 import { RetailSaleReturnsService } from './retail-sale-returns.service';
@@ -191,6 +194,25 @@ export class RetailSalesController {
   }
 
   /**
+   * Un solo pago que salda varias ventas del mismo cliente.
+   *
+   * Va ANTES de las rutas con `:id` a propósito: Nest resuelve en orden de
+   * declaración, y así nunca hay duda de que 'payments' es un literal y no el id
+   * de una venta.
+   *
+   * Permiso de escritura, no de anular: cobrar es trabajo de mostrador.
+   */
+  @Post('payments/group')
+  @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions('retail:sales:write')
+  createGroupPayment(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: CreateGroupPaymentDto,
+  ) {
+    return this.sales.createGroupPayment(ctx, dto);
+  }
+
+  /**
    * Registra una entrega, total o parcial, de una venta pendiente.
    *
    * Va con permiso de escritura de ventas y no con el de anular: entregar lo que
@@ -231,6 +253,42 @@ export class RetailSalesController {
     @Body() dto: CreateRetailSaleReturnDto,
   ) {
     return this.returns.create(ctx, id, dto);
+  }
+
+  /**
+   * Anula una devolución mal registrada.
+   *
+   * Permiso de anular: deshace un documento que movió inventario y plata. Es lo
+   * que hay que hacer cuando se usó una devolución para corregir una venta —el
+   * sistema quedó diciendo que salió plata que nunca entró— antes de poder
+   * editar los productos.
+   */
+  @Post(':id/returns/:returnId/void')
+  @RequirePermissions('retail:sales:void')
+  voidReturn(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Param('returnId') returnId: string,
+    @Body() dto: VoidRetailSaleReturnDto,
+  ) {
+    return this.sales.voidReturn(ctx, id, returnId, dto);
+  }
+
+  /**
+   * Corrige los productos de una venta ya registrada.
+   *
+   * Permiso de anular y no de escritura: reescribe plata, inventario y el gasto
+   * acumulado del cliente. Es corrección de dueño, igual que la fecha o el
+   * cliente, no trabajo de mostrador.
+   */
+  @Patch(':id/items')
+  @RequirePermissions('retail:sales:void')
+  updateItems(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateRetailSaleItemsDto,
+  ) {
+    return this.sales.updateSaleItems(ctx, id, dto);
   }
 
   /**
