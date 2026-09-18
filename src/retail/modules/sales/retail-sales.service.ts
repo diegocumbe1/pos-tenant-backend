@@ -1841,21 +1841,42 @@ export class RetailSalesService {
         seen.add(line.saleItemId);
       }
 
-      const productIds = [...new Set(dto.items.map((line) => line.productId))];
+      // LOS PRODUCTOS SE CARGAN DE LAS DOS LISTAS, no solo de la que queda.
+      //
+      // La línea que se quita NO viene en `dto.items` —quitarla es justamente no
+      // mandarla— pero es la que tiene que devolver mercancía al inventario. Con
+      // el mapa armado solo desde el cuerpo, `applyStockDelta` no encontraba ese
+      // producto, lo saltaba EN SILENCIO por `if (!product?.trackStock) continue`
+      // y la unidad no volvía al stock: la venta bajaba de precio y el
+      // inventario quedaba corto, sin un solo movimiento que lo explicara.
+      const dtoProductIds = [
+        ...new Set(dto.items.map((line) => line.productId)),
+      ];
+      const productIds = [
+        ...new Set([
+          ...dtoProductIds,
+          ...sale.items.map((item) => item.productId),
+        ]),
+      ];
       const products = await tx.retailProduct.findMany({
         where: {
           id: { in: productIds },
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
-          deletedAt: null,
         },
       });
-      if (products.length !== productIds.length) {
-        throw new BadRequestException(
-          'Hay productos que no existen en esta tienda',
-        );
-      }
       const byId = new Map(products.map((product) => [product.id, product]));
+      // Solo se exige que exista lo que SIGUE en la venta. Un producto que se
+      // está quitando puede estar archivado y da igual: la unidad física vuelve
+      // al estante aunque su ficha ya no se venda.
+      for (const id of dtoProductIds) {
+        const product = byId.get(id);
+        if (!product || product.deletedAt) {
+          throw new BadRequestException(
+            'Hay productos que no existen en esta tienda',
+          );
+        }
+      }
       const variants = await tx.retailProductVariant.findMany({
         where: { productId: { in: productIds } },
       });
@@ -2037,6 +2058,7 @@ export class RetailSalesService {
         }
       }
 
+      const editLabel = 'Corrección de los productos de la venta';
       if (backIn.size > 0) {
         await this.applyStockDelta(
           tx,
@@ -2047,6 +2069,7 @@ export class RetailSalesService {
           1,
           returnUnitCostByKey,
           undefined,
+          editLabel,
         );
       }
       if (extraOut.size > 0) {
@@ -2059,6 +2082,7 @@ export class RetailSalesService {
           -1,
           undefined,
           preferredLocationByKey,
+          editLabel,
         );
       }
 
@@ -2355,11 +2379,32 @@ export class RetailSalesService {
         }
       }
 
+      const label = `Anulación de la devolución ${record.code}`;
       if (outAgain.size > 0) {
-        await this.applyStockDelta(tx, ctx, saleId, outAgain, byId, -1);
+        await this.applyStockDelta(
+          tx,
+          ctx,
+          saleId,
+          outAgain,
+          byId,
+          -1,
+          undefined,
+          undefined,
+          label,
+        );
       }
       if (backIn.size > 0) {
-        await this.applyStockDelta(tx, ctx, saleId, backIn, byId, 1, costByKey);
+        await this.applyStockDelta(
+          tx,
+          ctx,
+          saleId,
+          backIn,
+          byId,
+          1,
+          costByKey,
+          undefined,
+          label,
+        );
       }
 
       for (const item of record.items) {
@@ -2744,6 +2789,16 @@ export class RetailSalesService {
      * principal mientras haya. Al anular, es la bodega de la que salió.
      */
     preferredLocationByKey?: Map<string, string | null>,
+    /**
+     * Qué dice el kardex de este movimiento.
+     *
+     * Por defecto es "Venta" / "Anulación de venta", que es de donde vienen casi
+     * todos. Pero anular una devolución o corregir los productos también sacan y
+     * meten mercancía, y dejarlos rotulados como "Salida por venta" hace que el
+     * histórico del producto afirme una venta que nunca ocurrió — que es
+     * exactamente lo que confunde al cuadrar el inventario a mano.
+     */
+    reasonLabel?: string,
   ) {
     // Se acumula por producto para no pisar el `stock` con dos updates seguidos
     // que hayan leído el mismo valor de partida.
@@ -2838,7 +2893,8 @@ export class RetailSalesService {
           // promedio actual les cambiaría el costo a posteriori y el valor del
           // inventario dejaría de cuadrar con lo que de verdad se pagó.
           unitCostCOP: returnUnitCost ?? costingCostCOP(product),
-          reason: direction === -1 ? 'Venta' : 'Anulación de venta',
+          reason:
+            reasonLabel ?? (direction === -1 ? 'Venta' : 'Anulación de venta'),
           reference: saleId,
           userId: ctx.userId,
         },
