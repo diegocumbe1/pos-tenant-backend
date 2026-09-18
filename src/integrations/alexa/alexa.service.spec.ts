@@ -8,9 +8,18 @@ import {
   SkillRequestSignatureVerifier,
   TimestampVerifier,
 } from 'ask-sdk-express-adapter';
+import { AssistantService } from '../../assistant/assistant.service';
+import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaService } from './alexa.service';
+
+const overview: PlatformOverviewAnswer = {
+  tenants: { total: 4, active: 3, suspended: 1 },
+  subscriptions: { active: 3, trialing: 0, pastDue: 0, billable: 3 },
+  mrrCOP: 450000,
+  payments: { month: '2026-09', count: 2, totalCOP: 300000 },
+};
 
 const ASK_FOR_CODE =
   'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
@@ -22,6 +31,7 @@ describe('AlexaService', () => {
     activate: jest.Mock;
     logout: jest.Mock;
   };
+  let assistant: { platformOverview: jest.Mock };
   let signature: jest.SpyInstance;
   const skillId = 'test-skill';
   const actor = { id: 'user-1', name: 'Diego Cumbe' } as AuthenticatedUser;
@@ -54,6 +64,7 @@ describe('AlexaService', () => {
         ...env,
       }),
       auth as unknown as AlexaAuthService,
+      assistant as unknown as AssistantService,
     );
   };
 
@@ -63,6 +74,7 @@ describe('AlexaService', () => {
       activate: jest.fn().mockResolvedValue('active'),
       logout: jest.fn().mockResolvedValue(undefined),
     };
+    assistant = { platformOverview: jest.fn().mockResolvedValue(overview) };
     build();
     signature = jest
       .spyOn(SkillRequestSignatureVerifier.prototype, 'verify')
@@ -80,8 +92,8 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'GetSubscriptionsIntent',
-      'Perfecto. Lynko recibió correctamente tu consulta de suscripciones.',
-      true,
+      'Tienes 3 suscripciones activas, sobre 4 negocios en total. Tu ingreso mensual recurrente es de 450000 pesos.',
+      false,
     ],
     [
       'IntentRequest',
@@ -91,6 +103,12 @@ describe('AlexaService', () => {
     ],
     ['IntentRequest', 'AMAZON.StopIntent', 'Hasta luego.', true],
     ['IntentRequest', 'AMAZON.CancelIntent', 'Hasta luego.', true],
+    [
+      'IntentRequest',
+      'AMAZON.FallbackIntent',
+      'No entendí. Para activar el acceso di: mi código es, y luego tu frase.',
+      false,
+    ],
     [
       'IntentRequest',
       'UnknownIntent',
@@ -192,6 +210,49 @@ describe('AlexaService', () => {
       auth.actor.mockResolvedValue(null);
       await send(envelope('IntentRequest', 'GetSubscriptionsIntent'));
       expect(auth.actor).toHaveBeenCalledTimes(1);
+      expect(assistant.platformOverview).not.toHaveBeenCalled();
+    });
+
+    it('answers a permission failure with speech, not an error', async () => {
+      assistant.platformOverview.mockRejectedValue(new ForbiddenException());
+      const result = await send(
+        envelope('IntentRequest', 'GetSubscriptionsIntent'),
+      );
+      expect(speech(result)).toBe(
+        'Tu usuario no tiene permiso para esa consulta.',
+      );
+      expect(result.response.shouldEndSession).toBe(true);
+    });
+  });
+
+  describe('platform overview speech', () => {
+    const ask = async () => {
+      const result = await send(
+        envelope('IntentRequest', 'GetSubscriptionsIntent'),
+      );
+      return (result.response.outputSpeech as { text: string }).text;
+    };
+
+    it('queries as the authorized actor', async () => {
+      await ask();
+      expect(assistant.platformOverview).toHaveBeenCalledWith(actor);
+    });
+
+    it('mentions trialing and past due only when there are any', async () => {
+      assistant.platformOverview.mockResolvedValue({
+        ...overview,
+        subscriptions: { active: 1, trialing: 2, pastDue: 1, billable: 4 },
+      });
+      expect(await ask()).toBe(
+        'Tienes 1 suscripción activa, 2 en prueba y 1 en mora, sobre 4 negocios en total. Tu ingreso mensual recurrente es de 450000 pesos.',
+      );
+    });
+
+    it('omits the revenue sentence when there is none', async () => {
+      assistant.platformOverview.mockResolvedValue({ ...overview, mrrCOP: 0 });
+      expect(await ask()).toBe(
+        'Tienes 3 suscripciones activas, sobre 4 negocios en total.',
+      );
     });
   });
 

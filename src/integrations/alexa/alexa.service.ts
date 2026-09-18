@@ -16,6 +16,8 @@ import {
   ResponseEnvelope,
 } from 'ask-sdk-model';
 import { IncomingHttpHeaders } from 'http';
+import { AssistantService } from '../../assistant/assistant.service';
+import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 
@@ -41,6 +43,7 @@ export class AlexaService {
   constructor(
     private readonly config: ConfigService,
     private readonly auth: AlexaAuthService,
+    private readonly assistant: AssistantService,
   ) {}
 
   async handleRequest(
@@ -127,10 +130,13 @@ export class AlexaService {
         return this.logout(envelope);
       case 'GetSubscriptionsIntent':
         this.logger.log('IntentRequest: GetSubscriptionsIntent');
-        return this.guarded(envelope, () =>
+        // La sesión queda abierta: encadenar preguntas es lo natural en un
+        // asistente de consulta, y reabrir la skill por cada una molesta.
+        return this.guarded(envelope, async (actor) =>
           this.speak(
-            'Perfecto. Lynko recibió correctamente tu consulta de suscripciones.',
-            true,
+            this.overviewSpeech(await this.assistant.platformOverview(actor)),
+            false,
+            '¿Quieres preguntar algo más?',
           ),
         );
       case 'AMAZON.HelpIntent':
@@ -143,8 +149,17 @@ export class AlexaService {
       case 'AMAZON.CancelIntent':
         this.logger.log(`IntentRequest: ${name}`);
         return this.speak('Hasta luego.', true);
+      case 'AMAZON.FallbackIntent':
+        // Alexa no encontró intent. Mensaje propio para distinguirlo de un
+        // intent que existe en el modelo pero que este switch no maneja.
+        this.logger.log('IntentRequest: AMAZON.FallbackIntent');
+        return this.speak(
+          'No entendí. Para activar el acceso di: mi código es, y luego tu frase.',
+          false,
+        );
       default:
-        this.logger.log('Unrecognized intent received');
+        // El nombre del intent no es secreto; el valor de los slots sí, y no se registra.
+        this.logger.log(`Unhandled intent: ${name}`);
         return this.fallback();
     }
   }
@@ -204,12 +219,47 @@ export class AlexaService {
 
   private async guarded(
     envelope: RequestEnvelope,
-    handler: (actor: AuthenticatedUser) => ResponseEnvelope,
+    handler: (
+      actor: AuthenticatedUser,
+    ) => ResponseEnvelope | Promise<ResponseEnvelope>,
   ): Promise<ResponseEnvelope> {
     const result = await this.resolveActor(envelope);
-    return result.status === 'active'
-      ? handler(result.actor)
-      : this.reject(result);
+    if (result.status !== 'active') return this.reject(result);
+    try {
+      return await handler(result.actor);
+    } catch (error) {
+      // Permiso insuficiente del usuario Lynko: distinto de "cuenta de Alexa
+      // no autorizada", que se resuelve en resolveActor.
+      if (error instanceof ForbiddenException) {
+        this.logger.warn('Query denied: insufficient Lynko permissions');
+        return this.speak(
+          'Tu usuario no tiene permiso para esa consulta.',
+          true,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Dos frases como mucho: por voz, un listado largo no se retiene. */
+  private overviewSpeech(answer: PlatformOverviewAnswer): string {
+    const { subscriptions: subs, tenants } = answer;
+    const plural = (n: number, one: string, many: string) =>
+      `${n} ${n === 1 ? one : many}`;
+
+    const detail = [
+      subs.trialing ? `${subs.trialing} en prueba` : null,
+      subs.pastDue ? `${subs.pastDue} en mora` : null,
+    ].filter(Boolean);
+
+    const first = `Tienes ${plural(subs.active, 'suscripción activa', 'suscripciones activas')}${
+      detail.length ? `, ${detail.join(' y ')}` : ''
+    }, sobre ${plural(tenants.total, 'negocio', 'negocios')} en total.`;
+
+    // Sin separadores de miles: Alexa lee mejor el número crudo.
+    return answer.mrrCOP > 0
+      ? `${first} Tu ingreso mensual recurrente es de ${answer.mrrCOP} pesos.`
+      : first;
   }
 
   private async resolveActor(envelope: RequestEnvelope): Promise<ActorResult> {
