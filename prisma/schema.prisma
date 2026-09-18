@@ -28,6 +28,7 @@ model Tenant {
   // Suscripción comercial vigente (entidad propia).
   subscription         Subscription?
   subscriptionPayments SubscriptionPayment[]
+  subscriptionCharges  SubscriptionCharge[]
   billingContacts      BillingContact[]
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
@@ -1700,6 +1701,7 @@ model Subscription {
   updatedAt          DateTime           @updatedAt
 
   payments SubscriptionPayment[]
+  charges  SubscriptionCharge[]
 
   @@index([status])
   @@map("subscriptions")
@@ -2040,6 +2042,128 @@ model PlatformMessagingSettings {
   updatedAt    DateTime @updatedAt
 
   @@map("platform_messaging_settings")
+}
+
+// Pasarela de pagos de la PLATAFORMA (fila única id = 'singleton').
+// Es con lo que Lynko cobra sus propias suscripciones; no tiene nada que ver
+// con los medios de pago que cada tenant le ofrece a sus clientes.
+//
+// Las llaves viven aquí y no en variables de entorno a propósito: Wompi rota
+// las tres privadas de golpe y, si eso obliga a un redeploy, el cobro queda
+// caído mientras tanto. Ver docs/PLAN_PASARELA_WOMPI.md.
+model PlatformGatewaySettings {
+  id          String  @id @default("singleton")
+  provider    String  @default("wompi")
+  enabled     Boolean @default(false)
+  /// 'test' (sandbox.wompi.co) | 'prod' (production.wompi.co). Las llaves de un
+  /// ambiente solo sirven con la URL de ese ambiente.
+  environment String  @default("test")
+  /// Única llave que puede salir al navegador: se usa para armar el checkout.
+  publicKey   String?
+  // Secretos: NUNCA se devuelven por la API. El GET expone solo `has*` y los
+  // últimos 4 caracteres, igual que `PlatformMessagingSettings.resendApiKey`.
+  privateKey      String?
+  eventsSecret    String?
+  integritySecret String?
+  /// Medios habilitados en el checkout, p.ej. ["CARD","PSE"]. Nequi, Bre-B y
+  /// QR se reciben directo en la cuenta (comisión 0), así que no van por aquí.
+  enabledMethods  Json?
+  /// A dónde vuelve el cliente tras pagar. Solo pinta "recibido": el pago se da
+  /// por bueno en el webhook, nunca en el redirect.
+  redirectUrl     String?
+  // Tarifa de la pasarela, para calcular la comisión de cada cobro. Wompi NO la
+  // manda en la transacción, así que se configura aquí y se recalcula si la
+  // suben. Default: 2,65% + $700 + IVA 19%.
+  feePercentBps Int      @default(265)
+  feeFixedCOP   Int      @default(700)
+  feeTaxBps     Int      @default(1900)
+  updatedAt     DateTime @updatedAt
+
+  @@map("platform_gateway_settings")
+}
+
+// Cobro de suscripción: existe ANTES de que exista el pago. Es lo que da algo
+// contra qué conciliar cuando llega el webhook — sin esto, un aviso de Wompi no
+// se puede atar a ningún tenant ni periodo.
+//
+// El SubscriptionPayment se crea SOLO cuando el cobro queda aprobado: la verdad
+// contable sigue siendo esa tabla, y esta es la antesala.
+model SubscriptionCharge {
+  id             String        @id @default(cuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  plan           String
+  /// Meses que cubre el cobro (1 | 3 | 6 | 12). Es la base del anticipo.
+  termMonths     Int           @default(1)
+  periodStart    DateTime
+  periodEnd      DateTime
+
+  /// Invariante heredado de SubscriptionPayment: listAmount - discountAmount = amount
+  listAmount     Int?
+  discountAmount Int    @default(0)
+  discountReason String?
+  amount         Int
+  currency       String @default("COP")
+
+  /// pending | paid | failed | expired | canceled
+  status      String  @default("pending")
+  statusDetail String?
+
+  provider          String  @default("wompi")
+  /// Nuestra referencia, la que viaja firmada al checkout y vuelve en el evento.
+  reference         String  @unique
+  checkoutUrl       String
+  /// Id de la transacción en Wompi. Único: es la llave de idempotencia del webhook.
+  providerTxId      String? @unique
+  paymentMethodType String?
+
+  /// Comisión calculada con la tarifa configurada, y lo que queda neto.
+  gatewayFee Int  @default(0)
+  netSettled Int?
+
+  /// SubscriptionPayment creado al conciliar. Sin FK dura: el pago puede
+  /// borrarse sin que el cobro pierda su rastro de lo que pasó.
+  paymentId String?
+
+  expiresAt       DateTime?
+  paidAt          DateTime?
+  /// Última vez que se le preguntó a Wompi por este cobro (verificación manual).
+  lastCheckedAt   DateTime?
+  createdByUserId String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@index([status])
+  @@map("subscription_charges")
+}
+
+// Bitácora cruda de lo que manda la pasarela. Existe para poder responder
+// "¿llegó el webhook y qué decía?" sin depender de los logs del servidor, que
+// rotan. Se guarda TAMBIÉN lo que se rechaza por checksum inválido: un evento
+// falso es justo lo que uno quiere poder ver.
+model GatewayEvent {
+  id            String   @id @default(cuid())
+  provider      String   @default("wompi")
+  eventType     String?
+  transactionId String?
+  reference     String?
+  status        String?
+  environment   String?
+  /// false = la firma no cuadró. El evento se guarda pero NO se procesa.
+  checksumOk    Boolean  @default(false)
+  handled       Boolean  @default(false)
+  /// paid | duplicate | not_approved | unknown_reference | bad_checksum | amount_mismatch | error
+  outcome       String?
+  chargeId      String?
+  payload       Json
+  receivedAt    DateTime @default(now())
+
+  @@index([receivedAt])
+  @@index([transactionId])
+  @@map("gateway_events")
 }
 
 // ─── Compensación de staff / Nómina (agnóstico de vertical) ───────────────────

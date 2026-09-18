@@ -20,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PlatformModule } from './platform/platform.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { PlatformMessagingModule } from './platform-messaging/platform-messaging.module';
+import { PlatformGatewayModule } from './platform-gateway/platform-gateway.module';
 import { StaffCompensationModule } from './staff-compensation/staff-compensation.module';
 import { LoggingInterceptor } from './monitoring/logging.interceptor';
 import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
@@ -50,6 +51,7 @@ import { RequestMetricsMiddleware } from './monitoring/request-metrics.middlewar
     PlatformModule,
     CatalogModule,
     PlatformMessagingModule,
+    PlatformGatewayModule,
     StaffCompensationModule,
   ],
   controllers: [AppController],

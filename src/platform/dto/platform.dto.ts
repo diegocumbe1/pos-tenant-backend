@@ -414,6 +414,9 @@ const PLATFORM_EXPENSE_CATEGORIES = [
   'tools',
   'support',
   'taxes',
+  // Comisiones de pasarela. Es plata que salió, no un descuento: ver
+  // docs/PLAN_PASARELA_WOMPI.md §4.
+  'fees',
   'other',
 ] as const;
 

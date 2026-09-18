@@ -460,6 +460,65 @@ export class PublicSiteService {
     return this.toAdminResponse(await this.persistDraftPayload(site.id));
   }
 
+  /**
+   * Índice de sitios publicados. Lo consume el `sitemap.xml` del frontend y la
+   * página `/negocios`, que son las dos únicas formas que tiene Google de
+   * enterarse de que estas URLs existen: nadie enlaza a un sitio de tenant
+   * desde fuera, solo se comparten por WhatsApp, que ningún buscador rastrea.
+   *
+   * El `where` replica a propósito el gating de `getPublicSiteBySlug`. Si el
+   * sitemap listara una URL que después responde "Sitio no disponible", Google
+   * lo cuenta como error de rastreo y baja la confianza en el sitemap entero.
+   *
+   * Solo columnas, sin `publishedPayload`: el listado no pinta secciones y
+   * traer el JSON completo de cada sitio para armar una lista sería absurdo.
+   * `business.name` en el payload público es `tenant.name` (ver
+   * `toPublicResponse`), así que sale de la misma fuente.
+   */
+  async listPublishedSites() {
+    const sites = await this.prisma.publicSite.findMany({
+      where: {
+        status: 'published',
+        publishedSlug: { not: null },
+        publishedPayload: { not: Prisma.DbNull },
+        tenant: { deletedAt: null, vertical: { isActive: true } },
+      },
+      select: {
+        publishedSlug: true,
+        publishedAt: true,
+        updatedAt: true,
+        city: true,
+        neighborhood: true,
+        seoTitle: true,
+        seoDescription: true,
+        themeLogoUrl: true,
+        ogImageUrl: true,
+        tenant: {
+          select: { name: true, vertical: { select: { code: true } } },
+        },
+      },
+      orderBy: [{ publishedAt: 'desc' }, { updatedAt: 'desc' }],
+    });
+
+    return sites
+      .filter((site) => this.strategies.supports(site.tenant.vertical?.code))
+      .map((site) => ({
+        slug: site.publishedSlug as string,
+        name: site.tenant.name,
+        vertical: site.tenant.vertical?.code ?? null,
+        city: site.city ?? null,
+        neighborhood: site.neighborhood ?? null,
+        seoTitle: site.seoTitle ?? null,
+        seoDescription: site.seoDescription ?? null,
+        logoUrl: site.themeLogoUrl ?? null,
+        imageUrl: site.ogImageUrl ?? site.themeLogoUrl ?? null,
+        // `publishedAt` es la fecha que le importa a Google (cuándo cambió lo
+        // que se sirve), no `updatedAt`, que se mueve con cada edición del
+        // borrador aunque nadie haya vuelto a publicar.
+        updatedAt: (site.publishedAt ?? site.updatedAt).toISOString(),
+      }));
+  }
+
   async getPublicSiteBySlug(slug: string) {
     const site = await this.prisma.publicSite.findFirst({
       where: { publishedSlug: slug, status: 'published' },
@@ -497,7 +556,17 @@ export class PublicSiteService {
         )
       : payload.sections;
 
-    return { ...payload, sections, booking };
+    // La vertical se inyecta al servir, no se guarda en el snapshot: si viviera
+    // dentro de `publishedPayload` habría que republicar cada sitio existente
+    // para que apareciera. El frontend la usa para elegir el `@type` del
+    // JSON-LD (Store, HairSalon, Restaurant), que es lo que le dice a Google
+    // qué clase de negocio es esto.
+    return {
+      ...payload,
+      sections,
+      booking,
+      vertical: site.tenant.vertical?.code ?? null,
+    };
   }
 
   // Datos de reserva expuestos al sitio público: horarios, modo y si está activo.
