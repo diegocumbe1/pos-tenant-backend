@@ -155,7 +155,15 @@ export class AlexaService {
     request: IntentRequest,
   ): Promise<ResponseEnvelope> {
     const phrase = request.intent.slots?.[ACTIVATION_SLOT]?.value?.trim();
-    if (!phrase) return this.speak(ASK_FOR_CODE, false);
+    // Distinto de ASK_FOR_CODE a propósito: al oído hay que poder diferenciar
+    // "el slot llegó vacío" de "todavía no me has dicho el código".
+    if (!phrase) {
+      this.logger.warn('ActivarLynkoIntent without a filled slot');
+      return this.speak(
+        'No alcancé a escuchar el código. Di: mi código es, y luego tu frase.',
+        false,
+      );
+    }
 
     let outcome: 'active' | 'invalid' | 'locked';
     try {

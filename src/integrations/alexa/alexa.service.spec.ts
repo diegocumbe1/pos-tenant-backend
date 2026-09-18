@@ -174,7 +174,9 @@ describe('AlexaService', () => {
         envelope('IntentRequest', 'ActivarLynkoIntent'),
       );
       expect(auth.activate).not.toHaveBeenCalled();
-      expect(speech(result)).toBe(ASK_FOR_CODE);
+      expect(speech(result)).toBe(
+        'No alcancé a escuchar el código. Di: mi código es, y luego tu frase.',
+      );
     });
 
     it('revokes access on request', async () => {
