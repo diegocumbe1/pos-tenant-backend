@@ -71,6 +71,37 @@ function stockKey(productId: string, variantId: string | null): string {
   return `${productId}|${variantId ?? ''}`;
 }
 
+/**
+ * Agrupa las entregas de una línea por aroma, en orden y sin repetir.
+ *
+ * Una misma línea se entrega en tandas —hoy 2 Arrurú, el jueves 2 más— y el
+ * recibo tiene que decir "4 Arrurú", no listar dos veces lo mismo.
+ */
+function summarizeDeliveredVariants(
+  deliveries: Array<{
+    saleItemId: string;
+    quantity: number;
+    variantId: string | null;
+    variant: { label: string } | null;
+  }>,
+  saleItemId: string,
+): Array<{ label: string; quantity: number }> {
+  const byLabel = new Map<string, number>();
+  for (const row of deliveries) {
+    if (row.saleItemId !== saleItemId) continue;
+    // Sin aroma no hay nada que desglosar: son unidades del producto a secas.
+    if (!row.variantId || !row.variant) continue;
+    byLabel.set(
+      row.variant.label,
+      (byLabel.get(row.variant.label) ?? 0) + row.quantity,
+    );
+  }
+  return [...byLabel.entries()].map(([label, quantity]) => ({
+    label,
+    quantity,
+  }));
+}
+
 function splitStockKey(key: string): {
   productId: string;
   variantId: string | null;
@@ -103,6 +134,26 @@ const SALE_INCLUDE = {
   // pocas filas por venta. Los anulados VIENEN TAMBIÉN —el histórico no se
   // filtra— y la pantalla los muestra tachados.
   payments: { orderBy: { paidAt: 'asc' as const } },
+  // QUÉ AROMA SE ENTREGÓ DE CADA LÍNEA.
+  //
+  // En una venta con entrega pendiente el cliente compra "11 unidades" y de
+  // cuáles son se decide en cada entrega, así que el aroma NO está en la línea
+  // de la venta (`variantLabel` queda en NULL) sino en estas filas. Sin ellas,
+  // el ticket y la factura de un mayorista dicen "11× Mantequilla Corporal" y
+  // no hay forma de saber que fueron 2 Arrurú, 2 Maracuyá, 1 Vainilla…, que es
+  // justo lo que el cliente necesita ver en su recibo.
+  //
+  // Casi ninguna venta tiene filas acá —las de mostrador salen enteras al
+  // cobrarse— así que el listado no engorda por esto.
+  deliveries: {
+    orderBy: { deliveredAt: 'asc' as const },
+    select: {
+      saleItemId: true,
+      quantity: true,
+      variantId: true,
+      variant: { select: { label: true } },
+    },
+  },
 } satisfies Prisma.RetailSaleInclude;
 
 type SaleWithItems = Prisma.RetailSaleGetPayload<{
@@ -3397,8 +3448,16 @@ export class RetailSalesService {
       } else {
         result.openPaymentsCOP += payment.amountCOP;
       }
+      // MERCANCÍA, no caja bruta. El desglose por medio vive en la pantalla de
+      // VENTAS, y ahí todo habla de lo vendido: si este contara el flete que
+      // viene dentro del abono, "Todos" daría más que Ingresos y sumar a mano
+      // nunca cuadraría. El flete ya tiene sus dos sitios —el detalle de la
+      // venta y el gasto de la guía— y no es una venta: es plata que pasa por
+      // la tienda camino a la transportadora.
       result.byMethod[payment.method] =
-        (result.byMethod[payment.method] ?? 0) + payment.amountCOP;
+        (result.byMethod[payment.method] ?? 0) +
+        payment.amountCOP -
+        shippingShare;
 
       const bucket = result.byType[sale.saleType];
       bucket.revenueCOP += payment.amountCOP;
@@ -3505,6 +3564,14 @@ export class RetailSalesService {
         returnedQty: item.returnedQty,
         /** Lo que la tienda todavía le debe al cliente de esta línea. */
         pendingQty: Math.max(0, item.quantity - item.deliveredQty),
+        /**
+         * De qué valores salieron las unidades entregadas, sumadas por aroma.
+         *
+         * Vacío cuando la línea ya trae `variantLabel` (se eligió al vender) o
+         * cuando el producto no reparte. Es lo que deja que el recibo diga
+         * "11× Mantequilla Corporal · 2 Arrurú, 2 Maracuyá, 1 Vainilla…".
+         */
+        deliveredVariants: summarizeDeliveredVariants(sale.deliveries, item.id),
         name: item.name,
         sku: item.sku,
         quantity: item.quantity,
