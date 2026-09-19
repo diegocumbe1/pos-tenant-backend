@@ -18,6 +18,7 @@ import {
   TimestampVerifier,
 } from 'ask-sdk-express-adapter';
 import {
+  Directive,
   IntentRequest,
   RequestEnvelope,
   ResponseEnvelope,
@@ -32,6 +33,7 @@ import {
 import { AssistantService } from '../../assistant/assistant.service';
 import {
   BusinessReportAnswer,
+  ReportPeriod,
   CatalogCategoryAnswer,
   CatalogOverviewAnswer,
   InventoryStatusAnswer,
@@ -46,6 +48,17 @@ import { periodLabel, parsePeriod } from '../../assistant/report-period';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaSkillRepository } from './alexa-skill.repository';
+import { reportDocument } from './apl/report.apl';
+
+/**
+ * Lo que un intent puede devolver: la frase hablada y, cuando hay pantalla,
+ * la tarjeta y el documento APL que la acompañan.
+ */
+interface SpokenAnswer {
+  speech: string;
+  card?: ui.Card;
+  directives?: Directive[];
+}
 
 const ACTIVATION_SLOT = 'codigo';
 const BUSINESS_SLOT = 'negocio';
@@ -301,7 +314,12 @@ export class AlexaService {
             );
             return {
               speech: this.reportSpeech(report),
+              // La tarjeta se manda siempre: es lo que queda en el historial
+              // de la app, y es todo lo que ve un Echo sin pantalla.
               card: this.reportCard(report),
+              directives: this.supportsApl(envelope)
+                ? [reportDocument(report)]
+                : undefined,
             };
           },
         );
@@ -423,6 +441,12 @@ export class AlexaService {
       case 'AMAZON.NoIntent':
         this.logger.log('IntentRequest: AMAZON.NoIntent');
         return this.speak('Listo. Aquí estoy si necesitas algo más.', false);
+      case 'AMAZON.NavigateHomeIntent':
+        // Con APL encendido este intent llega de verdad, al tocar "inicio" en
+        // la pantalla. Caía en `default`, y responder "no entendí" a una
+        // navegación es de las cosas que anota certificación.
+        this.logger.log('IntentRequest: AMAZON.NavigateHomeIntent');
+        return this.speak(DETAIL_HINT, false, DETAIL_HINT);
       case 'DespedidaIntent':
         // Separado de Stop a propósito: quien agradece no está cancelando algo,
         // y "Hasta luego" a secas suena a que le colgaron.
@@ -548,7 +572,7 @@ export class AlexaService {
     answer: (
       actor: AuthenticatedUser,
       business: BusinessRef,
-    ) => Promise<string | { speech: string; card: ui.Card }>,
+    ) => Promise<string | SpokenAnswer>,
   ): Promise<ResponseEnvelope> {
     return this.guarded(envelope, skill, async (actor) => {
       const spoken = this.slotValue(request, BUSINESS_SLOT);
@@ -571,13 +595,18 @@ export class AlexaService {
         state.vertical = resolution.business.vertical?.code ?? state.vertical;
       }
       const result = await answer(actor, resolution.business);
-      const { speech, card } =
+      const { speech, card, directives } =
         typeof result === 'string'
-          ? { speech: result, card: undefined }
+          ? { speech: result, card: undefined, directives: undefined }
           : result;
-      return this.speak(speech, false, '¿Quieres preguntar algo más?', card, {
-        businessId: resolution.business.id,
-      });
+      return this.speak(
+        speech,
+        false,
+        '¿Quieres preguntar algo más?',
+        card,
+        { businessId: resolution.business.id },
+        directives,
+      );
     });
   }
 
@@ -598,13 +627,23 @@ export class AlexaService {
    * el detalle, que resuelven los intents que ya existen. En un dispositivo con
    * pantalla, la tarjeta muestra lo que la voz no puede.
    */
+  /**
+   * "hay" para hoy, "hubo" para ayer.
+   *
+   * `ayer` es el único período cerrado del modelo: "no hay ventas ayer" está
+   * mal dicho, y en un asistente de voz la frase es el producto.
+   */
+  private existed(period: ReportPeriod): string {
+    return period === 'yesterday' ? 'hubo' : 'hay';
+  }
+
   private reportSpeech(report: BusinessReportAnswer): string {
     const { business, sales, debt, inventory, purchases, delivery } = report;
     const when = periodLabel(report.period);
 
     const first = sales.salesCount
       ? `${this.capitalize(when)} vendiste ${sales.revenueCOP} pesos en ${sales.salesCount === 1 ? '1 venta' : `${sales.salesCount} ventas`}.`
-      : `No hay ventas ${when}.`;
+      : `No ${this.existed(report.period)} ventas ${when}.`;
 
     // La cartera, el stock y los pendientes NO se acotan al período: son una
     // foto de hoy. Decirlos con "esta semana" sería inventar la cifra.
@@ -681,9 +720,11 @@ export class AlexaService {
     const { business, salesCount, revenueCOP } = answer;
     const when = periodLabel(answer.period);
     if (!salesCount) {
-      return `No hay ventas ${when} en ${business.name}.`;
+      return `No ${this.existed(answer.period)} ventas ${when} en ${business.name}.`;
     }
-    const head = `${this.capitalize(when)} en ${business.name} llevas ${revenueCOP} pesos en ${
+    // "Llevas" es de período abierto; ayer ya cerró y se cuenta en pasado.
+    const verb = answer.period === 'yesterday' ? 'vendiste' : 'llevas';
+    const head = `${this.capitalize(when)} en ${business.name} ${verb} ${revenueCOP} pesos en ${
       salesCount === 1 ? '1 venta' : `${salesCount} ventas`
     }, con un ticket promedio de ${answer.averageTicketCOP} pesos.`;
     // Lo fiado en el período es distinto de la cartera total: esa es
@@ -762,7 +803,7 @@ export class AlexaService {
       if (!customers.length) {
         return answer.counterSales
           ? `${this.capitalize(when)} en ${business.name} todas las ventas fueron de mostrador, sin cliente registrado.`
-          : `No hay ventas ${when} en ${business.name}.`;
+          : `No ${this.existed(answer.period)} ventas ${when} en ${business.name}.`;
       }
       const top = customers
         .slice(0, MAX_NAMES)
@@ -776,7 +817,7 @@ export class AlexaService {
     }
 
     if (!products.length) {
-      return `No hay ventas ${when} en ${business.name}.`;
+      return `No ${this.existed(answer.period)} ventas ${when} en ${business.name}.`;
     }
 
     if (intent === 'worst_products') {
@@ -1084,12 +1125,27 @@ export class AlexaService {
     );
   }
 
+  /**
+   * Si el dispositivo declara APL, se le manda el documento; si no, la
+   * directiva se descarta del lado de Amazon y el usuario se queda sin
+   * respuesta visual. Ni un Echo Dot ni la app de Alexa en el teléfono
+   * soportan APL: por eso la tarjeta nunca se reemplaza, se suma.
+   */
+  private supportsApl(envelope: RequestEnvelope): boolean {
+    return Boolean(
+      envelope.context?.System?.device?.supportedInterfaces?.[
+        'Alexa.Presentation.APL'
+      ],
+    );
+  }
+
   private speak(
     text: string,
     shouldEndSession: boolean,
     reprompt = 'Puedes preguntarme cuántas suscripciones tienes.',
     card?: ui.Card,
     sessionAttributes?: Record<string, unknown>,
+    directives?: Directive[],
   ): ResponseEnvelope {
     return {
       version: '1.0',
@@ -1099,6 +1155,7 @@ export class AlexaService {
       response: {
         outputSpeech: { type: 'PlainText', text },
         ...(card && { card }),
+        ...(directives?.length && { directives }),
         shouldEndSession,
         ...(!shouldEndSession && {
           reprompt: {

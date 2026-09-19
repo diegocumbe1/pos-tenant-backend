@@ -5,7 +5,7 @@
  * Ver docs/ALEXA_VOICE_ACTIVATION.md §"Plan siguiente".
  */
 
-export type ReportPeriod = 'day' | 'week' | 'month';
+export type ReportPeriod = 'day' | 'yesterday' | 'week' | 'month';
 
 export interface BusinessRefLike {
   id: string;

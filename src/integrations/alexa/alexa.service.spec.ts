@@ -13,6 +13,7 @@ import { AssistantScopeService } from '../../assistant/assistant-scope.service';
 import { AssistantService } from '../../assistant/assistant.service';
 import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
+import { formatCOP } from '../../common/date.util';
 import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaSkillRepository } from './alexa-skill.repository';
 import { AlexaService } from './alexa.service';
@@ -243,6 +244,13 @@ describe('AlexaService', () => {
       'IntentRequest',
       'AMAZON.NoIntent',
       'Listo. Aquí estoy si necesitas algo más.',
+      false,
+    ],
+    // Llega al tocar "inicio" en una pantalla; no puede caer en el fallback.
+    [
+      'IntentRequest',
+      'AMAZON.NavigateHomeIntent',
+      'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
       false,
     ],
     ['IntentRequest', 'DespedidaIntent', 'Con gusto. Hasta luego.', true],
@@ -583,6 +591,39 @@ describe('AlexaService', () => {
       );
     });
 
+    /** Ayer ya cerró: ni "llevas" ni "hay" son las palabras. */
+    it('speaks about yesterday in the past', async () => {
+      assistant.sales!.mockResolvedValue({
+        business: bella,
+        period: 'yesterday',
+        salesCount: 4,
+        revenueCOP: 220000,
+        unitsSold: 7,
+        averageTicketCOP: 55000,
+        marginPct: 35,
+        creditedCOP: 0,
+      });
+      expect(await ask('sales_summary')).toBe(
+        'Ayer en Bella Chic vendiste 220000 pesos en 4 ventas, con un ticket promedio de 55000 pesos.',
+      );
+    });
+
+    it('says there were no sales yesterday, not that there are none', async () => {
+      assistant.sales!.mockResolvedValue({
+        business: bella,
+        period: 'yesterday',
+        salesCount: 0,
+        revenueCOP: 0,
+        unitsSold: 0,
+        averageTicketCOP: 0,
+        marginPct: 0,
+        creditedCOP: 0,
+      });
+      expect(await ask('sales_summary')).toBe(
+        'No hubo ventas ayer en Bella Chic.',
+      );
+    });
+
     it('lists who is waiting for a delivery', async () => {
       expect(await ask('pending_delivery')).toBe(
         'En Bella Chic tienes 3 ventas por entregar, por 260000 pesos. Marcela Ruiz, Iván Pardo.',
@@ -638,8 +679,65 @@ describe('AlexaService', () => {
       expect((await report()).response.shouldEndSession).toBe(false);
     });
 
+    /** Una Echo Show declara APL; un Dot no. La respuesta no puede ser igual. */
+    const onScreen = () =>
+      send({
+        ...envelope('IntentRequest', 'business_report'),
+        context: {
+          System: {
+            application: { applicationId: skillId },
+            device: {
+              supportedInterfaces: { 'Alexa.Presentation.APL': {} },
+            },
+          },
+        },
+      });
+
+    it('renders the report on a device with a screen', async () => {
+      const response = (await onScreen()).response;
+      const directive = response.directives?.[0] as unknown as {
+        type: string;
+        datasources: { payload: Record<string, unknown> };
+      };
+      expect(directive.type).toBe('Alexa.Presentation.APL.RenderDocument');
+
+      const payload = directive.datasources.payload;
+      expect(payload.business).toBe('Bella Chic');
+      expect(payload.period).toBe('Hoy');
+      expect(payload.kpis).toMatchObject([
+        { label: 'Ventas', value: formatCOP(840000), sub: '6 ventas' },
+        { label: 'Margen', value: '38.5%' },
+        { label: 'Por cobrar', value: formatCOP(1200000) },
+        { label: 'Stock bajo', value: '4', sub: '1 agotados' },
+      ]);
+      // Las barras van contra el mayor saldo, no contra el total.
+      expect(payload.bars).toEqual([
+        { name: 'Marcela Ruiz', amount: formatCOP(700000), width: '100%' },
+        { name: 'Iván Pardo', amount: formatCOP(500000), width: '71%' },
+      ]);
+      // La tarjeta no se reemplaza: es lo que queda en el historial.
+      expect(response.card).toBeDefined();
+    });
+
+    it('abbreviates millions, which is all a five-inch screen fits', async () => {
+      const directive = (await onScreen()).response
+        .directives?.[0] as unknown as {
+        datasources: { payload: { kpis: { compact: string }[] } };
+      };
+      const [ventas, , porCobrar] = directive.datasources.payload.kpis;
+      expect(ventas.compact).toBe(formatCOP(840000));
+      expect(porCobrar.compact).toBe('$ 1,20 M');
+    });
+
+    it('sends no APL to a device without a screen', async () => {
+      const response = (await report()).response;
+      expect(response.directives).toBeUndefined();
+      expect(response.card).toBeDefined();
+    });
+
     it.each([
       ['hoy', 'day'],
+      ['ayer', 'yesterday'],
       ['esta semana', 'week'],
       ['del mes', 'month'],
       [undefined, 'day'],
