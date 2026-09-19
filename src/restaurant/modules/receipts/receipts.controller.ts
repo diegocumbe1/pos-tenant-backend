@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
@@ -29,7 +30,23 @@ export class ReceiptsController {
   @Post('share')
   @HttpCode(HttpStatus.CREATED)
   share(@CurrentTenant() ctx: TenantContext, @Body() dto: ShareReceiptDto) {
-    return this.receiptsService.share(ctx, dto.orderId, dto.splitId, dto.payload);
+    return this.receiptsService.share(
+      ctx,
+      dto.orderId,
+      dto.splitId,
+      dto.payload,
+      dto.refreshOnly,
+    );
+  }
+
+  /** El enlace ya acuñado de una orden, o null si nunca se compartió. */
+  @Get('share/:orderId')
+  findShare(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('orderId') orderId: string,
+    @Query('splitId') splitId?: string,
+  ) {
+    return this.receiptsService.findShare(ctx, orderId, splitId);
   }
 }
 
@@ -53,7 +70,23 @@ export class SharedReceiptsController {
   @Post('share')
   @HttpCode(HttpStatus.CREATED)
   share(@CurrentTenant() ctx: TenantContext, @Body() dto: ShareReceiptDto) {
-    return this.receiptsService.share(ctx, dto.orderId, dto.splitId, dto.payload);
+    return this.receiptsService.share(
+      ctx,
+      dto.orderId,
+      dto.splitId,
+      dto.payload,
+      dto.refreshOnly,
+    );
+  }
+
+  /** El enlace ya acuñado de una venta, o null si nunca se compartió. */
+  @Get('share/:orderId')
+  findShare(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('orderId') orderId: string,
+    @Query('splitId') splitId?: string,
+  ) {
+    return this.receiptsService.findShare(ctx, orderId, splitId);
   }
 }
 

@@ -27,7 +27,11 @@ export class ReceiptsService {
     orderId: string,
     splitId?: string,
     payload?: Record<string, unknown>,
+    refreshOnly?: boolean,
   ) {
+    if (payload && refreshOnly) {
+      return this.refreshPayload(ctx, orderId, payload, splitId);
+    }
     if (payload) {
       const result = await this.createFromPayload(ctx, orderId, payload, splitId);
       return { token: result.token, url: result.url };
@@ -96,6 +100,47 @@ export class ReceiptsService {
       document,
       receiptShareId: share.id,
     };
+  }
+
+  /**
+   * El enlace público de una orden, si ya se compartió alguna vez.
+   *
+   * Existe para que quien quiera ACTUALIZAR el recibo sepa a qué URL apunta su
+   * QR antes de escribir el payload. Sin esto habría que escribir primero y
+   * preguntar después, y entremedias el cliente vería un QR apuntando a otro
+   * lado. Devuelve null cuando nadie lo ha compartido: eso no es un error, es
+   * la mayoría de las ventas de mostrador.
+   */
+  async findShare(ctx: TenantContext, orderId: string, splitId?: string) {
+    const existing = await this.prisma.receiptShare.findFirst({
+      where: { tenantId: ctx.tenantId, orderId, splitId: splitId ?? null },
+    });
+    if (!existing) return null;
+    return { token: existing.token, url: this.publicUrl(existing.token) };
+  }
+
+  /**
+   * Reescribe el documento de un recibo YA compartido. Nunca crea uno.
+   *
+   * El token no cambia: el enlace que el cliente guardó tiene que seguir
+   * sirviendo, solo que mostrando el estado de hoy.
+   */
+  async refreshPayload(
+    ctx: TenantContext,
+    orderId: string,
+    payload: Record<string, unknown>,
+    splitId?: string,
+  ) {
+    const existing = await this.prisma.receiptShare.findFirst({
+      where: { tenantId: ctx.tenantId, orderId, splitId: splitId ?? null },
+    });
+    if (!existing) return null;
+
+    const updated = await this.prisma.receiptShare.update({
+      where: { id: existing.id },
+      data: { payload: payload as unknown as Prisma.InputJsonValue },
+    });
+    return { token: updated.token, url: this.publicUrl(updated.token) };
   }
 
   async createFromPayload(
