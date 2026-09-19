@@ -24,20 +24,12 @@ function makePrisma() {
         if (typeof where.id === 'string') {
           return Promise.resolve(rows.find((r) => r.id === where.id) ?? null);
         }
-        const key = where.tenantId_type as { tenantId: string; type: QrCodeType };
+        const key = where.scopeId_type as { scopeId: string; type: QrCodeType };
         return Promise.resolve(
-          rows.find((r) => r.tenantId === key.tenantId && r.type === key.type) ??
+          rows.find((r) => r.scopeId === key.scopeId && r.type === key.type) ??
             null,
         );
       },
-    ),
-    findFirst: jest.fn(
-      ({ where }: { where: Record<string, unknown> }): Promise<QrCode | null> =>
-        Promise.resolve(
-          rows.find(
-            (r) => r.tenantId === where.tenantId && r.type === where.type,
-          ) ?? null,
-        ),
     ),
     create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
       seq += 1;
@@ -45,8 +37,10 @@ function makePrisma() {
         id: `qr-${seq}`,
         code: data.code as string,
         type: (data.type as QrCodeType) ?? QrCodeType.BUSINESS_CARD,
+        scopeId: data.scopeId as string,
         tenantId: (data.tenantId as string | null) ?? null,
-        targetUrl: data.targetUrl as string,
+        branchId: (data.branchId as string | null) ?? null,
+        targetUrl: (data.targetUrl as string | null) ?? null,
         active: true,
         cardTitle: null,
         cardSubtitle: null,
@@ -96,6 +90,40 @@ function makePrisma() {
       ),
     },
     menuPublicConfig: { findUnique: jest.fn(() => Promise.resolve(null)) },
+    branch: {
+      findUnique: jest.fn(({ where }: { where: { id: string } }) => {
+        if (where.id === 'branch-centro') {
+          return Promise.resolve({
+            name: 'Sede Centro',
+            tenantId: 'tenant-bella',
+            tenant: { name: 'Bella Chic' },
+            paymentInfo: {
+              brebKey: '@bellachic',
+              accountHolder: 'Paola Gómez',
+              // Personal: NO puede salir en la página pública.
+              documentId: '1077877963',
+            },
+          });
+        }
+        if (where.id === 'branch-sin-datos') {
+          return Promise.resolve({
+            name: 'Sede Nueva',
+            tenantId: 'tenant-bella',
+            tenant: { name: 'Bella Chic' },
+            paymentInfo: null,
+          });
+        }
+        if (where.id === 'branch-ajena') {
+          return Promise.resolve({
+            name: 'Sede de otro',
+            tenantId: 'tenant-otro',
+            tenant: { name: 'Otro Negocio' },
+            paymentInfo: { brebKey: '@otro' },
+          });
+        }
+        return Promise.resolve(null);
+      }),
+    },
     platformAuditLog: {
       create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
         audits.push({
@@ -148,6 +176,7 @@ describe('QrService', () => {
     const qr = await service.createForTenant('tenant-bella', {}, ACTOR);
 
     await expect(service.resolve(qr.code)).resolves.toEqual({
+      kind: 'redirect',
       targetUrl: 'https://uselynko.com/sites/bella-chic',
     });
   });
@@ -163,6 +192,7 @@ describe('QrService', () => {
 
     expect(updated.code).toBe(qr.code);
     await expect(service.resolve(qr.code)).resolves.toEqual({
+      kind: 'redirect',
       targetUrl: 'https://uselynko.com/c/bella-chic',
     });
     expect(db.audits.map((a) => a.action)).toContain('tenant.qr.target_updated');
@@ -211,6 +241,7 @@ describe('QrService', () => {
       NotFoundException,
     );
     await expect(service.resolve(rotated.code)).resolves.toEqual({
+      kind: 'redirect',
       targetUrl: 'https://uselynko.com/sites/bella-chic',
     });
     expect(db.audits.map((a) => a.action)).toContain('tenant.qr.revoked');
@@ -235,12 +266,96 @@ describe('QrService', () => {
     });
   });
 
+  // ─── Escarapela de cobro ────────────────────────────────────────────────────
+
+  it('la escarapela es de la SEDE: dos sedes, dos códigos distintos', async () => {
+    const centro = await service.createForBranch(
+      'tenant-bella',
+      'branch-centro',
+      ACTOR,
+    );
+
+    expect(centro.branchId).toBe('branch-centro');
+    expect(centro.type).toBe(QrCodeType.PAYMENT);
+    // No redirige a ningún lado: la página la pinta Lynko.
+    expect(centro.targetUrl).toBeNull();
+    expect(centro.resolvedTargetUrl).toBeNull();
+    expect(centro.scanUrl).toBe(`https://uselynko.com/q/${centro.code}`);
+  });
+
+  it('escanear la escarapela devuelve los datos de cobro, sin la cédula', async () => {
+    const qr = await service.createForBranch(
+      'tenant-bella',
+      'branch-centro',
+      ACTOR,
+    );
+
+    const resolved = await service.resolve(qr.code);
+
+    expect(resolved.kind).toBe('payment');
+    if (resolved.kind !== 'payment') throw new Error('unreachable');
+    expect(resolved.payment.branchName).toBe('Sede Centro');
+    expect(resolved.payment.paymentInfo).toEqual({
+      brebKey: '@bellachic',
+      accountHolder: 'Paola Gómez',
+    });
+    // La cédula del titular NO se publica en una URL abierta.
+    expect(resolved.payment.paymentInfo).not.toHaveProperty('documentId');
+  });
+
+  it('sin medios de pago cargados no deja generar la escarapela', async () => {
+    // Un QR que lleva a una página vacía es peor que no tener QR: el cliente
+    // lo descubre con el celular en la mano frente a la caja.
+    await expect(
+      service.createForBranch('tenant-bella', 'branch-sin-datos', ACTOR),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(db.rows).toHaveLength(0);
+  });
+
+  it('no se puede tocar la escarapela de una sede de otro negocio', async () => {
+    await expect(
+      service.createForBranch('tenant-bella', 'branch-ajena', ACTOR),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('la escarapela no acepta destino', async () => {
+    await service.createForBranch('tenant-bella', 'branch-centro', ACTOR);
+
+    await expect(
+      service.updateForBranch(
+        'tenant-bella',
+        'branch-centro',
+        { targetUrl: '/otra-cosa' },
+        ACTOR,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('desactivar la escarapela deja de mostrar los datos de cobro', async () => {
+    const qr = await service.createForBranch(
+      'tenant-bella',
+      'branch-centro',
+      ACTOR,
+    );
+    await service.updateForBranch(
+      'tenant-bella',
+      'branch-centro',
+      { active: false },
+      ACTOR,
+    );
+
+    await expect(service.resolve(qr.code)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
   it('el QR de la landing vive en la misma tabla, sin tenant', async () => {
     const qr = await service.createPlatform({ targetUrl: '/' }, ACTOR);
 
     expect(qr.tenantId).toBeNull();
     expect(qr.type).toBe(QrCodeType.PLATFORM);
     await expect(service.resolve(qr.code)).resolves.toEqual({
+      kind: 'redirect',
       targetUrl: 'https://uselynko.com/',
     });
 

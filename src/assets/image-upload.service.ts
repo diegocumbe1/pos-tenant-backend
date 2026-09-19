@@ -32,6 +32,7 @@ export type ImageKind =
   | 'service'
   | 'section'
   | 'document'
+  | 'payment_qr'
   | 'default';
 
 export type ImageUploadInput = {
@@ -113,6 +114,13 @@ const MIN_DIMENSIONS: Record<ImageKind, { width: number; height: number }> = {
   // dejaba al dueño sin poder guardar el único respaldo que tenía del flete.
   // Que se vea borroso es su problema; que no se pueda guardar es el nuestro.
   document: { width: 1, height: 1 },
+  // El QR de cobro llega SIEMPRE como pantallazo de celular: vertical, y
+  // encogido otra vez si pasó por WhatsApp. Con el mínimo de 'section'
+  // (640x480) se rechazaba un Bre-B de 630x1280 —más del doble de píxeles que
+  // el mínimo, pero 10 de menos en el lado corto—, y el dueño se quedaba sin
+  // poder cargar el único QR que tiene. El mínimo acá solo descarta miniaturas
+  // que ya no se podrían escanear; la nitidez real la cuida el tope de ancho.
+  payment_qr: { width: 320, height: 320 },
   default: { width: 480, height: 320 },
 };
 
@@ -127,6 +135,9 @@ const MAX_WIDTHS: Record<ImageKind, number> = {
   // El tope alto sí se mantiene: el número de una guía tiene que poder leerse.
   // Reescalar nunca agranda, así que un pantallazo chico entra tal cual.
   document: 1600,
+  // Mismo tope que 'section': lo que hace escaneable un QR impreso es que
+  // conserve los píxeles, no que venga grande de origen.
+  payment_qr: 1600,
   default: 1600,
 };
 

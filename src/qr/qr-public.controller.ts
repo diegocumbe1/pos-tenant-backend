@@ -27,7 +27,11 @@ export class QrPublicController {
 
   @Get(':code')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Resolver un código de QR a su destino actual' })
+  @ApiOperation({
+    summary: 'Resolver un código de QR',
+    description:
+      'Devuelve `{kind:"redirect"}` con el destino, o `{kind:"payment"}` con los datos de cobro de la sede para la escarapela.',
+  })
   resolve(@Param('code') code: string) {
     // Corta antes de tocar la base: `/q/<basura larga>` no merece una consulta.
     if (!QR_CODE_REGEX.test(code)) {

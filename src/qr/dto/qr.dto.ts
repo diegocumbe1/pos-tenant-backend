@@ -18,7 +18,7 @@ export class UpdateQrCodeDto {
   @ApiPropertyOptional({
     example: '/sites/bella-chic',
     description:
-      'Ruta interna (preferida) o URL absoluta http(s). El código impreso no cambia.',
+      'Ruta interna (preferida) o URL absoluta http(s). El código impreso no cambia. No aplica a la escarapela de cobro, que no redirige.',
   })
   @IsOptional()
   @IsString()

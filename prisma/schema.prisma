@@ -173,6 +173,7 @@ model Branch {
   cashSessions         CashSession[]
   notificationEvents   NotificationEvent[]
   webPushSubscriptions WebPushSubscription[]
+  qrCodes              QrCode[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -3962,6 +3963,9 @@ model AssistantQueryLog {
 enum QrCodeType {
   /// Tarjeta de presentación del negocio.
   BUSINESS_CARD
+  /// Escarapela de cobro de una SEDE: el cliente escanea y ve cómo pagarle
+  /// (llave Bre-B, Nequi, cuenta, o el QR del banco que el negocio subió).
+  PAYMENT
   /// QR de la propia Lynko (landing). Sin tenant: lo administra el superadmin
   /// desde Configuración.
   PLATFORM
@@ -3984,14 +3988,33 @@ model QrCode {
   code String     @unique
   type QrCodeType @default(BUSINESS_CARD)
 
+  /// A quién pertenece el código, en una sola columna y NUNCA nula.
+  ///
+  /// Existe porque la unicidad ("un QR por dueño y por tipo") cambia de dueño
+  /// según el tipo: la tarjeta es del tenant, el QR de pagos es de la SEDE
+  /// (cada sede cobra a su propia cuenta) y el de la landing no es de nadie.
+  /// Resolverlo con columnas nulas obligaba a índices parciales que Prisma no
+  /// sabe representar; así la regla entera cabe en un `@@unique` normal.
+  ///
+  /// Vale `tenantId`, `branchId` o la constante `platform`.
+  scopeId String
+
   /// null = QR de la plataforma (la landing de Lynko), que no es de nadie.
   tenantId String?
   tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  /// Solo para `PAYMENT`: la sede cuyos datos de cobro muestra.
+  branchId String?
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
   /// Ruta interna ("/sites/bella-chic") o URL absoluta. Se resuelve contra
   /// PUBLIC_APP_URL al redirigir: guardar el host haría que el mismo registro
   /// apunte a producción desde QA.
-  targetUrl String
+  ///
+  /// null para `PAYMENT`: ese código no redirige a ningún lado, lo atiende
+  /// Lynko con los datos de cobro de la sede. Guardar ahí una ruta fija sería
+  /// una mentira que además se rompe al revocar (la ruta lleva el código).
+  targetUrl String?
   /// false = el link deja de redirigir y muestra "enlace no disponible".
   active    Boolean @default(true)
 
@@ -4006,9 +4029,11 @@ model QrCode {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  /// Un QR principal por tenant y por tipo. La fila de plataforma (tenantId
-  /// null) la protege un índice parcial, porque en Postgres dos NULL no chocan.
-  @@unique([tenantId, type])
+  /// Un QR por dueño y por tipo. Sin columnas nulas de por medio, así que es
+  /// la base la que corta dos clics simultáneos en "Generar", no un chequeo
+  /// previo que siempre tiene una ventana.
+  @@unique([scopeId, type])
   @@index([tenantId])
+  @@index([branchId])
   @@map("qr_codes")
 }

@@ -77,7 +77,10 @@ export class AssetsService {
     const uploaded = await this.imageUpload.uploadImage({
       file,
       pathPrefix: this.buildPathPrefix(ctx.tenantId, dto),
-      // El QR debe quedar nítido para escanear → 'section' (1600px, con mínimo).
+      // El QR va como 'payment_qr': tope alto de ancho para que quede nítido al
+      // imprimirlo, pero mínimo chico. Estaba como 'section' (mín. 640x480) y
+      // eso rechazaba el pantallazo vertical que manda el banco —un Bre-B de
+      // 630x1280 pasado por WhatsApp— que es justo como llega siempre.
       //
       // El soporte de un envío va como 'document': mismo tope alto para que se
       // lea el número de la guía, pero SIN mínimo. Un soporte es la foto o el
@@ -87,7 +90,7 @@ export class AssetsService {
         dto.scope === 'shipment'
           ? 'document'
           : dto.scope === 'payment'
-            ? 'section'
+            ? 'payment_qr'
             : dto.scope === 'menu'
               ? this.menuKind(dto.kind)
               : PRODUCT_IMAGE_KIND,
