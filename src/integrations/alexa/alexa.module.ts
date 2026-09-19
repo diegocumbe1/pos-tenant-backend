@@ -1,13 +1,21 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { AssistantModule } from '../../assistant/assistant.module';
 import { AlexaController } from './alexa.controller';
 import { AlexaAuthService } from './alexa-auth.service';
+import { AlexaSkillRepository } from './alexa-skill.repository';
+import { AlexaSkillsService } from './alexa-skills.service';
 import { AlexaService } from './alexa.service';
 
 @Module({
-  imports: [ConfigModule, AssistantModule],
+  imports: [AssistantModule],
   controllers: [AlexaController],
-  providers: [AlexaService, AlexaAuthService],
+  providers: [
+    AlexaService,
+    AlexaAuthService,
+    AlexaSkillRepository,
+    AlexaSkillsService,
+  ],
+  // La administración de skills la expone el backoffice de plataforma.
+  exports: [AlexaSkillsService],
 })
 export class AlexaModule {}

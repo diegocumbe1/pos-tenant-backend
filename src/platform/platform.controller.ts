@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -43,8 +44,11 @@ import {
   UpdateSubscriptionDto,
   UpsertBillingContactDto,
   UpsertPlatformFinanceGoalDto,
+  SetAlexaPhraseDto,
+  UpsertAlexaSkillDto,
 } from './dto/platform.dto';
 import { PlatformAdminGuard } from './guards/platform-admin.guard';
+import { AlexaSkillsService } from '../integrations/alexa/alexa-skills.service';
 import { PlatformService } from './platform.service';
 import { PlanPricingService } from './pricing/plan-pricing.service';
 
@@ -60,6 +64,7 @@ import { PlanPricingService } from './pricing/plan-pricing.service';
 export class PlatformController {
   constructor(
     private readonly platform: PlatformService,
+    private readonly alexaSkills: AlexaSkillsService,
     private readonly pricing: PlanPricingService,
   ) {}
 
@@ -112,7 +117,9 @@ export class PlatformController {
   // ─── Descuentos por pago anticipado (3 / 6 / 12 meses) ───────────────────────
 
   @Get('term-discounts')
-  @ApiOperation({ summary: 'Current prepay discount policy (global + overrides)' })
+  @ApiOperation({
+    summary: 'Current prepay discount policy (global + overrides)',
+  })
   getTermDiscounts() {
     return this.pricing.getTermDiscountMatrixAt();
   }
@@ -129,7 +136,8 @@ export class PlatformController {
   @Post('term-discounts')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Set a prepay discount from a date (append-only, never overwrites)',
+    summary:
+      'Set a prepay discount from a date (append-only, never overwrites)',
   })
   createTermDiscount(
     @Body() dto: CreateTermDiscountDto,
@@ -526,5 +534,49 @@ export class PlatformController {
     @PlatformActor() actor: AuthenticatedUser,
   ) {
     return this.platform.deleteBillingContact(id, contactId, actor.id);
+  }
+
+  // ─── Skills de Alexa ──────────────────────────────────────────────────────
+  // Solo plataforma por ahora. El equivalente bajo `/tenant/alexa`, para que
+  // cada negocio administre la suya, queda pendiente: el servicio ya sirve
+  // igual, cambia el guard y de dónde sale el tenantId.
+  // Ver docs/ALEXA_SELF_SERVICE_PLAN.md §5.
+
+  @Get('alexa/skills')
+  @ApiOperation({ summary: 'List registered Alexa skills' })
+  listAlexaSkills() {
+    return this.alexaSkills.list();
+  }
+
+  @Post('alexa/skills')
+  @ApiOperation({
+    summary: 'Register or update an Alexa skill (upsert by applicationId)',
+  })
+  upsertAlexaSkill(@Body() dto: UpsertAlexaSkillDto) {
+    return this.alexaSkills.upsert(dto);
+  }
+
+  @Put('alexa/skills/:id/phrase')
+  @ApiOperation({ summary: 'Set or rotate the activation phrase' })
+  setAlexaPhrase(@Param('id') id: string, @Body() dto: SetAlexaPhraseDto) {
+    return this.alexaSkills.setPhrase(id, dto.phrase);
+  }
+
+  @Post('alexa/skills/:id/revoke')
+  @ApiOperation({ summary: 'End the current voice session' })
+  revokeAlexaSkill(@Param('id') id: string) {
+    return this.alexaSkills.revoke(id);
+  }
+
+  @Delete('alexa/skills/:id/account')
+  @ApiOperation({ summary: 'Unpin the Amazon account from the skill' })
+  unlinkAlexaAccount(@Param('id') id: string) {
+    return this.alexaSkills.unlinkAccount(id);
+  }
+
+  @Delete('alexa/skills/:id')
+  @ApiOperation({ summary: 'Delete an Alexa skill registration' })
+  deleteAlexaSkill(@Param('id') id: string) {
+    return this.alexaSkills.remove(id);
   }
 }

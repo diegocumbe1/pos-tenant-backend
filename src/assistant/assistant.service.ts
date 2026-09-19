@@ -1,22 +1,46 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
+import {
+  AuthenticatedUser,
+  TenantContext,
+} from '../auth/types/tenant-context.interface';
 import { PlatformService } from '../platform/platform.service';
 import { RetailInventoryService } from '../retail/modules/inventory/retail-inventory.service';
+import { RetailPurchasesService } from '../retail/modules/purchases/retail-purchases.service';
 import { RetailSalesService } from '../retail/modules/sales/retail-sales.service';
 import { AssistantScopeService, BusinessRef } from './assistant-scope.service';
 import {
+  BusinessReportAnswer,
+  DebtFigures,
+  DeliveryFigures,
+  InventoryFigures,
   InventoryStatusAnswer,
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
   PlatformOverviewAnswer,
-  SalesTodayAnswer,
+  PurchaseFigures,
+  ReportPeriod,
+  SalesAnswer,
+  SalesFigures,
 } from './assistant.types';
+import { periodRange } from './report-period';
+
+const SALES_READ = 'retail:sales:read';
+const INVENTORY_READ = 'retail:inventory:read';
+
+/** Contexto y sucursales del negocio, resueltos una sola vez por consulta. */
+interface Scope {
+  ctx: TenantContext;
+  branchIds: string[];
+}
 
 /**
  * Capacidad de consulta compartida entre canales (Alexa, chat web).
  *
  * Responsabilidades: verificar permisos del actor y devolver cifras. La
  * redacción —hablada o en pantalla— es del canal, no de aquí.
+ *
+ * Casi todo retail filtra por `ctx.branchId`, así que las consultas de negocio
+ * completo corren una vez por sucursal y se suman. Ver `AssistantScopeService`.
  */
 @Injectable()
 export class AssistantService {
@@ -25,35 +49,100 @@ export class AssistantService {
     private readonly scope: AssistantScopeService,
     private readonly retailSales: RetailSalesService,
     private readonly retailInventory: RetailInventoryService,
+    private readonly retailPurchases: RetailPurchasesService,
   ) {}
 
+  private async open(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+    permissions: string[],
+  ): Promise<Scope> {
+    const ctx = await this.scope.contextFor(actor, business.id);
+    for (const code of permissions) this.scope.assertPermission(ctx, code);
+    return { ctx, branchIds: await this.scope.branchesOf(business.id) };
+  }
+
   /**
-   * Ventas de hoy en el negocio completo.
+   * Los cinco bloques del reporte, en una sola tanda de consultas.
    *
-   * El rango se arma en hora local (el proceso corre con TZ=America/Bogota),
-   * porque "hoy" para quien pregunta es su día, no el UTC.
-   *
+   * Van juntas en un `Promise.all` porque son cinco por sucursal: en serie, la
+   * latencia a Supabase se sentiría en la respuesta hablada.
+   */
+  async businessReport(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+    period: ReportPeriod,
+  ): Promise<BusinessReportAnswer> {
+    const scope = await this.open(actor, business, [
+      SALES_READ,
+      INVENTORY_READ,
+    ]);
+    const [sales, debt, inventory, purchases, delivery] = await Promise.all([
+      this.salesFigures(scope, period),
+      this.debtFigures(scope),
+      this.inventoryFigures(scope),
+      this.purchaseFigures(scope),
+      this.deliveryFigures(scope),
+    ]);
+    return { business, period, sales, debt, inventory, purchases, delivery };
+  }
+
+  async sales(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+    period: ReportPeriod = 'day',
+  ): Promise<SalesAnswer> {
+    const scope = await this.open(actor, business, [SALES_READ]);
+    return {
+      business,
+      period,
+      ...(await this.salesFigures(scope, period)),
+    };
+  }
+
+  /** Saldos pendientes actuales de un negocio, no vencimientos del día. */
+  async pendingPayment(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+  ): Promise<PendingPaymentAnswer> {
+    const scope = await this.open(actor, business, [SALES_READ]);
+    return { business, ...(await this.debtFigures(scope)) };
+  }
+
+  async inventoryStatus(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+  ): Promise<InventoryStatusAnswer> {
+    const scope = await this.open(actor, business, [INVENTORY_READ]);
+    return { business, ...(await this.inventoryFigures(scope)) };
+  }
+
+  async pendingDelivery(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+  ): Promise<PendingDeliveryAnswer> {
+    const scope = await this.open(actor, business, [SALES_READ]);
+    return { business, ...(await this.deliveryFigures(scope)) };
+  }
+
+  // ─── Bloques ──────────────────────────────────────────────────────────────
+
+  /**
    * Al sumar sucursales, los totales se suman pero el margen y el ticket
    * promedio se RECALCULAN: promediar promedios daría un número que no
    * corresponde a ninguna venta real.
    */
-  async salesToday(
-    actor: AuthenticatedUser,
-    business: BusinessRef,
-  ): Promise<SalesTodayAnswer> {
-    const ctx = await this.scope.contextFor(actor, business.id);
-    this.scope.assertPermission(ctx, 'retail:sales:read');
-    const branchIds = await this.scope.branchesOf(business.id);
-
-    const now = new Date();
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
+  private async salesFigures(
+    { ctx, branchIds }: Scope,
+    period: ReportPeriod,
+  ): Promise<SalesFigures> {
+    const { from, to } = periodRange(period);
     const parts = await Promise.all(
       branchIds.map((branchId) =>
         this.retailSales.getSummary(
           { ...ctx, branchId },
-          start.toISOString(),
-          now.toISOString(),
+          from.toISOString(),
+          to.toISOString(),
         ),
       ),
     );
@@ -65,7 +154,6 @@ export class AssistantService {
     const salesCount = sum((p) => p.salesCount);
 
     return {
-      business,
       salesCount,
       revenueCOP,
       unitsSold: sum((p) => p.unitsSold),
@@ -73,18 +161,62 @@ export class AssistantService {
       marginPct: revenueCOP
         ? Math.round((grossProfitCOP / revenueCOP) * 1000) / 10
         : 0,
-      pendingTodayCOP: sum((p) => p.pendingPayment.amountCOP),
+      creditedCOP: sum((p) => p.pendingPayment.amountCOP),
     };
   }
 
-  /** Ventas cerradas que todavía no se entregaron, sin importar la fecha. */
-  async pendingDelivery(
-    actor: AuthenticatedUser,
-    business: BusinessRef,
-  ): Promise<PendingDeliveryAnswer> {
-    const ctx = await this.scope.contextFor(actor, business.id);
-    this.scope.assertPermission(ctx, 'retail:sales:read');
-    const branchIds = await this.scope.branchesOf(business.id);
+  /** Sin rango: la venta fiada de marzo se sigue debiendo en septiembre. */
+  private debtFigures({ ctx }: Scope): Promise<DebtFigures> {
+    return this.retailSales.pendingPaymentByCustomer(ctx);
+  }
+
+  private async inventoryFigures({
+    ctx,
+    branchIds,
+  }: Scope): Promise<InventoryFigures> {
+    const parts = await Promise.all(
+      branchIds.map((branchId) =>
+        this.retailInventory.getSummary({ ...ctx, branchId }),
+      ),
+    );
+    const lowStock = parts
+      .flatMap((p) => p.lowStock)
+      .sort((a, b) => a.stock - b.stock)
+      .map(({ name, stock, minStock }) => ({ name, stock, minStock }));
+
+    return {
+      trackedProducts: parts.reduce((n, p) => n + p.trackedProducts, 0),
+      totalUnits: parts.reduce((n, p) => n + p.totalUnits, 0),
+      valueAtCostCOP: parts.reduce((n, p) => n + p.stockValueAtCostCOP, 0),
+      valueAtPriceCOP: parts.reduce((n, p) => n + p.stockValueAtPriceCOP, 0),
+      lowStock,
+      lowStockCount: lowStock.length,
+      outOfStockCount: lowStock.filter((p) => p.stock <= 0).length,
+    };
+  }
+
+  private async purchaseFigures({
+    ctx,
+    branchIds,
+  }: Scope): Promise<PurchaseFigures> {
+    const parts = await Promise.all(
+      branchIds.map((branchId) =>
+        this.retailPurchases.getSummary({ ...ctx, branchId }),
+      ),
+    );
+    return {
+      openCount: parts.reduce((n, p) => n + p.openCount, 0),
+      estimatedOpenCostCOP: parts.reduce(
+        (n, p) => n + p.estimatedOpenCostCOP,
+        0,
+      ),
+    };
+  }
+
+  private async deliveryFigures({
+    ctx,
+    branchIds,
+  }: Scope): Promise<DeliveryFigures> {
     const perBranch = await Promise.all(
       branchIds.map((branchId) =>
         this.retailSales.listSales(
@@ -94,7 +226,7 @@ export class AssistantService {
       ),
     );
 
-    const byCustomer = new Map<string, PendingDeliveryAnswer['customers'][0]>();
+    const byCustomer = new Map<string, DeliveryFigures['customers'][0]>();
     let totalCOP = 0;
     let salesCount = 0;
     for (const sale of perBranch.flat()) {
@@ -112,7 +244,6 @@ export class AssistantService {
     }
 
     return {
-      business,
       salesCount,
       totalCOP,
       customers: [...byCustomer.values()].sort(
@@ -121,52 +252,7 @@ export class AssistantService {
     };
   }
 
-  /**
-   * Estado del inventario del negocio completo.
-   *
-   * `getSummary` es por sucursal, así que se corre una vez por cada una y se
-   * suma. En paralelo: son round-trips a Supabase y la latencia se nota.
-   */
-  async inventoryStatus(
-    actor: AuthenticatedUser,
-    business: BusinessRef,
-  ): Promise<InventoryStatusAnswer> {
-    const ctx = await this.scope.contextFor(actor, business.id);
-    this.scope.assertPermission(ctx, 'retail:inventory:read');
-    const branchIds = await this.scope.branchesOf(business.id);
-    const parts = await Promise.all(
-      branchIds.map((branchId) =>
-        this.retailInventory.getSummary({ ...ctx, branchId }),
-      ),
-    );
-
-    const lowStock = parts
-      .flatMap((p) => p.lowStock)
-      .sort((a, b) => a.stock - b.stock)
-      .map(({ name, stock, minStock }) => ({ name, stock, minStock }));
-
-    return {
-      business,
-      trackedProducts: parts.reduce((n, p) => n + p.trackedProducts, 0),
-      totalUnits: parts.reduce((n, p) => n + p.totalUnits, 0),
-      valueAtCostCOP: parts.reduce((n, p) => n + p.stockValueAtCostCOP, 0),
-      valueAtPriceCOP: parts.reduce((n, p) => n + p.stockValueAtPriceCOP, 0),
-      lowStock,
-      lowStockCount: lowStock.length,
-      outOfStockCount: lowStock.filter((p) => p.stock <= 0).length,
-    };
-  }
-
-  /** Saldos pendientes actuales de un negocio, no vencimientos del día. */
-  async pendingPayment(
-    actor: AuthenticatedUser,
-    business: BusinessRef,
-  ): Promise<PendingPaymentAnswer> {
-    const ctx = await this.scope.contextFor(actor, business.id);
-    this.scope.assertPermission(ctx, 'retail:sales:read');
-    const debt = await this.retailSales.pendingPaymentByCustomer(ctx);
-    return { business, ...debt };
-  }
+  // ─── Plataforma ───────────────────────────────────────────────────────────
 
   /** Consulta de ámbito plataforma: exige `isPlatformAdmin`, como `/platform/*`. */
   async platformOverview(

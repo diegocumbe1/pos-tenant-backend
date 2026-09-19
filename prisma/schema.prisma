@@ -36,6 +36,7 @@ model Tenant {
 
   users                User[]
   branches             Branch[]
+  alexaSkills          AlexaSkill[]
   products             Product[]
   categories           ProductCategory[]
   ingredients          Ingredient[]
@@ -640,6 +641,7 @@ model User {
   id              String    @id // mapea a auth.users.id de Supabase (UUID)
   tenantId        String? // NULL solo para ROOT
   tenant          Tenant?   @relation(fields: [tenantId], references: [id])
+  alexaSkills     AlexaSkill[]
   email           String    @unique
   name            String
   roleId          String
@@ -3856,6 +3858,48 @@ model CatalogServicePrice {
 
   @@index([serviceCode, effectiveFrom])
   @@map("catalog_service_prices")
+}
+
+/// Una skill de Alexa. El `applicationId` que firma Amazon identifica el ámbito.
+///
+/// `tenantId` null = skill de plataforma (la de super-admin): ve todos los
+/// negocios y hay que decirle a cuál preguntar. Con tenant, la skill ES el
+/// negocio y nunca se pregunta.
+///
+/// Hoy se administra solo desde el super-admin. Cuando se abra al tenant, el
+/// cambio es de permisos y de pantalla: los campos ya son por fila.
+/// Ver docs/ALEXA_SELF_SERVICE_PLAN.md §2.
+model AlexaSkill {
+  id             String    @id @default(cuid())
+  /// amzn1.ask.skill.… — llega en cada petición.
+  applicationId  String    @unique
+  label          String
+  tenantId       String?
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
+
+  /// Usuario cuyos permisos se usan al responder.
+  actingUserId   String
+  actingUser     User      @relation(fields: [actingUserId], references: [id])
+
+  /// Hash scrypt de la frase de activación. Nunca la frase.
+  activationHash String?
+  ttlDays        Int       @default(7)
+
+  /// Se fija en la primera activación y después se exige. Null = aún sin usar.
+  alexaUserId    String?
+  /// Opcional: si está, solo ese Echo puede consultar.
+  alexaDeviceId  String?
+
+  expiresAt       DateTime?
+  attempts        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("alexa_skills")
 }
 
 // Persistent voice authorization; never stores activation phrases or Alexa tokens.

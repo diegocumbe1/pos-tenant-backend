@@ -2,6 +2,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformService } from '../platform/platform.service';
 import { RetailInventoryService } from '../retail/modules/inventory/retail-inventory.service';
+import { RetailPurchasesService } from '../retail/modules/purchases/retail-purchases.service';
 import { RetailSalesService } from '../retail/modules/sales/retail-sales.service';
 import { AssistantScopeService } from './assistant-scope.service';
 import { AssistantService } from './assistant.service';
@@ -20,6 +21,7 @@ describe('AssistantService', () => {
     listSales: jest.Mock;
   };
   let retailInventory: { getSummary: jest.Mock };
+  let retailPurchases: { getSummary: jest.Mock };
   const admin = { id: 'u1', isPlatformAdmin: true } as AuthenticatedUser;
   const cashier = { id: 'u2', isPlatformAdmin: false } as AuthenticatedUser;
 
@@ -43,6 +45,11 @@ describe('AssistantService', () => {
       }),
       assertPermission: jest.fn(),
       branchesOf: jest.fn().mockResolvedValue(['b1', 'b2']),
+    };
+    retailPurchases = {
+      getSummary: jest
+        .fn()
+        .mockResolvedValue({ openCount: 3, estimatedOpenCostCOP: 1000 }),
     };
     retailInventory = {
       getSummary: jest.fn().mockImplementation((ctx: { branchId: string }) =>
@@ -75,10 +82,74 @@ describe('AssistantService', () => {
       scope as unknown as AssistantScopeService,
       retailSales as unknown as RetailSalesService,
       retailInventory as unknown as RetailInventoryService,
+      retailPurchases as unknown as RetailPurchasesService,
     );
   });
 
-  describe('salesToday', () => {
+  describe('businessReport', () => {
+    const business = { id: 't1', name: 'Bella Chic' };
+
+    beforeEach(() => {
+      retailSales.getSummary.mockResolvedValue({
+        salesCount: 2,
+        revenueCOP: 200,
+        grossProfitCOP: 80,
+        unitsSold: 4,
+        pendingPayment: { amountCOP: 30, salesCount: 1 },
+      });
+      retailSales.listSales.mockResolvedValue([
+        { totalCOP: 70, customerName: 'Marcela' },
+      ]);
+    });
+
+    it('resolves branches once for the five blocks, not once each', async () => {
+      await service.businessReport(admin, business, 'day');
+      expect(scope.branchesOf).toHaveBeenCalledTimes(1);
+      expect(scope.contextFor).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks both permissions before any query', async () => {
+      await service.businessReport(admin, business, 'day');
+      const codes = (
+        scope.assertPermission.mock.calls as [unknown, string][]
+      ).map(([, code]) => code);
+      expect(codes).toEqual(['retail:sales:read', 'retail:inventory:read']);
+    });
+
+    it('only the sales block moves with the period', async () => {
+      const day = await service.businessReport(admin, business, 'day');
+      const month = await service.businessReport(admin, business, 'month');
+      // La cartera, el stock y los pendientes son una foto de hoy.
+      expect(month.debt).toEqual(day.debt);
+      expect(month.inventory).toEqual(day.inventory);
+      expect(month.delivery).toEqual(day.delivery);
+      expect(month.purchases).toEqual(day.purchases);
+    });
+
+    it('asks sales for a wider range on month than on day', async () => {
+      const firstFrom = () =>
+        (retailSales.getSummary.mock.calls as [unknown, string][])[0][1];
+      await service.businessReport(admin, business, 'day');
+      const dayFrom = firstFrom();
+      retailSales.getSummary.mockClear();
+      await service.businessReport(admin, business, 'month');
+      const monthFrom = firstFrom();
+      expect(new Date(monthFrom).getTime()).toBeLessThanOrEqual(
+        new Date(dayFrom).getTime(),
+      );
+      expect(new Date(monthFrom).getDate()).toBe(1);
+    });
+
+    it('adds up open purchase orders across branches', async () => {
+      const report = await service.businessReport(admin, business, 'day');
+      expect(report.purchases).toEqual({
+        openCount: 6,
+        estimatedOpenCostCOP: 2000,
+      });
+    });
+  });
+
+  describe('sales', () => {
     const business = { id: 't1', name: 'Bella Chic' };
 
     beforeEach(() => {
@@ -106,7 +177,7 @@ describe('AssistantService', () => {
     });
 
     it('recomputes margin and average ticket instead of averaging averages', async () => {
-      const answer = await service.salesToday(admin, business);
+      const answer = await service.sales(admin, business);
       expect(answer.revenueCOP).toBe(400);
       expect(answer.salesCount).toBe(4);
       expect(answer.averageTicketCOP).toBe(100);
@@ -115,7 +186,7 @@ describe('AssistantService', () => {
     });
 
     it('asks each branch for today in local time', async () => {
-      await service.salesToday(admin, business);
+      await service.sales(admin, business);
       const [, from, to] = retailSales.getSummary.mock.calls[0] as [
         unknown,
         string,
@@ -133,7 +204,7 @@ describe('AssistantService', () => {
         unitsSold: 0,
         pendingPayment: { amountCOP: 0, salesCount: 0 },
       });
-      const answer = await service.salesToday(admin, business);
+      const answer = await service.sales(admin, business);
       expect(answer.averageTicketCOP).toBe(0);
       expect(answer.marginPct).toBe(0);
     });

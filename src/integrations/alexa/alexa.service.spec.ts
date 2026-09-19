@@ -4,7 +4,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { AlexaSkill } from '@prisma/client';
 import {
   SkillRequestSignatureVerifier,
   TimestampVerifier,
@@ -14,6 +14,7 @@ import { AssistantService } from '../../assistant/assistant.service';
 import { PlatformOverviewAnswer } from '../../assistant/assistant.types';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
+import { AlexaSkillRepository } from './alexa-skill.repository';
 import { AlexaService } from './alexa.service';
 
 const overview: PlatformOverviewAnswer = {
@@ -37,10 +38,17 @@ describe('AlexaService', () => {
     platformOverview: jest.Mock;
     pendingPayment: jest.Mock;
     inventoryStatus?: jest.Mock;
-    salesToday?: jest.Mock;
+    sales?: jest.Mock;
     pendingDelivery?: jest.Mock;
+    businessReport?: jest.Mock;
   };
   let scope: { resolveBusiness: jest.Mock; accessibleBusinesses: jest.Mock };
+  let skills: { byApplicationId: jest.Mock; invalidate: jest.Mock };
+  const skill = {
+    id: 'sk1',
+    applicationId: 'test-skill',
+    ttlDays: 7,
+  } as unknown as AlexaSkill;
   const bella = { id: 't1', name: 'Bella Chic' };
   let signature: jest.SpyInstance;
   const skillId = 'test-skill';
@@ -66,13 +74,9 @@ describe('AlexaService', () => {
         codigo: { name: 'codigo', value },
       }),
     );
-  const build = (env: Record<string, string> = {}) => {
+  const build = () => {
     service = new AlexaService(
-      new ConfigService({
-        ALEXA_SKILL_ID: skillId,
-        ALEXA_AUTH_TTL_DAYS: '7',
-        ...env,
-      }),
+      skills as unknown as AlexaSkillRepository,
       auth as unknown as AlexaAuthService,
       assistant as unknown as AssistantService,
       scope as unknown as AssistantScopeService,
@@ -113,14 +117,51 @@ describe('AlexaService', () => {
       lowStockCount: 4,
       outOfStockCount: 1,
     });
-    assistant.salesToday = jest.fn().mockResolvedValue({
+    assistant.sales = jest.fn().mockResolvedValue({
       business: bella,
+      period: 'day',
       salesCount: 6,
       revenueCOP: 840000,
       unitsSold: 14,
       averageTicketCOP: 140000,
       marginPct: 38.5,
-      pendingTodayCOP: 120000,
+      creditedCOP: 120000,
+    });
+    assistant.businessReport = jest.fn().mockResolvedValue({
+      business: bella,
+      period: 'day',
+      sales: {
+        salesCount: 6,
+        revenueCOP: 840000,
+        unitsSold: 14,
+        averageTicketCOP: 140000,
+        marginPct: 38.5,
+        creditedCOP: 120000,
+      },
+      debt: {
+        totalCOP: 1200000,
+        salesCount: 12,
+        customers: [
+          { name: 'Marcela Ruiz', amountCOP: 700000, salesCount: 5 },
+          { name: 'Iván Pardo', amountCOP: 500000, salesCount: 7 },
+        ],
+        unidentified: { amountCOP: 0, salesCount: 0 },
+      },
+      inventory: {
+        trackedProducts: 40,
+        totalUnits: 320,
+        valueAtCostCOP: 4500000,
+        valueAtPriceCOP: 7200000,
+        lowStock: [{ name: 'Base líquida', stock: 0, minStock: 3 }],
+        lowStockCount: 4,
+        outOfStockCount: 1,
+      },
+      purchases: { openCount: 3, estimatedOpenCostCOP: 900000 },
+      delivery: {
+        salesCount: 5,
+        totalCOP: 400000,
+        customers: [{ name: 'Marcela Ruiz', salesCount: 2, totalCOP: 200000 }],
+      },
     });
     assistant.pendingDelivery = jest.fn().mockResolvedValue({
       business: bella,
@@ -138,6 +179,10 @@ describe('AlexaService', () => {
       accessibleBusinesses: jest
         .fn()
         .mockResolvedValue([bella, { id: 't2', name: 'DC Tech' }]),
+    };
+    skills = {
+      byApplicationId: jest.fn().mockResolvedValue(skill),
+      invalidate: jest.fn(),
     };
     build();
     signature = jest
@@ -225,6 +270,7 @@ describe('AlexaService', () => {
       const result = await activation('mi frase secreta larga');
       expect(auth.activate).toHaveBeenCalledWith(
         expect.objectContaining({ version: '1.0' }),
+        skill,
         'mi frase secreta larga',
       );
       expect(speech(result)).toBe(
@@ -409,39 +455,55 @@ describe('AlexaService', () => {
       return (result.response.outputSpeech as { text: string }).text;
     };
 
-    it("separates today's credit from the whole receivable", async () => {
+    it('separates the period credit from the whole receivable', async () => {
       expect(await ask('sales_summary')).toBe(
-        'Hoy en Bella Chic llevas 840000 pesos en 6 ventas, con un ticket promedio de 140000 pesos. De eso, 120000 pesos quedaron fiados hoy.',
+        'Hoy en Bella Chic llevas 840000 pesos en 6 ventas, con un ticket promedio de 140000 pesos. De eso, 120000 pesos quedaron fiados.',
       );
     });
 
     it('omits the credit sentence when everything was collected', async () => {
-      assistant.salesToday!.mockResolvedValue({
+      assistant.sales!.mockResolvedValue({
         business: bella,
+        period: 'day',
         salesCount: 2,
         revenueCOP: 100000,
         unitsSold: 3,
         averageTicketCOP: 50000,
         marginPct: 40,
-        pendingTodayCOP: 0,
+        creditedCOP: 0,
       });
       expect(await ask('sales_summary')).toBe(
         'Hoy en Bella Chic llevas 100000 pesos en 2 ventas, con un ticket promedio de 50000 pesos.',
       );
     });
 
-    it('does not pretend there were sales when there were none', async () => {
-      assistant.salesToday!.mockResolvedValue({
+    it('says the range out loud so a week is not read as a day', async () => {
+      assistant.sales!.mockResolvedValue({
         business: bella,
+        period: 'week',
+        salesCount: 9,
+        revenueCOP: 300000,
+        unitsSold: 20,
+        averageTicketCOP: 33333,
+        marginPct: 30,
+        creditedCOP: 0,
+      });
+      expect(await ask('sales_summary')).toContain('En lo que va de la semana');
+    });
+
+    it('does not pretend there were sales when there were none', async () => {
+      assistant.sales!.mockResolvedValue({
+        business: bella,
+        period: 'day',
         salesCount: 0,
         revenueCOP: 0,
         unitsSold: 0,
         averageTicketCOP: 0,
         marginPct: 0,
-        pendingTodayCOP: 0,
+        creditedCOP: 0,
       });
       expect(await ask('sales_summary')).toBe(
-        'Hoy todavía no hay ventas en Bella Chic.',
+        'No hay ventas hoy en Bella Chic.',
       );
     });
 
@@ -460,6 +522,57 @@ describe('AlexaService', () => {
       });
       expect(await ask('pending_delivery')).toBe(
         'En Bella Chic no tienes entregas pendientes.',
+      );
+    });
+  });
+
+  describe('business report', () => {
+    const report = async (periodo?: string) =>
+      send(
+        envelope(
+          'IntentRequest',
+          'business_report',
+          periodo
+            ? { periodo: { name: 'periodo', value: periodo } }
+            : undefined,
+        ),
+      );
+
+    it('gives the five blocks as numbers, without names', async () => {
+      const speech = (
+        (await report()).response.outputSpeech as { text: string }
+      ).text;
+      expect(speech).toBe(
+        'Reporte de Bella Chic. Hoy vendiste 840000 pesos en 6 ventas. Te deben 1200000 pesos en total, de 2 clientes. Hay 4 productos bajos de stock, 1 agotados. Tienes 3 pedidos abiertos con el proveedor. Y 5 ventas por entregar. ¿Quieres el detalle de alguno?',
+      );
+      expect(speech).not.toContain('Marcela');
+    });
+
+    it('puts the names on the card, which is what a screen is for', async () => {
+      const card = (await report()).response.card as {
+        title: string;
+        content: string;
+      };
+      expect(card.title).toBe('Reporte · Bella Chic');
+      expect(card.content).toContain('Marcela Ruiz: 700000');
+      expect(card.content).toContain('Base líquida: 0');
+    });
+
+    it('keeps the session open to ask for a detail', async () => {
+      expect((await report()).response.shouldEndSession).toBe(false);
+    });
+
+    it.each([
+      ['hoy', 'day'],
+      ['esta semana', 'week'],
+      ['del mes', 'month'],
+      [undefined, 'day'],
+    ])('reads %s as the %s period', async (spoken, expected) => {
+      await report(spoken);
+      expect(assistant.businessReport).toHaveBeenCalledWith(
+        actor,
+        bella,
+        expected,
       );
     });
   });
@@ -592,11 +705,6 @@ describe('AlexaService', () => {
     body.request.timestamp = timestamp;
     await expect(send(body)).rejects.toBeInstanceOf(UnauthorizedException);
   });
-  it('rejects a different skill', async () => {
-    const body = envelope();
-    body.context.System.application.applicationId = 'other-skill';
-    await expect(send(body)).rejects.toBeInstanceOf(UnauthorizedException);
-  });
   it('accepts the application ID in session alone', async () => {
     const { context, ...body } = envelope();
     expect(
@@ -614,6 +722,13 @@ describe('AlexaService', () => {
       }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
+
+  it('rejects a different skill', async () => {
+    skills.byApplicationId.mockResolvedValue(null);
+    const body = envelope();
+    body.context.System.application.applicationId = 'other-skill';
+    await expect(send(body)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
   it('rejects missing application IDs', async () => {
     const body = { ...envelope(), context: {} };
     await expect(send(body)).rejects.toBeInstanceOf(UnauthorizedException);
@@ -626,10 +741,15 @@ describe('AlexaService', () => {
       );
     },
   );
-  it('fails closed when not configured', async () => {
-    build({ ALEXA_SKILL_ID: '' });
+  it('rejects a skill that is not registered', async () => {
+    skills.byApplicationId.mockResolvedValue(null);
     await expect(send(envelope())).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
+      UnauthorizedException,
     );
+  });
+
+  it('resolves the tenant from the applicationId Amazon signed', async () => {
+    await send(envelope());
+    expect(skills.byApplicationId).toHaveBeenCalledWith('test-skill');
   });
 });

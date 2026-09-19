@@ -78,10 +78,19 @@ export class AssistantScopeService {
     const exact = available.filter((b) => normalize(b.name) === said);
     if (exact.length === 1) return { status: 'resolved', business: exact[0] };
 
+    // Sin espacios también: el Echo transcribe "Bella Chic" como "bellachi",
+    // pegando las palabras y comiéndose el final. Comparar así lo resuelve por
+    // prefijo, que con los espacios en medio no coincidiría con nada.
+    const tight = said.replace(/\s/g, '');
     const partial = available.filter((b) => {
       const name = normalize(b.name);
+      const nameTight = name.replace(/\s/g, '');
       return (
-        name.startsWith(said) || said.startsWith(name) || name.includes(said)
+        name.startsWith(said) ||
+        said.startsWith(name) ||
+        name.includes(said) ||
+        nameTight.startsWith(tight) ||
+        tight.startsWith(nameTight)
       );
     });
     if (partial.length === 1)

@@ -9,6 +9,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -131,7 +132,9 @@ export class CreateTermDiscountDto {
   @IsISO8601()
   effectiveFrom?: string;
 
-  @ApiPropertyOptional({ description: 'Motivo del cambio (queda en histórico)' })
+  @ApiPropertyOptional({
+    description: 'Motivo del cambio (queda en histórico)',
+  })
   @IsOptional()
   @IsString()
   note?: string;
@@ -742,4 +745,59 @@ export class UpdatePlatformFinanceGoalDto {
   @IsInt()
   @Min(0)
   target?: number;
+}
+
+// ─── Skills de Alexa (super-admin) ──────────────────────────────────────────
+// Hoy solo desde plataforma. Cuando se abra al tenant, estos DTO se reusan y
+// el `tenantId` deja de venir del cuerpo: sale del contexto.
+// Ver docs/ALEXA_SELF_SERVICE_PLAN.md §5.
+
+export class UpsertAlexaSkillDto {
+  @ApiProperty({ example: 'amzn1.ask.skill.708ad601-...' })
+  @IsString()
+  @IsNotEmpty()
+  applicationId!: string;
+
+  @ApiProperty({ example: 'Bella Chic' })
+  @IsString()
+  @IsNotEmpty()
+  label!: string;
+
+  @ApiPropertyOptional({
+    description: 'Null = skill de plataforma, ve todos los negocios.',
+  })
+  @IsOptional()
+  @IsString()
+  tenantId?: string | null;
+
+  @ApiProperty({ description: 'Usuario cuyos permisos usa la skill.' })
+  @IsString()
+  @IsNotEmpty()
+  actingUserId!: string;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 30, default: 7 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  ttlDays?: number;
+
+  @ApiPropertyOptional({ description: 'Solo este Echo podrá consultar.' })
+  @IsOptional()
+  @IsString()
+  alexaDeviceId?: string | null;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class SetAlexaPhraseDto {
+  @ApiProperty({
+    description: 'Tres palabras o más, sin números. Se guarda solo su hash.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  phrase!: string;
 }
