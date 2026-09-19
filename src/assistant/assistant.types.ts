@@ -18,8 +18,19 @@ export interface BusinessRefLike {
 
 export interface SalesFigures {
   salesCount: number;
-  /** Ventas netas: abonos del período menos devoluciones, como en el dashboard. */
+  /**
+   * MERCANCÍA vendida: abonos del período, menos devoluciones y **menos flete**.
+   *
+   * Es la misma base que muestra la pantalla de Ventas. El flete no se vende, se
+   * traslada: entra a la caja pero su gasto lo compensa el dashboard, así que
+   * contarlo como venta inflaría el ingreso y el ticket promedio.
+   */
   revenueCOP: number;
+  /**
+   * Flete que los clientes pagaron en el período. Va aparte y NO está en
+   * `revenueCOP`: el canal puede nombrarlo, pero nunca sumarlo a las ventas.
+   */
+  shippingCOP: number;
   unitsSold: number;
   averageTicketCOP: number;
   marginPct: number;
@@ -149,6 +160,13 @@ export interface SalesRankingAnswer {
    * respuesta que de verdad busca quien pregunta "¿cuál es el menos vendido?".
    */
   unsoldCount: number;
+  /**
+   * QUÉ no se vendió, no solo cuántos. De más a menos stock detenido: más
+   * unidades quietas es más plata dormida, y es por donde hay que empezar.
+   */
+  unsoldProducts: { name: string; stock: number }[];
+  /** Presentaciones —aromas, tallas, colores— que nadie pidió en el período. */
+  unsoldVariants: { product: string; label: string; stock: number }[];
   /** Ventas sin cliente asociado: no entran al ranking de clientes. */
   counterSales: number;
 }

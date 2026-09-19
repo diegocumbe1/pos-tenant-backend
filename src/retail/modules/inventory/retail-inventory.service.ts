@@ -303,6 +303,7 @@ export class RetailInventoryService {
         name: true,
         sku: true,
         stock: true,
+        isActive: true,
         minStock: true,
         costCOP: true,
         avgCostCOP: true,
@@ -327,7 +328,7 @@ export class RetailInventoryService {
       stockValueAtCostCOP += product.stock * costingCostCOP(product);
       stockValueAtPriceCOP += product.stock * product.priceCOP;
       totalUnits += product.stock;
-      if (product.stock <= product.minStock) {
+      if (product.isActive && product.stock <= product.minStock) {
         lowStock.push({
           id: product.id,
           name: product.name,

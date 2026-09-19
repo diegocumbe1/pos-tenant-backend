@@ -347,6 +347,47 @@ describe('AssistantService', () => {
       expect(answer.marginPct).toBe(40);
     });
 
+    it('leaves shipping out of revenue and ticket, like the sales screen', async () => {
+      // `summary.revenueCOP` viene en base caja CON el flete adentro; por eso
+      // `shippingCOP` viaja aparte. Si el asistente no lo restara, contestaría
+      // un número distinto al de la pantalla a la misma pregunta.
+      retailSales.getSummary.mockImplementation((ctx: { branchId: string }) =>
+        Promise.resolve(
+          ctx.branchId === 'b1'
+            ? {
+                salesCount: 3,
+                revenueCOP: 300,
+                shippingCOP: 20,
+                grossProfitCOP: 150,
+                unitsSold: 6,
+                pendingPayment: { amountCOP: 50, salesCount: 1 },
+              }
+            : {
+                salesCount: 1,
+                revenueCOP: 100,
+                shippingCOP: 0,
+                grossProfitCOP: 10,
+                unitsSold: 2,
+                pendingPayment: { amountCOP: 0, salesCount: 0 },
+              },
+        ),
+      );
+
+      const answer = await service.sales(admin, business);
+      // 400 entraron, 20 eran flete ⇒ 380 de mercancía.
+      expect(answer.revenueCOP).toBe(380);
+      expect(answer.shippingCOP).toBe(20);
+      expect(answer.averageTicketCOP).toBe(95);
+      // El margen se mide contra la misma base que el resumen del backend.
+      expect(answer.marginPct).toBe(40);
+    });
+
+    it('treats a summary without shipping as zero, never NaN', async () => {
+      const answer = await service.sales(admin, business);
+      expect(Number.isNaN(answer.revenueCOP)).toBe(false);
+      expect(answer.shippingCOP).toBe(0);
+    });
+
     it('asks each branch for today in local time', async () => {
       await service.sales(admin, business);
       const [, from, to] = retailSales.getSummary.mock.calls[0] as [

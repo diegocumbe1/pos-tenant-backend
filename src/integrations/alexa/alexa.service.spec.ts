@@ -207,7 +207,7 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.HelpIntent',
-      'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
+      'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, qué está agotado, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
       false,
     ],
     [
@@ -643,6 +643,30 @@ describe('AlexaService', () => {
     it('names at most three low stock products and flags the sold out ones', async () => {
       expect(await ask('low_stock')).toBe(
         'En Bella Chic hay 4 productos bajos de stock, 1 de ellos agotados. Los más bajos: Base líquida, agotado; Rímel negro, 2; Labial rojo, 4.',
+      );
+    });
+
+    it('separates sold out from merely low, naming at most three', async () => {
+      // Lo bajo se repone esta semana; lo agotado se está dejando de vender hoy.
+      // Mezclarlos obliga a oír la lista entera para encontrar los ceros.
+      expect(await ask('out_of_stock')).toBe(
+        'En Bella Chic tienes 1 producto agotado. Es: Base líquida.',
+      );
+    });
+
+    it('when nothing is sold out, still flags what is low', async () => {
+      assistant.inventoryStatus!.mockResolvedValue({
+        business: bella,
+        trackedProducts: 40,
+        totalUnits: 320,
+        valueAtCostCOP: 4500000,
+        valueAtPriceCOP: 7200000,
+        lowStock: [{ name: 'Rímel negro', stock: 2, minStock: 5 }],
+        lowStockCount: 1,
+        outOfStockCount: 0,
+      });
+      expect(await ask('out_of_stock')).toBe(
+        'En Bella Chic no tienes nada agotado. Eso sí, 1 producto está por debajo del mínimo.',
       );
     });
 

@@ -172,6 +172,8 @@ export class AssistantService {
       variants: ranking.variants,
       customers: ranking.customers,
       unsoldCount: Math.max(0, catalog.length - ranking.soldProductCount),
+      unsoldProducts: ranking.unsoldProducts,
+      unsoldVariants: ranking.unsoldVariants,
       counterSales: ranking.counterSales,
     };
   }
@@ -367,19 +369,41 @@ export class AssistantService {
       ),
     );
 
-    const sum = (pick: (p: (typeof parts)[number]) => number) =>
-      parts.reduce((n, p) => n + pick(p), 0);
-    const revenueCOP = sum((p) => p.revenueCOP);
+    // `?? 0` porque un resumen sin una de estas claves debe dar 0, no NaN: una
+    // sola cifra indefinida contamina todo el reporte y lo vuelve ilegible.
+    const sum = (pick: (p: (typeof parts)[number]) => number | undefined) =>
+      parts.reduce((n, p) => n + (pick(p) ?? 0), 0);
+    /** Lo que ENTRÓ, flete incluido. Es lo que devuelve el resumen del backend. */
+    const cashInCOP = sum((p) => p.revenueCOP);
+    const shippingCOP = sum((p) => p.shippingCOP);
     const grossProfitCOP = sum((p) => p.grossProfitCOP);
     const salesCount = sum((p) => p.salesCount);
+
+    /**
+     * VENDIDO = lo que entró MENOS el flete.
+     *
+     * `summary.revenueCOP` viene en base caja con el flete adentro, y por eso
+     * viaja `shippingCOP` aparte: para que cada consumidor lo reste. La pantalla
+     * de Ventas lo resta (`raw.revenueCOP - raw.shippingCOP`); este servicio no
+     * lo hacía, así que a la misma pregunta —"¿cuánto vendí?"— el asistente
+     * contestaba un número y la pantalla otro. El flete no se vende: se traslada
+     * a la transportadora y su gasto lo compensa el dashboard.
+     */
+    const revenueCOP = cashInCOP - shippingCOP;
 
     return {
       salesCount,
       revenueCOP,
+      shippingCOP,
       unitsSold: sum((p) => p.unitsSold),
+      // Sobre mercancía, igual que la pantalla: con el flete adentro, un pedido
+      // con envío parecía un cliente que gasta más, y no gastó más en productos.
       averageTicketCOP: salesCount ? Math.round(revenueCOP / salesCount) : 0,
-      marginPct: revenueCOP
-        ? Math.round((grossProfitCOP / revenueCOP) * 1000) / 10
+      // El margen se mide contra la MISMA base que el resumen del backend
+      // (`marginPct(revenueCOP, costCOP + shippingCOP)`), o el asistente diría
+      // un porcentaje y la pantalla otro.
+      marginPct: cashInCOP
+        ? Math.round((grossProfitCOP / cashInCOP) * 1000) / 10
         : 0,
       creditedCOP: sum((p) => p.pendingPayment.amountCOP),
     };

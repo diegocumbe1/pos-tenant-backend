@@ -3913,3 +3913,43 @@ model AlexaAuthorization {
 
   @@map("alexa_authorizations")
 }
+
+enum AssistantChannel {
+  WEB
+  ALEXA
+}
+enum AssistantConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+enum AssistantOutcome {
+  ANSWERED
+  NO_DATA
+  CLARIFIED
+  FALLBACK
+  DENIED_PERMISSION
+  DENIED_PLAN
+  ERROR
+}
+/// Append-only. resolvedTo != null denotes a resolution signal, not another query.
+model AssistantQueryLog {
+  id String @id @default(cuid())
+  tenantId String
+  branchId String?
+  role String
+  channel AssistantChannel
+  vertical String
+  intentId String
+  outcome AssistantOutcome
+  confidence AssistantConfidence
+  level String
+  scope String?
+  resolvedTo String?
+  latencyMs Int?
+  at DateTime @default(now())
+  @@index([tenantId, at])
+  @@index([tenantId, intentId, at])
+  @@index([intentId, outcome])
+  @@map("assistant_query_log")
+}

@@ -335,7 +335,7 @@ export class RetailSalesService {
       ...(opts.branchId ? { branchId: opts.branchId } : {}),
     };
 
-    const [items, returned, sales] = await Promise.all([
+    const [items, returned, sales, catalog] = await Promise.all([
       this.prisma.retailSaleItem.findMany({
         where: {
           sale: {
@@ -368,6 +368,26 @@ export class RetailSalesService {
           totalCOP: true,
           customerId: true,
           customer: { select: { name: true } },
+        },
+      }),
+      /**
+       * El catálogo activo, para poder contestar QUÉ NO SE VENDIÓ.
+       *
+       * Quien pregunta "¿cuál se vende menos?" no quiere el último del ranking
+       * —ese al menos vendió algo— sino lo que está quieto en la estantería sin
+       * mover una sola unidad. Eso no se puede saber mirando las ventas: hay que
+       * restarlas del catálogo.
+       *
+       * Se traen las variantes porque el aroma que nadie pide es tan importante
+       * como el producto que nadie pide: es plata detenida igual.
+       */
+      this.prisma.retailProduct.findMany({
+        where: { ...scope, deletedAt: null, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          stock: true,
+          variants: { select: { label: true, stock: true } },
         },
       }),
     ]);
@@ -427,6 +447,39 @@ export class RetailSalesService {
     // Un producto que quedó en cero o negativo tras las devoluciones no es "el
     // menos vendido": no se vendió. Se saca del ranking y se cuenta aparte.
     const sold = [...byProduct.values()].filter((p) => p.units > 0);
+
+    // ── Lo que NO se movió ───────────────────────────────────────────────────
+    // Se resuelve por nombre y no por id: el ranking agrupa por `productId` pero
+    // las variantes solo traen su etiqueta congelada, y comparar etiquetas es lo
+    // único que funciona para las dos.
+    const soldProductIds = new Set(
+      [...byProduct.entries()].filter(([, p]) => p.units > 0).map(([id]) => id),
+    );
+    const soldVariantLabels = new Set(
+      [...byVariant.entries()]
+        .filter(([, v]) => v.units > 0)
+        .map(([label]) => label),
+    );
+
+    const unsoldProducts = catalog
+      .filter((product) => !soldProductIds.has(product.id))
+      .map((product) => ({ name: product.name, stock: product.stock }))
+      // Primero lo que MÁS quieto está: más unidades sin vender es más plata
+      // detenida, y es por donde hay que empezar a mirar.
+      .sort((a, b) => b.stock - a.stock);
+
+    const unsoldVariants = catalog
+      .flatMap((product) =>
+        product.variants
+          .filter((variant) => !soldVariantLabels.has(variant.label))
+          .map((variant) => ({
+            product: product.name,
+            label: variant.label,
+            stock: variant.stock,
+          })),
+      )
+      .sort((a, b) => b.stock - a.stock);
+
     return {
       soldProductCount: sold.length,
       products: sold.sort((a, b) => b.units - a.units),
@@ -437,6 +490,10 @@ export class RetailSalesService {
         (a, b) => b.totalCOP - a.totalCOP,
       ),
       counterSales,
+      /** Productos activos del catálogo sin una sola unidad vendida en el período. */
+      unsoldProducts,
+      /** Presentaciones —aromas, tallas, colores— que nadie pidió en el período. */
+      unsoldVariants,
     };
   }
 

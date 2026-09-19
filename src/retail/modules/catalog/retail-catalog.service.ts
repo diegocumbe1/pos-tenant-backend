@@ -154,7 +154,9 @@ export class RetailCatalogService {
       },
     });
     const visible = filters.lowStock
-      ? products.filter((p) => p.trackStock && p.stock <= p.minStock)
+      ? products.filter(
+          (p) => p.isActive && p.trackStock && p.stock <= p.minStock,
+        )
       : products;
 
     const committed = await this.committedByProduct(
@@ -633,7 +635,10 @@ export class RetailCatalogService {
       trackStock: product.trackStock,
       stock: product.stock,
       minStock: product.minStock,
-      isLowStock: product.trackStock && product.stock <= product.minStock,
+      isLowStock:
+        product.isActive &&
+        product.trackStock &&
+        product.stock <= product.minStock,
       // Vendido y sin entregar. NO se resta de `stock`: ese número tiene que
       // seguir coincidiendo con lo que hay al contar la estantería.
       committedStock,
@@ -661,7 +666,10 @@ export class RetailCatalogService {
             sku: variant.sku,
             stock: variant.stock,
             minStock: variant.minStock,
-            isLowStock: product.trackStock && variant.stock <= variant.minStock,
+            isLowStock:
+              product.isActive &&
+              product.trackStock &&
+              variant.stock <= variant.minStock,
           }))
         : [],
       /**
@@ -677,6 +685,7 @@ export class RetailCatalogService {
        */
       variantCount: (product.variants ?? []).length,
       hasLowStockVariant:
+        product.isActive &&
         product.trackStock &&
         (product.variants ?? []).some(
           (variant) => variant.stock <= variant.minStock,

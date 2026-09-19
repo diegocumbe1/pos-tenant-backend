@@ -1,3 +1,4 @@
+import { AssistantTelemetryModule } from './telemetry/telemetry.module';
 import { forwardRef, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { PlatformModule } from '../platform/platform.module';
@@ -10,6 +11,7 @@ import { AssistantService } from './assistant.service';
 
 @Module({
   imports: [
+    AssistantTelemetryModule,
     forwardRef(() => PlatformModule),
     RetailSalesModule,
     RetailInventoryModule,
@@ -18,6 +20,6 @@ import { AssistantService } from './assistant.service';
     AuthModule,
   ],
   providers: [AssistantService, AssistantScopeService],
-  exports: [AssistantService, AssistantScopeService],
+  exports: [AssistantService, AssistantScopeService, AssistantTelemetryModule],
 })
 export class AssistantModule {}

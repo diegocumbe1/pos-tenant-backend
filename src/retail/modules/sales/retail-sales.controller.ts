@@ -177,6 +177,38 @@ export class RetailSalesController {
     );
   }
 
+  /**
+   * Lo más y lo menos vendido del período: productos, presentaciones y clientes.
+   *
+   * POR QUÉ EXISTE AHORA. `salesRanking()` ya estaba escrito y probado, pero solo
+   * lo alcanzaba el asistente por voz, que corre dentro del servidor. El chat de
+   * la web corre en el navegador y no tenía por dónde pedirlo, así que el mismo
+   * copiloto contestaba "¿qué es lo que más vendo?" por Alexa y no por pantalla.
+   * Exponerlo con los guards de siempre es lo que los homologa — y de paso
+   * cualquier pantalla puede montar un panel de "más vendidos" sin backend nuevo.
+   *
+   * VA ANTES DE `@Get(':id')`: Nest resuelve en orden de declaración y si no,
+   * 'ranking' se leería como el id de una venta.
+   */
+  @Get('ranking')
+  @RequirePermissions('retail:sales:read')
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  ranking(
+    @CurrentTenant() ctx: TenantContext,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.sales.salesRanking(
+      ctx,
+      from ?? '',
+      to ?? '',
+      // La sucursal sale del contexto, igual que en el resto del módulo: un
+      // cliente no debe poder nombrar otra en el query string.
+      { branchId: ctx.branchId },
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('retail:sales:read')
   detail(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {

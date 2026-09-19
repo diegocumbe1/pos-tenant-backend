@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export interface BusinessRef {
   id: string;
   name: string;
+  vertical?: { code: string } | null;
 }
 
 export type BusinessResolution =
@@ -47,7 +48,7 @@ export class AssistantScopeService {
   async accessibleBusinesses(actor: AuthenticatedUser): Promise<BusinessRef[]> {
     const listed = { deletedAt: null, status: 'ACTIVE' as const };
     const query = {
-      select: { id: true, name: true },
+      select: { id: true, name: true, vertical: { select: { code: true } } },
       orderBy: { name: 'asc' as const },
     };
     if (actor.isPlatformAdmin) {

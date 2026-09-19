@@ -1,8 +1,14 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { AssistantOutcome } from '@prisma/client';
+import { AssistantTelemetryService } from '../../assistant/telemetry/telemetry.service';
+import { safeIntent } from '../../assistant/telemetry/telemetry.dto';
+import { TelemetryAlexaSkill } from './alexa-skill.repository';
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -64,6 +70,12 @@ type ActorResult =
 
 @Injectable()
 export class AlexaService {
+  private readonly observation = new AsyncLocalStorage<{
+    tenantId: string;
+    vertical: string;
+    roleCode: string;
+    outcome: AssistantOutcome;
+  }>();
   private readonly logger = new Logger('Alexa');
   private readonly signatureVerifier = new SkillRequestSignatureVerifier();
   private readonly timestampVerifier = new TimestampVerifier();
@@ -73,6 +85,7 @@ export class AlexaService {
     private readonly auth: AlexaAuthService,
     private readonly assistant: AssistantService,
     private readonly scope: AssistantScopeService,
+    @Optional() private readonly telemetry?: AssistantTelemetryService,
   ) {}
 
   async handleRequest(
@@ -138,10 +151,77 @@ export class AlexaService {
         this.logger.log('SessionEndedRequest received');
         return { version: '1.0', response: {} };
       case 'IntentRequest':
-        return this.handleIntent(envelope, skill, envelope.request);
+        return this.observedIntent(envelope, skill, envelope.request);
       default:
         return this.fallback();
     }
+  }
+
+  private observedIntent(
+    envelope: RequestEnvelope,
+    skill: TelemetryAlexaSkill,
+    request: IntentRequest,
+  ): Promise<ResponseEnvelope> {
+    const started = Date.now();
+    const fallback =
+      request.intent.name === 'AMAZON.FallbackIntent' ||
+      safeIntent(request.intent.name) === 'unknown';
+    const state: {
+      tenantId: string;
+      vertical: string;
+      roleCode: string;
+      outcome: AssistantOutcome;
+    } = {
+      tenantId: skill.tenantId ?? '',
+      vertical: skill.tenant?.vertical?.code ?? '',
+      roleCode: skill.actingUser?.role.code ?? 'OTHER',
+      outcome: fallback ? AssistantOutcome.FALLBACK : AssistantOutcome.ANSWERED,
+    };
+    return this.observation.run(state, async () => {
+      try {
+        return await this.handleIntent(envelope, skill, request);
+      } catch (error) {
+        state.outcome = 'ERROR';
+        throw error;
+      } finally {
+        // Exactly one emission point. Slots, Alexa IDs, and spoken text never leave this handler.
+        try {
+          const scoped = [
+            'sales_summary',
+            'business_report',
+            'top_products',
+            'worst_products',
+            'top_customers',
+          ].includes(request.intent.name);
+          const period = scoped
+            ? parsePeriod(this.slotValue(request, PERIOD_SLOT))
+            : null;
+          this.telemetry?.record(
+            state,
+            [
+              {
+                vertical: state.vertical,
+                intentId: fallback ? 'fallback' : request.intent.name,
+                outcome: state.outcome,
+                confidence: fallback ? 'LOW' : 'HIGH',
+                level: 'READ',
+                scope: period === 'day' ? 'today' : period,
+                resolvedTo: null,
+                latencyMs: Date.now() - started,
+              },
+            ],
+            'ALEXA',
+          );
+        } catch {
+          /* Never delay or break voice responses. */
+        }
+      }
+    });
+  }
+
+  private outcome(outcome: AssistantOutcome): void {
+    const state = this.observation.getStore();
+    if (state) state.outcome = outcome;
   }
 
   private async launch(
@@ -149,7 +229,10 @@ export class AlexaService {
     skill: AlexaSkill,
   ): Promise<ResponseEnvelope> {
     const result = await this.resolveActor(envelope, skill);
-    if (result.status !== 'active') return this.reject(result);
+    if (result.status !== 'active') {
+      this.outcome('DENIED_PERMISSION');
+      return this.reject(result);
+    }
     const firstName = result.actor.name?.trim().split(/\s+/)[0];
     return this.speak(
       `Hola${firstName ? ` ${firstName}` : ''}. Lynko está listo. Puedes preguntarme por tus suscripciones.`,
@@ -271,7 +354,10 @@ export class AlexaService {
         this.logger.log('IntentRequest: catalog_category');
         return this.forBusiness(envelope, skill, request, async (a, b) => {
           const spoken = this.slotValue(request, CATEGORY_SLOT);
-          if (!spoken) return '¿De cuál categoría?';
+          if (!spoken) {
+            this.outcome('CLARIFIED');
+            return '¿De cuál categoría?';
+          }
           return this.categorySpeech(
             await this.assistant.catalogCategory(a, b, spoken),
             spoken,
@@ -281,7 +367,10 @@ export class AlexaService {
         this.logger.log('IntentRequest: product_lookup');
         return this.forBusiness(envelope, skill, request, async (a, b) => {
           const spoken = this.slotValue(request, PRODUCT_SLOT);
-          if (!spoken) return '¿De cuál producto?';
+          if (!spoken) {
+            this.outcome('CLARIFIED');
+            return '¿De cuál producto?';
+          }
           return this.productSpeech(
             await this.assistant.productLookup(a, b, spoken),
             spoken,
@@ -295,6 +384,17 @@ export class AlexaService {
           request,
           async (actor, business) =>
             this.lowStockSpeech(
+              await this.assistant.inventoryStatus(actor, business),
+            ),
+        );
+      case 'out_of_stock':
+        this.logger.log('IntentRequest: out_of_stock');
+        return this.forBusiness(
+          envelope,
+          skill,
+          request,
+          async (actor, business) =>
+            this.outOfStockSpeech(
               await this.assistant.inventoryStatus(actor, business),
             ),
         );
@@ -312,7 +412,7 @@ export class AlexaService {
       case 'AMAZON.HelpIntent':
         this.logger.log('IntentRequest: AMAZON.HelpIntent');
         return this.speak(
-          'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
+          'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, qué está agotado, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
           false,
         );
       case 'AMAZON.YesIntent':
@@ -408,13 +508,17 @@ export class AlexaService {
     ) => ResponseEnvelope | Promise<ResponseEnvelope>,
   ): Promise<ResponseEnvelope> {
     const result = await this.resolveActor(envelope, skill);
-    if (result.status !== 'active') return this.reject(result);
+    if (result.status !== 'active') {
+      this.outcome('DENIED_PERMISSION');
+      return this.reject(result);
+    }
     try {
       return await handler(result.actor);
     } catch (error) {
       // Permiso insuficiente del usuario Lynko: distinto de "cuenta de Alexa
       // no autorizada", que se resuelve en resolveActor.
       if (error instanceof ForbiddenException) {
+        this.outcome('DENIED_PERMISSION');
         this.logger.warn('Query denied: insufficient Lynko permissions');
         return this.speak(
           'Tu usuario no tiene permiso para esa consulta.',
@@ -425,6 +529,7 @@ export class AlexaService {
       // lanzan BadRequest desde `assertRetailTenant`. Sin esto sería un 500 y
       // Alexa diría su error genérico, que no explica nada.
       if (error instanceof BadRequestException) {
+        this.outcome('ERROR');
         this.logger.warn('Query not applicable to this tenant vertical');
         return this.speak(
           'Esa consulta es de tiendas, y ese negocio no lo es.',
@@ -460,7 +565,13 @@ export class AlexaService {
         remembered,
       );
       if (resolution.status !== 'resolved') {
+        this.outcome('CLARIFIED');
         return this.speak(this.businessPrompt(resolution), false);
+      }
+      const state = this.observation.getStore();
+      if (state) {
+        state.tenantId = resolution.business.id;
+        state.vertical = resolution.business.vertical?.code ?? state.vertical;
       }
       const result = await answer(actor, resolution.business);
       const { speech, card } =
@@ -569,6 +680,7 @@ export class AlexaService {
   }
 
   private salesSpeech(answer: SalesAnswer): string {
+    if (!answer.salesCount) this.outcome('NO_DATA');
     const { business, salesCount, revenueCOP } = answer;
     const when = periodLabel(answer.period);
     if (!salesCount) {
@@ -585,6 +697,7 @@ export class AlexaService {
   }
 
   private deliverySpeech(answer: PendingDeliveryAnswer): string {
+    if (!answer.salesCount) this.outcome('NO_DATA');
     const { business, salesCount, customers } = answer;
     if (!salesCount) {
       return `En ${business.name} no tienes entregas pendientes.`;
@@ -670,13 +783,37 @@ export class AlexaService {
     }
 
     if (intent === 'worst_products') {
+      // LA PREGUNTA ES OTRA DE LA QUE PARECE. Quien pregunta "¿qué se vende
+      // menos?" no quiere el último del ranking —ese al menos vendió algo— sino
+      // lo que está QUIETO. Eso es la plata detenida y es lo accionable; el
+      // ranking de cola se deja de respaldo para cuando todo se movió.
+      const unsold = answer.unsoldProducts ?? [];
+      const quietVariants = answer.unsoldVariants ?? [];
+
+      if (unsold.length) {
+        const names = unsold.slice(0, MAX_NAMES).map((p) => p.name);
+        const extra =
+          unsold.length > names.length
+            ? `, y ${unsold.length - names.length} más`
+            : '';
+        const aromas = quietVariants.length
+          ? ` También hay ${quietVariants.length} ${
+              quietVariants.length === 1 ? 'presentación' : 'presentaciones'
+            } que nadie pidió.`
+          : '';
+        return `${this.capitalize(when)} en ${business.name} ${
+          unsold.length === 1
+            ? 'hay 1 producto que no vendió'
+            : `hay ${unsold.length} productos que no vendieron`
+        } ni una unidad: ${names.join('; ')}${extra}.${aromas}`;
+      }
+
       const tail = [...products].reverse().slice(0, MAX_NAMES);
-      const quiet = answer.unsoldCount
-        ? ` Y hay ${answer.unsoldCount === 1 ? '1 producto que no vendiste' : `${answer.unsoldCount} productos que no vendiste`} ni una unidad.`
-        : '';
-      return `${this.capitalize(when)} lo menos vendido en ${business.name}: ${tail
+      if (!tail.length)
+        return `${this.capitalize(when)} no hubo ventas en ${business.name}.`;
+      return `${this.capitalize(when)} en ${business.name} se movió todo el catálogo. Lo que menos: ${tail
         .map((p) => `${p.name}, ${units(p.units)}`)
-        .join('; ')}.${quiet}`;
+        .join('; ')}.`;
     }
 
     const top = products
@@ -689,6 +826,7 @@ export class AlexaService {
   }
 
   private catalogSpeech(answer: CatalogOverviewAnswer): string {
+    if (!answer.productCount) this.outcome('NO_DATA');
     const { business, categories, productCount } = answer;
     if (!productCount) {
       return `${business.name} todavía no tiene productos cargados.`;
@@ -707,6 +845,7 @@ export class AlexaService {
     answer: CatalogCategoryAnswer,
     spoken: string,
   ): string {
+    if (!answer.productCount) this.outcome('NO_DATA');
     if (!answer.category) {
       return `No encuentro una categoría parecida a ${spoken}. Di: qué productos tienes, para oír las categorías.`;
     }
@@ -721,6 +860,7 @@ export class AlexaService {
   }
 
   private productSpeech(answer: ProductLookupAnswer, spoken: string): string {
+    if (!answer.matchCount) this.outcome('NO_DATA');
     if (!answer.matchCount) {
       return `No encuentro ningún producto que se llame ${spoken}.`;
     }
@@ -751,6 +891,7 @@ export class AlexaService {
   }
 
   private lowStockSpeech(answer: InventoryStatusAnswer): string {
+    if (!answer.lowStockCount) this.outcome('NO_DATA');
     const { business, lowStock, outOfStockCount } = answer;
     if (!lowStock.length) {
       return `En ${business.name} ningún producto está por debajo del mínimo.`;
@@ -765,7 +906,39 @@ export class AlexaService {
     return `${head} Los más bajos: ${worst.join('; ')}.`;
   }
 
+  /**
+   * Agotados, aparte de "bajo mínimo".
+   *
+   * El chat ya los separaba y la voz los mezclaba dentro de `low_stock`. Para
+   * quien atiende no son la misma urgencia: lo bajo se repone esta semana, lo
+   * agotado se está dejando de vender HOY. Meterlos en una sola respuesta
+   * obliga a escuchar la lista entera para encontrar los ceros.
+   */
+  private outOfStockSpeech(answer: InventoryStatusAnswer): string {
+    if (!answer.outOfStockCount) this.outcome('NO_DATA');
+    const { business, lowStock, outOfStockCount, lowStockCount } = answer;
+    const zeros = lowStock.filter((p) => p.stock === 0);
+
+    if (!outOfStockCount) {
+      return lowStockCount
+        ? `En ${business.name} no tienes nada agotado. Eso sí, ${lowStockCount} ${
+            lowStockCount === 1 ? 'producto está' : 'productos están'
+          } por debajo del mínimo.`
+        : `En ${business.name} no tienes nada agotado.`;
+    }
+
+    const head = `En ${business.name} tienes ${outOfStockCount} ${
+      outOfStockCount === 1 ? 'producto agotado' : 'productos agotados'
+    }.`;
+    // Tres nombres como mucho, igual que en stock bajo: por voz una lista larga
+    // no se retiene, y el conteo ya dio la magnitud.
+    const names = zeros.slice(0, 3).map((p) => p.name);
+    if (!names.length) return head;
+    return `${head} ${names.length === 1 ? 'Es' : 'Son'}: ${names.join('; ')}.`;
+  }
+
   private inventoryValueSpeech(answer: InventoryStatusAnswer): string {
+    if (!answer.trackedProducts) this.outcome('NO_DATA');
     const { business, totalUnits, trackedProducts } = answer;
     if (!trackedProducts) {
       return `En ${business.name} no hay productos con control de stock.`;
@@ -803,6 +976,7 @@ export class AlexaService {
 
   /** Nombra a los dos que más deben: por voz, una lista larga no se retiene. */
   private debtSpeech(answer: PendingPaymentAnswer): string {
+    if (!answer.salesCount) this.outcome('NO_DATA');
     const { business, customers, unidentified } = answer;
     if (answer.totalCOP === 0) {
       return `En ${business.name} no te deben nada. Todas las ventas están cobradas.`;
@@ -867,6 +1041,8 @@ export class AlexaService {
   ): Promise<ActorResult> {
     try {
       const actor = await this.auth.actor(envelope, skill);
+      const state = this.observation.getStore();
+      if (state && actor) state.roleCode = actor.roleCode;
       return actor ? { status: 'active', actor } : { status: 'inactive' };
     } catch (error) {
       return this.classify(error);

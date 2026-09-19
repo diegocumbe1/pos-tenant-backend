@@ -11,20 +11,34 @@ import { PrismaService } from '../../prisma/prisma.service';
  * el super-admin debe surtir efecto sin reiniciar, y un minuto de espera es
  * aceptable. `invalidate()` lo vacía cuando la escritura pasa por este proceso.
  */
+export type TelemetryAlexaSkill = AlexaSkill & {
+  tenant?: { vertical: { code: string } | null } | null;
+  actingUser?: { role: { code: string } };
+};
+
 const TTL_MS = 60_000;
 
 @Injectable()
 export class AlexaSkillRepository {
-  private cache = new Map<string, { skill: AlexaSkill | null; at: number }>();
+  private cache = new Map<
+    string,
+    { skill: TelemetryAlexaSkill | null; at: number }
+  >();
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async byApplicationId(applicationId: string): Promise<AlexaSkill | null> {
+  async byApplicationId(
+    applicationId: string,
+  ): Promise<TelemetryAlexaSkill | null> {
     const hit = this.cache.get(applicationId);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.skill;
 
     const skill = await this.prisma.alexaSkill.findFirst({
       where: { applicationId, isActive: true },
+      include: {
+        tenant: { select: { vertical: { select: { code: true } } } },
+        actingUser: { select: { role: { select: { code: true } } } },
+      },
     });
     this.cache.set(applicationId, { skill, at: Date.now() });
     return skill;
