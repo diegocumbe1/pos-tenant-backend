@@ -28,6 +28,22 @@ const overview: PlatformOverviewAnswer = {
 const ASK_FOR_CODE =
   'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
 
+/** Los textos del documento APL, en el orden en que se pintan. */
+const textsOf = (directive: unknown): string[] => {
+  const found: string[] = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (!node || typeof node !== 'object') return;
+    const item = node as Record<string, unknown>;
+    if (item.type === 'Text' && typeof item.text === 'string') {
+      found.push(item.text);
+    }
+    Object.values(item).forEach(walk);
+  };
+  walk(directive);
+  return found;
+};
+
 describe('AlexaService', () => {
   let service: AlexaService;
   let auth: {
@@ -697,50 +713,42 @@ describe('AlexaService', () => {
       const response = (await onScreen()).response;
       const directive = response.directives?.[0] as unknown as {
         type: string;
-        datasources: { payload: Record<string, unknown> };
       };
       expect(directive.type).toBe('Alexa.Presentation.APL.RenderDocument');
 
-      const payload = directive.datasources.payload;
-      expect(payload.business).toBe('Bella Chic');
-      expect(payload.period).toBe('Hoy');
-      // Una cifra manda y el resto la acompaña: en 5" no caben cuatro iguales.
-      expect(payload.hero).toMatchObject({
-        label: 'Ventas',
-        value: formatCOP(840000),
-        sub: '6 ventas',
-      });
-      // Lo accionable antes que lo interesante: el margen queda de tercero,
-      // que es la casilla que la Echo Show 5 no muestra.
-      expect(payload.tiles).toMatchObject([
-        { label: 'Por cobrar', value: formatCOP(1200000) },
-        { label: 'Stock bajo', value: '4', sub: '1 agotados' },
-        { label: 'Margen', value: '38.5%' },
-      ]);
-      // Las barras van contra el mayor saldo, no contra el total.
-      expect(payload.bars).toEqual([
-        { name: 'Marcela Ruiz', amount: formatCOP(700000), width: '100%' },
-        { name: 'Iván Pardo', amount: formatCOP(500000), width: '71%' },
+      expect(textsOf(directive)).toEqual([
+        'Bella Chic',
+        'Hoy',
+        // Una cifra manda: en 5" no caben cuatro del mismo tamaño.
+        'VENTAS',
+        formatCOP(840000),
+        '6 ventas · Margen 38.5%',
+        'Por cobrar',
+        formatCOP(1200000),
+        'Stock bajo',
+        '4 · 1 agotados',
+        'Por entregar',
+        formatCOP(400000),
+        'Ticket promedio',
+        formatCOP(140000),
       ]);
       // La tarjeta no se reemplaza: es lo que queda en el historial.
       expect(response.card).toBeDefined();
     });
 
-    it('abbreviates millions in the small tiles, never in the hero', async () => {
-      const directive = (await onScreen()).response
-        .directives?.[0] as unknown as {
-        datasources: {
-          payload: {
-            hero: { value: string; compact: string };
-            tiles: { compact: string }[];
-          };
-        };
-      };
-      const { hero, tiles } = directive.datasources.payload;
-      // El hero se pinta con `value`, completo: es la cifra que se vino a ver.
-      expect(hero.value).toBe(formatCOP(840000));
-      // El tile secundario mide un tercio y ahí sí se abrevia.
-      expect(tiles[0].compact).toBe('$ 1,20 M');
+    /**
+     * El documento se arma con los valores adentro.
+     *
+     * Un `${payload.hero}` que no resuelve no falla: el dispositivo pinta el
+     * fondo y deja el texto vacío. Esa pantalla negra costó cuatro pruebas en
+     * el Echo Show, así que acá no entra ni un binding ni un `@recurso`.
+     */
+    it('carries no bindings or resource references at all', async () => {
+      const directive = (await onScreen()).response.directives?.[0];
+      const json = JSON.stringify(directive);
+      expect(json).not.toContain('${');
+      expect(json).not.toMatch(/"@[a-zA-Z]/);
+      expect(json).not.toContain('datasources');
     });
 
     it('sends no APL to a device without a screen', async () => {
@@ -787,20 +795,23 @@ describe('AlexaService', () => {
       });
 
     const directiveOf = (response: { directives?: unknown[] }) =>
-      response.directives?.[0] as {
-        type: string;
-        token: string;
-        datasources: { payload: Record<string, unknown> };
-      };
+      response.directives?.[0] as { type: string; token: string };
 
     it('draws the debt panel for quién me debe', async () => {
       const { response } = await onScreen('pending_payment');
       const directive = directiveOf(response);
       expect(directive.type).toBe('Alexa.Presentation.APL.RenderDocument');
       expect(directive.token).toBe('lynko-debt');
-      expect(directive.datasources.payload.bars).toEqual([
-        { name: 'Marcela Ruiz', amount: formatCOP(120000), width: '100%' },
-        { name: 'Iván Pardo', amount: formatCOP(60000), width: '50%' },
+      expect(textsOf(directive)).toEqual([
+        'Bella Chic',
+        'Cartera',
+        'POR COBRAR',
+        formatCOP(180000),
+        '3 ventas sin cobrar',
+        'Marcela Ruiz',
+        formatCOP(120000),
+        'Iván Pardo',
+        formatCOP(60000),
       ]);
       // Y la tarjeta, que es lo único que llega al teléfono.
       expect((response.card as { title: string }).title).toBe(
@@ -808,20 +819,22 @@ describe('AlexaService', () => {
       );
     });
 
-    it('draws the sales panel without bars: nothing to compare', async () => {
+    it('draws the sales panel with the period figures', async () => {
       const { response } = await onScreen('sales_summary');
       const directive = directiveOf(response);
       expect(directive.token).toBe('lynko-sales');
-      // barsTitle vacío esconde el bloque entero, sin dejar un título huérfano.
-      expect(directive.datasources.payload.barsTitle).toBe('');
-      expect(directive.datasources.payload.hero).toMatchObject({
-        label: 'Ventas',
-        value: formatCOP(840000),
-      });
-      expect(directive.datasources.payload.tiles).toMatchObject([
-        { label: 'Ticket promedio', value: formatCOP(140000) },
-        { label: 'Margen', value: '38.5%' },
-        { label: 'Fiado', value: formatCOP(120000) },
+      expect(textsOf(directive)).toEqual([
+        'Bella Chic',
+        'Hoy',
+        'VENTAS',
+        formatCOP(840000),
+        '6 ventas · 14 und',
+        'Ticket promedio',
+        formatCOP(140000),
+        'Margen',
+        '38.5%',
+        'Fiado',
+        formatCOP(120000),
       ]);
       expect((response.card as { title: string }).title).toBe(
         'Ventas · Bella Chic',
