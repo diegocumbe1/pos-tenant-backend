@@ -272,11 +272,26 @@ const TILE = {
   },
 };
 
-const tileAt = (index: number, last: boolean) => ({
+/**
+ * `spacing` y no `marginRight`: los márgenes no existen en APL. El separador
+ * es una propiedad del hijo respecto al hermano anterior, así que el primer
+ * tile va sin él.
+ */
+const tileAt = (index: number, first: boolean) => ({
   ...TILE,
-  marginRight: last ? '0dp' : '@gap',
+  ...(first ? {} : { spacing: '@gap' }),
   bind: [{ name: 'tile', value: `\${payload.tiles[${index}]}` }],
 });
+
+/**
+ * Dónde hay sitio para la tercera casilla y para la letra grande.
+ *
+ * Se escribe la condición en cada `when` en vez de guardarla en un recurso
+ * booleano: los `resources` de APL son colores, dimensiones, cadenas y
+ * números, y un booleano ahí es una apuesta que en el dispositivo no se ve
+ * fallar, simplemente no pinta.
+ */
+const ROOMY = '${viewport.width >= 900 && viewport.height >= 600}';
 
 /**
  * Layout de dos destinos: Echo Show 5 (960x480) y la app móvil, vertical.
@@ -320,7 +335,6 @@ const DOCUMENT = {
         pad: '30dp',
         barHeight: '12dp',
       },
-      booleans: { roomy: true },
     },
     {
       // La Echo Show 5 son 480dp de alto. Todo sube de tamaño y baja de
@@ -341,180 +355,185 @@ const DOCUMENT = {
         pad: '18dp',
         barHeight: '10dp',
       },
-      booleans: { roomy: false },
     },
   ],
   mainTemplate: {
     parameters: ['payload'],
     items: [
+      // Frame y no Container: `backgroundColor` solo existe en Frame, y en
+      // Container el runtime lo ignora — el documento queda sin fondo.
       {
-        type: 'Container',
+        type: 'Frame',
         width: '100vw',
         height: '100vh',
         backgroundColor: '@background',
-        paddingLeft: '@pad',
-        paddingRight: '@pad',
-        paddingTop: '@pad',
-        paddingBottom: '@pad',
-        items: [
-          // Encabezado: quién y cuándo, en letra pequeña a propósito.
-          {
-            type: 'Container',
-            direction: 'row',
-            alignItems: 'baseline',
-            width: '100%',
-            items: [
-              {
-                type: 'Text',
-                text: '${payload.business}',
-                color: '@textPrimary',
-                fontSize: '@titleSize',
-                fontWeight: '700',
-                maxLines: 1,
-                grow: 1,
-                shrink: 1,
-              },
-              {
-                type: 'Text',
-                text: '${payload.period}',
-                color: '@textMuted',
-                fontSize: '@tileLabelSize',
-                fontWeight: '500',
-              },
-            ],
-          },
-          // La cifra que contesta la pregunta. Sin marco: el marco le quita
-          // los dos centímetros que la hacen legible de lejos.
-          {
-            type: 'Container',
-            width: '100%',
-            paddingTop: '@gap',
-            items: [
-              {
-                type: 'Text',
-                text: '${payload.hero.label}',
-                color: '@textMuted',
-                fontSize: '@heroLabelSize',
-                fontWeight: '600',
-                maxLines: 1,
-              },
-              {
-                type: 'Text',
-                // El hero va completo: es la cifra que se vino a ver.
-                text: '${payload.hero.value}',
-                color: '${payload.hero.accent}',
-                fontSize: '@heroValueSize',
-                fontWeight: '700',
-                maxLines: 1,
-              },
-              {
-                type: 'Text',
-                text: '${payload.hero.sub}',
-                color: '@textMuted',
-                fontSize: '@heroSubSize',
-                maxLines: 1,
-              },
-            ],
-          },
-          // Dos casillas de apoyo, tres donde sobra pantalla.
-          {
-            type: 'Container',
-            direction: 'row',
-            width: '100%',
-            paddingTop: '@gap',
-            items: [
-              tileAt(0, false),
-              { ...tileAt(1, false), when: '${@roomy}' },
-              { ...tileAt(1, true), when: '${!@roomy}' },
-              { ...tileAt(2, true), when: '${@roomy}' },
-            ],
-          },
-          // Barras proporcionales. Sin título no hay bloque: una consulta de
-          // ventas no tiene nada que comparar entre sí.
-          {
-            type: 'Container',
-            when: '${payload.barsTitle != ""}',
-            width: '100%',
-            grow: 1,
-            shrink: 1,
-            paddingTop: '@gap',
-            items: [
-              {
-                type: 'Text',
-                text: '${payload.barsTitle}',
-                color: '@textMuted',
-                fontSize: '@tileLabelSize',
-                fontWeight: '600',
-                paddingBottom: '4dp',
-              },
-              {
-                type: 'Text',
-                when: '${payload.emptyBars != ""}',
-                text: '${payload.emptyBars}',
-                color: '@textMuted',
-                fontSize: '@rowSize',
-              },
-              {
-                // Sequence y no Container: con la letra grande el tercer
-                // deudor queda bajo el borde, y sin scroll no habría cómo verlo.
-                type: 'Sequence',
-                when: '${payload.emptyBars == ""}',
-                width: '100%',
-                grow: 1,
-                shrink: 1,
-                data: '${payload.bars}',
-                items: [
-                  {
-                    type: 'Container',
-                    width: '100%',
-                    paddingBottom: '9dp',
-                    items: [
-                      {
-                        type: 'Container',
-                        direction: 'row',
-                        width: '100%',
-                        items: [
-                          {
-                            type: 'Text',
-                            text: '${data.name}',
-                            color: '@textPrimary',
-                            fontSize: '@rowSize',
-                            maxLines: 1,
-                            grow: 1,
-                            shrink: 1,
-                          },
-                          {
-                            type: 'Text',
-                            text: '${data.amount}',
-                            color: '@accentAmber',
-                            fontSize: '@rowSize',
-                            fontWeight: '600',
-                          },
-                        ],
-                      },
-                      {
-                        type: 'Frame',
-                        width: '100%',
-                        height: '@barHeight',
-                        backgroundColor: '@border',
-                        borderRadius: '5dp',
-                        item: {
-                          type: 'Frame',
-                          width: '${data.width}',
-                          height: '@barHeight',
-                          backgroundColor: '@accentAmber',
-                          borderRadius: '5dp',
+        item: {
+          type: 'Container',
+          width: '100%',
+          height: '100%',
+          paddingLeft: '@pad',
+          paddingRight: '@pad',
+          paddingTop: '@pad',
+          paddingBottom: '@pad',
+          items: [
+            // Encabezado: quién y cuándo, en letra pequeña a propósito.
+            {
+              type: 'Container',
+              direction: 'row',
+              alignItems: 'baseline',
+              width: '100%',
+              items: [
+                {
+                  type: 'Text',
+                  text: '${payload.business}',
+                  color: '@textPrimary',
+                  fontSize: '@titleSize',
+                  fontWeight: '700',
+                  maxLines: 1,
+                  grow: 1,
+                  shrink: 1,
+                },
+                {
+                  type: 'Text',
+                  text: '${payload.period}',
+                  color: '@textMuted',
+                  fontSize: '@tileLabelSize',
+                  fontWeight: '500',
+                },
+              ],
+            },
+            // La cifra que contesta la pregunta. Sin marco: el marco le quita
+            // los dos centímetros que la hacen legible de lejos.
+            {
+              type: 'Container',
+              width: '100%',
+              paddingTop: '@gap',
+              items: [
+                {
+                  type: 'Text',
+                  text: '${payload.hero.label}',
+                  color: '@textMuted',
+                  fontSize: '@heroLabelSize',
+                  fontWeight: '600',
+                  maxLines: 1,
+                },
+                {
+                  type: 'Text',
+                  // El hero va completo: es la cifra que se vino a ver.
+                  text: '${payload.hero.value}',
+                  color: '${payload.hero.accent}',
+                  fontSize: '@heroValueSize',
+                  fontWeight: '700',
+                  maxLines: 1,
+                },
+                {
+                  type: 'Text',
+                  text: '${payload.hero.sub}',
+                  color: '@textMuted',
+                  fontSize: '@heroSubSize',
+                  maxLines: 1,
+                },
+              ],
+            },
+            // Dos casillas de apoyo, tres donde sobra pantalla.
+            {
+              type: 'Container',
+              direction: 'row',
+              width: '100%',
+              paddingTop: '@gap',
+              items: [
+                tileAt(0, true),
+                tileAt(1, false),
+                { ...tileAt(2, false), when: ROOMY },
+              ],
+            },
+            // Barras proporcionales. Sin título no hay bloque: una consulta de
+            // ventas no tiene nada que comparar entre sí.
+            {
+              type: 'Container',
+              when: '${payload.barsTitle != ""}',
+              width: '100%',
+              grow: 1,
+              shrink: 1,
+              paddingTop: '@gap',
+              items: [
+                {
+                  type: 'Text',
+                  text: '${payload.barsTitle}',
+                  color: '@textMuted',
+                  fontSize: '@tileLabelSize',
+                  fontWeight: '600',
+                  paddingBottom: '4dp',
+                },
+                {
+                  type: 'Text',
+                  when: '${payload.emptyBars != ""}',
+                  text: '${payload.emptyBars}',
+                  color: '@textMuted',
+                  fontSize: '@rowSize',
+                },
+                {
+                  // Sequence y no Container: con la letra grande el tercer
+                  // deudor queda bajo el borde, y sin scroll no habría cómo verlo.
+                  type: 'Sequence',
+                  when: '${payload.emptyBars == ""}',
+                  width: '100%',
+                  grow: 1,
+                  shrink: 1,
+                  data: '${payload.bars}',
+                  items: [
+                    {
+                      type: 'Container',
+                      width: '100%',
+                      paddingBottom: '9dp',
+                      items: [
+                        {
+                          type: 'Container',
+                          direction: 'row',
+                          width: '100%',
+                          items: [
+                            {
+                              type: 'Text',
+                              text: '${data.name}',
+                              color: '@textPrimary',
+                              fontSize: '@rowSize',
+                              maxLines: 1,
+                              grow: 1,
+                              shrink: 1,
+                            },
+                            {
+                              type: 'Text',
+                              text: '${data.amount}',
+                              color: '@accentAmber',
+                              fontSize: '@rowSize',
+                              fontWeight: '600',
+                            },
+                          ],
                         },
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
-          // Empuja lo anterior hacia arriba cuando no hay bloque de barras.
-          { type: 'Container', grow: 1, shrink: 1 },
-        ],
+                        {
+                          type: 'Frame',
+                          width: '100%',
+                          height: '@barHeight',
+                          backgroundColor: '@border',
+                          borderRadius: '5dp',
+                          item: {
+                            type: 'Frame',
+                            width: '${data.width}',
+                            height: '@barHeight',
+                            backgroundColor: '@accentAmber',
+                            borderRadius: '5dp',
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            // Empuja lo anterior hacia arriba cuando no hay barras.
+            { type: 'Container', grow: 1, shrink: 1 },
+          ],
+        },
       },
     ],
   },
