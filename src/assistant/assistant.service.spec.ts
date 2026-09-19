@@ -1,6 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformService } from '../platform/platform.service';
+import { RetailCatalogService } from '../retail/modules/catalog/retail-catalog.service';
 import { RetailInventoryService } from '../retail/modules/inventory/retail-inventory.service';
 import { RetailPurchasesService } from '../retail/modules/purchases/retail-purchases.service';
 import { RetailSalesService } from '../retail/modules/sales/retail-sales.service';
@@ -22,6 +23,7 @@ describe('AssistantService', () => {
   };
   let retailInventory: { getSummary: jest.Mock };
   let retailPurchases: { getSummary: jest.Mock };
+  let retailCatalog: { listProducts: jest.Mock };
   const admin = { id: 'u1', isPlatformAdmin: true } as AuthenticatedUser;
   const cashier = { id: 'u2', isPlatformAdmin: false } as AuthenticatedUser;
 
@@ -46,6 +48,39 @@ describe('AssistantService', () => {
       assertPermission: jest.fn(),
       branchesOf: jest.fn().mockResolvedValue(['b1', 'b2']),
     };
+    const shelf = [
+      {
+        name: 'Mantequilla corporal',
+        priceCOP: 32000,
+        stock: 12,
+        trackStock: true,
+        categoryId: 'c1',
+        categoryName: 'Cuidado corporal',
+        variants: [
+          { label: 'Vainilla', stock: 4 },
+          { label: 'Coco', stock: 3 },
+        ],
+      },
+      {
+        name: 'Exfoliante de café',
+        priceCOP: 28000,
+        stock: 5,
+        trackStock: true,
+        categoryId: 'c1',
+        categoryName: 'Cuidado corporal',
+        variants: [],
+      },
+      {
+        name: 'Serum facial',
+        priceCOP: 45000,
+        stock: 2,
+        trackStock: true,
+        categoryId: 'c2',
+        categoryName: 'Rostro',
+        variants: [],
+      },
+    ];
+    retailCatalog = { listProducts: jest.fn().mockResolvedValue(shelf) };
     retailPurchases = {
       getSummary: jest
         .fn()
@@ -83,7 +118,94 @@ describe('AssistantService', () => {
       retailSales as unknown as RetailSalesService,
       retailInventory as unknown as RetailInventoryService,
       retailPurchases as unknown as RetailPurchasesService,
+      retailCatalog as unknown as RetailCatalogService,
     );
+  });
+
+  describe('catálogo', () => {
+    const business = { id: 't1', name: 'Bella Chic' };
+
+    it('cuenta productos por categoría y deja fuera las vacías', async () => {
+      const answer = await service.catalogOverview(admin, business);
+      // Dos sucursales con el mismo mock: los conteos se suman.
+      expect(answer.productCount).toBe(3);
+      expect(answer.categories).toEqual([
+        { id: 'c1', name: 'Cuidado corporal', productCount: 2 },
+        { id: 'c2', name: 'Rostro', productCount: 1 },
+      ]);
+    });
+
+    it('encuentra la categoría aunque la digan a medias', async () => {
+      const answer = await service.catalogCategory(admin, business, 'corporal');
+      expect(answer.category?.name).toBe('Cuidado corporal');
+      expect(answer.productCount).toBe(2);
+      // De mayor a menor stock: lo que hay de verdad se nombra primero.
+      expect(answer.products[0].name).toBe('Mantequilla corporal');
+    });
+
+    it('devuelve vacío cuando la categoría no existe', async () => {
+      const answer = await service.catalogCategory(
+        admin,
+        business,
+        'ferretería',
+      );
+      expect(answer.category).toBeNull();
+      expect(answer.products).toEqual([]);
+    });
+
+    it('resuelve un producto por nombre exacto aunque otros lo contengan', async () => {
+      const answer = await service.productLookup(
+        admin,
+        business,
+        'mantequilla corporal',
+      );
+      expect(answer.product?.name).toBe('Mantequilla corporal');
+      expect(answer.candidates).toEqual([]);
+    });
+
+    it('pide acotar en vez de elegir por su cuenta', async () => {
+      retailCatalog.listProducts.mockResolvedValue([
+        {
+          name: 'Aceite de coco',
+          priceCOP: 1,
+          stock: 1,
+          trackStock: true,
+          categoryId: 'c1',
+          categoryName: 'x',
+          variants: [],
+        },
+        {
+          name: 'Aceite de almendras',
+          priceCOP: 1,
+          stock: 1,
+          trackStock: true,
+          categoryId: 'c1',
+          categoryName: 'x',
+          variants: [],
+        },
+      ]);
+      const answer = await service.productLookup(admin, business, 'aceite');
+      expect(answer.product).toBeNull();
+      expect(answer.matchCount).toBe(2);
+      expect(answer.candidates).toContain('Aceite de coco');
+    });
+
+    it('avisa cuando no hay ninguna coincidencia', async () => {
+      retailCatalog.listProducts.mockResolvedValue([]);
+      const answer = await service.productLookup(admin, business, 'tornillos');
+      expect(answer.matchCount).toBe(0);
+      expect(answer.product).toBeNull();
+    });
+
+    it('exige el permiso de catálogo antes de consultar', async () => {
+      scope.assertPermission.mockImplementation(() => {
+        throw new ForbiddenException();
+      });
+      await expect(
+        service.catalogOverview(admin, business),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(retailCatalog.listProducts).not.toHaveBeenCalled();
+    });
   });
 
   describe('businessReport', () => {

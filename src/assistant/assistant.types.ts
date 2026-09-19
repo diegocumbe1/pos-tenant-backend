@@ -98,6 +98,43 @@ export interface BusinessReportAnswer {
   delivery: DeliveryFigures;
 }
 
+// ─── Catálogo ───────────────────────────────────────────────────────────────
+// Se recorre por niveles y cada nivel trae el CONTEO más unos pocos ejemplos.
+// Por voz, una lista de ciento veinte productos no sirve para nada; lo que
+// sirve es saber cuántos hay y poder bajar un escalón.
+
+export interface CatalogOverviewAnswer {
+  business: BusinessRefLike;
+  productCount: number;
+  /** Solo las que tienen productos, de mayor a menor. */
+  categories: { id: string; name: string; productCount: number }[];
+}
+
+export interface CatalogCategoryAnswer {
+  business: BusinessRefLike;
+  category: { id: string; name: string } | null;
+  productCount: number;
+  /** De mayor a menor stock: lo que hay de verdad va primero. */
+  products: { name: string; priceCOP: number; stock: number }[];
+}
+
+export interface ProductLookupAnswer {
+  business: BusinessRefLike;
+  /** Cuántos coincidieron con la búsqueda, aunque solo se devuelvan algunos. */
+  matchCount: number;
+  /** Null cuando no hubo match, o cuando hay demasiados para elegir uno. */
+  product: {
+    name: string;
+    priceCOP: number;
+    stock: number;
+    trackStock: boolean;
+    categoryName: string | null;
+    variants: { label: string; stock: number }[];
+  } | null;
+  /** Nombres para desambiguar cuando coincidió más de uno. */
+  candidates: string[];
+}
+
 export interface PlatformOverviewAnswer {
   tenants: { total: number; active: number; suspended: number };
   subscriptions: {

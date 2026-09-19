@@ -62,13 +62,22 @@ export class AssistantScopeService {
     });
   }
 
+  /**
+   * @param rememberedId Negocio de la pregunta anterior en esta misma
+   * conversación. Se usa solo si no dijeron uno, y se valida igual contra los
+   * autorizados: un id recordado no es permiso, es una comodidad.
+   */
   async resolveBusiness(
     actor: AuthenticatedUser,
     spoken: string | undefined,
+    rememberedId?: string,
   ): Promise<BusinessResolution> {
     const available = await this.accessibleBusinesses(actor);
-    // Con un solo negocio no hay nada que preguntar, aunque no lo hayan dicho.
     if (!spoken?.trim()) {
+      const remembered =
+        rememberedId && available.find((b) => b.id === rememberedId);
+      if (remembered) return { status: 'resolved', business: remembered };
+      // Con un solo negocio no hay nada que preguntar, aunque no lo hayan dicho.
       return available.length === 1
         ? { status: 'resolved', business: available[0] }
         : { status: 'missing', available };

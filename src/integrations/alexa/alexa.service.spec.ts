@@ -210,6 +210,18 @@ describe('AlexaService', () => {
       'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
       false,
     ],
+    [
+      'IntentRequest',
+      'AMAZON.YesIntent',
+      'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
+      false,
+    ],
+    [
+      'IntentRequest',
+      'AMAZON.NoIntent',
+      'Listo. Aquí estoy si necesitas algo más.',
+      false,
+    ],
     ['IntentRequest', 'AMAZON.StopIntent', 'Hasta luego.', true],
     ['IntentRequest', 'AMAZON.CancelIntent', 'Hasta luego.', true],
     [
@@ -353,7 +365,11 @@ describe('AlexaService', () => {
       expect(await askDebt('bella chic')).toBe(
         'En Bella Chic te deben 180000 pesos en 3 ventas. Deben Marcela Ruiz, 120000 pesos y Iván Pardo, 60000 pesos.',
       );
-      expect(scope.resolveBusiness).toHaveBeenCalledWith(actor, 'bella chic');
+      expect(scope.resolveBusiness).toHaveBeenCalledWith(
+        actor,
+        'bella chic',
+        undefined,
+      );
       expect(assistant.pendingPayment).toHaveBeenCalledWith(actor, bella);
     });
 
@@ -434,6 +450,42 @@ describe('AlexaService', () => {
       const result = await send(envelope('IntentRequest', 'list_businesses'));
       expect((result.response.outputSpeech as { text: string }).text).toBe(
         'Tienes 2 negocios: Bella Chic, DC Tech.',
+      );
+    });
+
+    it('remembers the business for the next question in the session', async () => {
+      const result = await askDebt('bella chic');
+      expect(result).toBeDefined();
+      const answered = await send(envelope('IntentRequest', 'pending_payment'));
+      // Sin repetir el nombre, pero el id recordado se valida igual.
+      expect(scope.resolveBusiness).toHaveBeenLastCalledWith(
+        actor,
+        undefined,
+        undefined,
+      );
+      expect(answered).toBeDefined();
+    });
+
+    it('echoes the resolved business so the next turn has it', async () => {
+      const result = await send(
+        envelope('IntentRequest', 'pending_payment', {
+          negocio: { name: 'negocio', value: 'bella chic' },
+        }),
+      );
+      expect(result.sessionAttributes).toEqual({ businessId: 't1' });
+    });
+
+    it('uses the business carried in the session when none is said', async () => {
+      const body = envelope('IntentRequest', 'pending_payment') as Record<
+        string,
+        unknown
+      >;
+      body.session = { attributes: { businessId: 't1' } };
+      await send(body);
+      expect(scope.resolveBusiness).toHaveBeenCalledWith(
+        actor,
+        undefined,
+        't1',
       );
     });
 
@@ -543,7 +595,7 @@ describe('AlexaService', () => {
         (await report()).response.outputSpeech as { text: string }
       ).text;
       expect(speech).toBe(
-        'Reporte de Bella Chic. Hoy vendiste 840000 pesos en 6 ventas. Te deben 1200000 pesos en total, de 2 clientes. Hay 4 productos bajos de stock, 1 agotados. Tienes 3 pedidos abiertos con el proveedor. Y 5 ventas por entregar. ¿Quieres el detalle de alguno?',
+        'Reporte de Bella Chic. Hoy vendiste 840000 pesos en 6 ventas. Te deben 1200000 pesos en total, de 2 clientes. Hay 4 productos bajos de stock, 1 agotados. Tienes 3 pedidos abiertos con el proveedor. Y 5 ventas por entregar. Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
       );
       expect(speech).not.toContain('Marcela');
     });

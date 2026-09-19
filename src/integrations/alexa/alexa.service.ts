@@ -26,10 +26,13 @@ import {
 import { AssistantService } from '../../assistant/assistant.service';
 import {
   BusinessReportAnswer,
+  CatalogCategoryAnswer,
+  CatalogOverviewAnswer,
   InventoryStatusAnswer,
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
   PlatformOverviewAnswer,
+  ProductLookupAnswer,
   SalesAnswer,
 } from '../../assistant/assistant.types';
 import { periodLabel, parsePeriod } from '../../assistant/report-period';
@@ -40,11 +43,17 @@ import { AlexaSkillRepository } from './alexa-skill.repository';
 const ACTIVATION_SLOT = 'codigo';
 const BUSINESS_SLOT = 'negocio';
 const PERIOD_SLOT = 'periodo';
+const CATEGORY_SLOT = 'categoria';
+const PRODUCT_SLOT = 'producto';
+/** Por voz no se retienen más de tres nombres seguidos. */
+const MAX_NAMES = 3;
 const ASK_FOR_CODE =
   'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
 const DENIED = 'Esta cuenta de Alexa no está autorizada para usar Lynko.';
 const UNCONFIGURED =
   'La autorización por voz de Lynko todavía no está configurada.';
+const DETAIL_HINT =
+  'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.';
 
 type ActorResult =
   | { status: 'active'; actor: AuthenticatedUser }
@@ -238,6 +247,31 @@ export class AlexaService {
               await this.assistant.pendingDelivery(actor, business),
             ),
         );
+      case 'catalog_overview':
+        this.logger.log('IntentRequest: catalog_overview');
+        return this.forBusiness(envelope, skill, request, async (a, b) =>
+          this.catalogSpeech(await this.assistant.catalogOverview(a, b)),
+        );
+      case 'catalog_category':
+        this.logger.log('IntentRequest: catalog_category');
+        return this.forBusiness(envelope, skill, request, async (a, b) => {
+          const spoken = this.slotValue(request, CATEGORY_SLOT);
+          if (!spoken) return '¿De cuál categoría?';
+          return this.categorySpeech(
+            await this.assistant.catalogCategory(a, b, spoken),
+            spoken,
+          );
+        });
+      case 'product_lookup':
+        this.logger.log('IntentRequest: product_lookup');
+        return this.forBusiness(envelope, skill, request, async (a, b) => {
+          const spoken = this.slotValue(request, PRODUCT_SLOT);
+          if (!spoken) return '¿De cuál producto?';
+          return this.productSpeech(
+            await this.assistant.productLookup(a, b, spoken),
+            spoken,
+          );
+        });
       case 'low_stock':
         this.logger.log('IntentRequest: low_stock');
         return this.forBusiness(
@@ -266,6 +300,14 @@ export class AlexaService {
           'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
           false,
         );
+      case 'AMAZON.YesIntent':
+        // Un sí suelto no dice a qué: se repiten las opciones en vez de
+        // adivinar, que es lo que hacía caer todo en el reporte otra vez.
+        this.logger.log('IntentRequest: AMAZON.YesIntent');
+        return this.speak(DETAIL_HINT, false, DETAIL_HINT);
+      case 'AMAZON.NoIntent':
+        this.logger.log('IntentRequest: AMAZON.NoIntent');
+        return this.speak('Listo. Aquí estoy si necesitas algo más.', false);
       case 'AMAZON.StopIntent':
       case 'AMAZON.CancelIntent':
         this.logger.log(`IntentRequest: ${name}`);
@@ -388,7 +430,15 @@ export class AlexaService {
   ): Promise<ResponseEnvelope> {
     return this.guarded(envelope, skill, async (actor) => {
       const spoken = this.slotValue(request, BUSINESS_SLOT);
-      const resolution = await this.scope.resolveBusiness(actor, spoken);
+      // El negocio de la pregunta anterior: sin esto, encadenar "dame el
+      // reporte de Bella Chic" con "quién me debe" obligaría a repetir el
+      // nombre en cada frase.
+      const remembered = this.rememberedBusinessId(envelope);
+      const resolution = await this.scope.resolveBusiness(
+        actor,
+        spoken,
+        remembered,
+      );
       if (resolution.status !== 'resolved') {
         return this.speak(this.businessPrompt(resolution), false);
       }
@@ -397,8 +447,20 @@ export class AlexaService {
         typeof result === 'string'
           ? { speech: result, card: undefined }
           : result;
-      return this.speak(speech, false, '¿Quieres preguntar algo más?', card);
+      return this.speak(speech, false, '¿Quieres preguntar algo más?', card, {
+        businessId: resolution.business.id,
+      });
     });
+  }
+
+  private rememberedBusinessId(envelope: RequestEnvelope): string | undefined {
+    // `attributes` es lo que devolvimos nosotros, pero viaja por Alexa: se
+    // trata como dato externo y se valida igual contra los negocios del actor.
+    const attributes = envelope.session?.attributes as
+      | Record<string, unknown>
+      | undefined;
+    const value = attributes?.['businessId'];
+    return typeof value === 'string' ? value : undefined;
   }
 
   /**
@@ -445,7 +507,10 @@ export class AlexaService {
       );
     }
 
-    parts.push('¿Quieres el detalle de alguno?');
+    // No se pregunta "¿quieres el detalle?": un sí no dice de cuál, y obliga a
+    // otra repregunta. Se nombran las frases exactas, que además son los
+    // intents que ya existen.
+    parts.push(DETAIL_HINT);
     return parts.join(' ');
   }
 
@@ -535,6 +600,83 @@ export class AlexaService {
 
   private capitalize(text: string): string {
     return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  /**
+   * Tres nombres y el resto contado.
+   *
+   * Es la regla que hace usable el catálogo por voz: primero cuántos hay,
+   * después unos pocos ejemplos, y "y N más" para cerrar. Leer la lista entera
+   * no informa, agota.
+   */
+  private fewNames(names: string[], unit = 'más'): string {
+    const shown = names.slice(0, MAX_NAMES);
+    const rest = names.length - shown.length;
+    return rest > 0
+      ? `${shown.join(', ')} y ${rest} ${unit}`
+      : shown.join(', ');
+  }
+
+  private catalogSpeech(answer: CatalogOverviewAnswer): string {
+    const { business, categories, productCount } = answer;
+    if (!productCount) {
+      return `${business.name} todavía no tiene productos cargados.`;
+    }
+    if (!categories.length) {
+      return `${business.name} tiene ${productCount} productos, ninguno con categoría.`;
+    }
+    return `${business.name} tiene ${productCount} productos en ${
+      categories.length === 1
+        ? '1 categoría'
+        : `${categories.length} categorías`
+    }: ${this.fewNames(categories.map((c) => c.name))}. ¿Sobre cuál quieres preguntar?`;
+  }
+
+  private categorySpeech(
+    answer: CatalogCategoryAnswer,
+    spoken: string,
+  ): string {
+    if (!answer.category) {
+      return `No encuentro una categoría parecida a ${spoken}. Di: qué productos tienes, para oír las categorías.`;
+    }
+    const { category, productCount, products } = answer;
+    // Los agotados van nombrados como tales: un cero suelto se oye como error.
+    const examples = products.map((p) =>
+      p.stock > 0 ? p.name : `${p.name}, agotado`,
+    );
+    return `En ${category.name} hay ${
+      productCount === 1 ? '1 producto' : `${productCount} productos`
+    }: ${this.fewNames(examples)}. ¿Cuál quieres?`;
+  }
+
+  private productSpeech(answer: ProductLookupAnswer, spoken: string): string {
+    if (!answer.matchCount) {
+      return `No encuentro ningún producto que se llame ${spoken}.`;
+    }
+    if (!answer.product) {
+      // Demasiados: se pide acotar en vez de leer diez nombres.
+      return `Hay ${answer.matchCount} productos que coinciden: ${this.fewNames(
+        answer.candidates,
+      )}. ¿Cuál de esos?`;
+    }
+
+    const { name, priceCOP, stock, trackStock, variants } = answer.product;
+    const existence = !trackStock
+      ? 'sin control de stock'
+      : stock > 0
+        ? `quedan ${stock} unidades`
+        : 'agotado';
+    const head = `${name}, ${priceCOP} pesos, ${existence}.`;
+
+    if (!variants.length) return head;
+    const available = variants.filter((v) => v.stock > 0);
+    return `${head} Tiene ${variants.length} presentaciones${
+      available.length < variants.length
+        ? `, ${variants.length - available.length} agotadas`
+        : ''
+    }: ${this.fewNames(
+      variants.map((v) => `${v.label}, ${v.stock > 0 ? v.stock : 'agotado'}`),
+    )}.`;
   }
 
   private lowStockSpeech(answer: InventoryStatusAnswer): string {
@@ -695,9 +837,13 @@ export class AlexaService {
     shouldEndSession: boolean,
     reprompt = 'Puedes preguntarme cuántas suscripciones tienes.',
     card?: ui.Card,
+    sessionAttributes?: Record<string, unknown>,
   ): ResponseEnvelope {
     return {
       version: '1.0',
+      // Alexa no guarda nada por su cuenta: lo que no se devuelve acá se pierde
+      // en el siguiente turno.
+      ...(sessionAttributes && { sessionAttributes }),
       response: {
         outputSpeech: { type: 'PlainText', text },
         ...(card && { card }),
