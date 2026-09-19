@@ -704,11 +704,18 @@ describe('AlexaService', () => {
       const payload = directive.datasources.payload;
       expect(payload.business).toBe('Bella Chic');
       expect(payload.period).toBe('Hoy');
-      expect(payload.kpis).toMatchObject([
-        { label: 'Ventas', value: formatCOP(840000), sub: '6 ventas' },
-        { label: 'Margen', value: '38.5%' },
+      // Una cifra manda y el resto la acompaña: en 5" no caben cuatro iguales.
+      expect(payload.hero).toMatchObject({
+        label: 'Ventas',
+        value: formatCOP(840000),
+        sub: '6 ventas',
+      });
+      // Lo accionable antes que lo interesante: el margen queda de tercero,
+      // que es la casilla que la Echo Show 5 no muestra.
+      expect(payload.tiles).toMatchObject([
         { label: 'Por cobrar', value: formatCOP(1200000) },
         { label: 'Stock bajo', value: '4', sub: '1 agotados' },
+        { label: 'Margen', value: '38.5%' },
       ]);
       // Las barras van contra el mayor saldo, no contra el total.
       expect(payload.bars).toEqual([
@@ -719,14 +726,21 @@ describe('AlexaService', () => {
       expect(response.card).toBeDefined();
     });
 
-    it('abbreviates millions, which is all a five-inch screen fits', async () => {
+    it('abbreviates millions in the small tiles, never in the hero', async () => {
       const directive = (await onScreen()).response
         .directives?.[0] as unknown as {
-        datasources: { payload: { kpis: { compact: string }[] } };
+        datasources: {
+          payload: {
+            hero: { value: string; compact: string };
+            tiles: { compact: string }[];
+          };
+        };
       };
-      const [ventas, , porCobrar] = directive.datasources.payload.kpis;
-      expect(ventas.compact).toBe(formatCOP(840000));
-      expect(porCobrar.compact).toBe('$ 1,20 M');
+      const { hero, tiles } = directive.datasources.payload;
+      // El hero se pinta con `value`, completo: es la cifra que se vino a ver.
+      expect(hero.value).toBe(formatCOP(840000));
+      // El tile secundario mide un tercio y ahí sí se abrevia.
+      expect(tiles[0].compact).toBe('$ 1,20 M');
     });
 
     it('sends no APL to a device without a screen', async () => {
@@ -748,6 +762,80 @@ describe('AlexaService', () => {
         bella,
         expected,
       );
+    });
+  });
+
+  /**
+   * La primera prueba en la Echo Show fue con "quién me debe" y no se vio
+   * nada: el APL estaba solo en business_report. Estos tests fijan que los
+   * intents que se preguntan a diario también pinten pantalla.
+   */
+  describe('screen for the everyday intents', () => {
+    const onScreen = (intent: string) =>
+      send({
+        ...envelope('IntentRequest', intent, {
+          negocio: { name: 'negocio', value: 'bella chic' },
+        }),
+        context: {
+          System: {
+            application: { applicationId: skillId },
+            device: {
+              supportedInterfaces: { 'Alexa.Presentation.APL': {} },
+            },
+          },
+        },
+      });
+
+    const directiveOf = (response: { directives?: unknown[] }) =>
+      response.directives?.[0] as {
+        type: string;
+        token: string;
+        datasources: { payload: Record<string, unknown> };
+      };
+
+    it('draws the debt panel for quién me debe', async () => {
+      const { response } = await onScreen('pending_payment');
+      const directive = directiveOf(response);
+      expect(directive.type).toBe('Alexa.Presentation.APL.RenderDocument');
+      expect(directive.token).toBe('lynko-debt');
+      expect(directive.datasources.payload.bars).toEqual([
+        { name: 'Marcela Ruiz', amount: formatCOP(120000), width: '100%' },
+        { name: 'Iván Pardo', amount: formatCOP(60000), width: '50%' },
+      ]);
+      // Y la tarjeta, que es lo único que llega al teléfono.
+      expect((response.card as { title: string }).title).toBe(
+        'Por cobrar · Bella Chic',
+      );
+    });
+
+    it('draws the sales panel without bars: nothing to compare', async () => {
+      const { response } = await onScreen('sales_summary');
+      const directive = directiveOf(response);
+      expect(directive.token).toBe('lynko-sales');
+      // barsTitle vacío esconde el bloque entero, sin dejar un título huérfano.
+      expect(directive.datasources.payload.barsTitle).toBe('');
+      expect(directive.datasources.payload.hero).toMatchObject({
+        label: 'Ventas',
+        value: formatCOP(840000),
+      });
+      expect(directive.datasources.payload.tiles).toMatchObject([
+        { label: 'Ticket promedio', value: formatCOP(140000) },
+        { label: 'Margen', value: '38.5%' },
+        { label: 'Fiado', value: formatCOP(120000) },
+      ]);
+      expect((response.card as { title: string }).title).toBe(
+        'Ventas · Bella Chic',
+      );
+    });
+
+    it('still sends only the card to a device without a screen', async () => {
+      const { response } = await send(
+        envelope('IntentRequest', 'pending_payment', {
+          negocio: { name: 'negocio', value: 'bella chic' },
+        }),
+      );
+      expect(response.directives).toBeUndefined();
+      expect(response.card).toBeDefined();
     });
   });
 

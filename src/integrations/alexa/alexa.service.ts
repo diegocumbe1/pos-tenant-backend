@@ -45,10 +45,11 @@ import {
   SalesRankingAnswer,
 } from '../../assistant/assistant.types';
 import { periodLabel, parsePeriod } from '../../assistant/report-period';
+import { formatCOP } from '../../common/date.util';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaSkillRepository } from './alexa-skill.repository';
-import { reportDocument } from './apl/report.apl';
+import { debtDocument, reportDocument, salesDocument } from './apl/report.apl';
 
 /**
  * Lo que un intent puede devolver: la frase hablada y, cuando hay pantalla,
@@ -283,10 +284,16 @@ export class AlexaService {
           envelope,
           skill,
           request,
-          async (actor, business) =>
-            this.debtSpeech(
-              await this.assistant.pendingPayment(actor, business),
-            ),
+          async (actor, business) => {
+            const debt = await this.assistant.pendingPayment(actor, business);
+            return {
+              speech: this.debtSpeech(debt),
+              card: this.debtCard(debt),
+              directives: this.supportsApl(envelope)
+                ? [debtDocument(debt)]
+                : undefined,
+            };
+          },
         );
       case 'list_businesses':
         this.logger.log('IntentRequest: list_businesses');
@@ -329,14 +336,20 @@ export class AlexaService {
           envelope,
           skill,
           request,
-          async (actor, business) =>
-            this.salesSpeech(
-              await this.assistant.sales(
-                actor,
-                business,
-                parsePeriod(this.slotValue(request, PERIOD_SLOT)),
-              ),
-            ),
+          async (actor, business) => {
+            const sales = await this.assistant.sales(
+              actor,
+              business,
+              parsePeriod(this.slotValue(request, PERIOD_SLOT)),
+            );
+            return {
+              speech: this.salesSpeech(sales),
+              card: this.salesCard(sales),
+              directives: this.supportsApl(envelope)
+                ? [salesDocument(sales)]
+                : undefined,
+            };
+          },
         );
       case 'pending_delivery':
         this.logger.log('IntentRequest: pending_delivery');
@@ -711,6 +724,50 @@ export class AlexaService {
     return {
       type: 'Simple',
       title: `Reporte · ${report.business.name}`,
+      content: lines.filter((line) => line !== '').join('\n'),
+    };
+  }
+
+  /**
+   * La cartera en la tarjeta.
+   *
+   * En el teléfono la tarjeta es lo único que hay —la app de Alexa no pinta
+   * APL—, así que acá van los nombres y los montos con separadores: es la
+   * pantalla donde de verdad se leen.
+   */
+  private debtCard(answer: PendingPaymentAnswer): ui.Card {
+    const lines = [
+      `Por cobrar: ${formatCOP(answer.totalCOP)} en ${answer.salesCount} ${answer.salesCount === 1 ? 'venta' : 'ventas'}`,
+      '',
+      ...answer.customers
+        .slice(0, 8)
+        .map((c) => `  • ${c.name}: ${formatCOP(c.amountCOP)}`),
+      answer.unidentified.amountCOP
+        ? `  • Sin cliente: ${formatCOP(answer.unidentified.amountCOP)}`
+        : '',
+    ];
+    return {
+      type: 'Simple',
+      title: `Por cobrar · ${answer.business.name}`,
+      content: lines.filter((line) => line !== '').join('\n'),
+    };
+  }
+
+  private salesCard(answer: SalesAnswer): ui.Card {
+    const lines = [
+      `Ventas (${periodLabel(answer.period)}): ${formatCOP(answer.revenueCOP)} en ${answer.salesCount} ${answer.salesCount === 1 ? 'venta' : 'ventas'}`,
+      `Ticket promedio: ${formatCOP(answer.averageTicketCOP)} · Margen: ${answer.marginPct}%`,
+      `Unidades: ${answer.unitsSold}`,
+      answer.creditedCOP ? `Fiado: ${formatCOP(answer.creditedCOP)}` : '',
+      // El flete no está dentro de `revenueCOP`: nombrarlo aparte evita que
+      // alguien sume dos cifras que ya no se suman.
+      answer.shippingCOP
+        ? `Flete aparte: ${formatCOP(answer.shippingCOP)}`
+        : '',
+    ];
+    return {
+      type: 'Simple',
+      title: `Ventas · ${answer.business.name}`,
       content: lines.filter((line) => line !== '').join('\n'),
     };
   }
@@ -1132,11 +1189,16 @@ export class AlexaService {
    * soportan APL: por eso la tarjeta nunca se reemplaza, se suma.
    */
   private supportsApl(envelope: RequestEnvelope): boolean {
-    return Boolean(
+    const supported = Boolean(
       envelope.context?.System?.device?.supportedInterfaces?.[
         'Alexa.Presentation.APL'
       ],
     );
+    // Queda en el log porque desde afuera no hay cómo distinguir "el
+    // dispositivo no soporta APL" de "la skill no tiene la interfaz activa":
+    // en los dos casos la pantalla se ve igual de vacía.
+    this.logger.log(`APL support: ${supported}`);
+    return supported;
   }
 
   private speak(

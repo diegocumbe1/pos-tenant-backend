@@ -2,13 +2,53 @@ import { interfaces } from 'ask-sdk-model';
 import { formatCOP } from '../../../common/date.util';
 import {
   BusinessReportAnswer,
+  DebtFigures,
+  PendingPaymentAnswer,
   ReportPeriod,
+  SalesAnswer,
 } from '../../../assistant/assistant.types';
 
 type RenderDocument = interfaces.alexa.presentation.apl.RenderDocumentDirective;
 
-/** Cuántos deudores caben en pantalla sin que las barras se vuelvan ilegibles. */
-const MAX_BARS = 4;
+/** Cuántas barras caben en pantalla sin volverse ilegibles. */
+const MAX_BARS = 3;
+
+interface Cell {
+  label: string;
+  value: string;
+  /** Monto abreviado, para los tiles chicos donde el largo no cabe. */
+  compact: string;
+  sub: string;
+  accent: string;
+}
+
+/**
+ * Lo que el documento sabe pintar.
+ *
+ * Una sola cifra manda —`hero`— y el resto la acompaña. La Echo Show 5 se mira
+ * desde el otro lado de la cocina, no a treinta centímetros: cuatro cifras del
+ * mismo tamaño ahí no son un tablero, son una pantalla que nadie lee.
+ */
+interface Panel {
+  business: string;
+  period: string;
+  hero: Cell;
+  /** Dos se ven siempre; la tercera solo donde sobra pantalla. */
+  tiles: Cell[];
+  /** Vacío esconde el bloque entero; no deja un título sobre la nada. */
+  barsTitle: string;
+  bars: { name: string; amount: string; width: string }[];
+  emptyBars: string;
+}
+
+function panel(token: string, payload: Panel): RenderDocument {
+  return {
+    type: 'Alexa.Presentation.APL.RenderDocument',
+    token,
+    document: DOCUMENT,
+    datasources: { payload },
+  };
+}
 
 /**
  * En pantalla el período se lee como título, no como frase hablada: la voz dice
@@ -22,70 +62,118 @@ const PERIOD_TITLE: Record<ReportPeriod, string> = {
 };
 
 /**
- * El reporte en pantalla, para dispositivos con APL.
+ * "Cómo vamos": la venta manda, y debajo lo accionable.
  *
- * Los valores llegan ya formateados desde acá: el documento no hace cuentas ni
- * formatea moneda porque el data-binding de APL no tiene `Intl`, y un `48521`
- * sin separadores es justo lo que hace ver barato un reporte.
+ * Por cobrar y stock bajo van antes que el margen porque son las dos que
+ * mueven a hacer algo hoy; el margen es interesante, no urgente, y por eso
+ * queda en la tercera casilla, la que solo aparece en pantallas grandes.
  */
 export function reportDocument(report: BusinessReportAnswer): RenderDocument {
   const { sales, debt, inventory } = report;
 
-  return {
-    type: 'Alexa.Presentation.APL.RenderDocument',
-    token: 'lynko-report',
-    document: DOCUMENT,
-    datasources: {
-      payload: {
-        business: report.business.name,
-        period: PERIOD_TITLE[report.period],
-        kpis: [
-          kpi('Ventas', sales.revenueCOP, {
-            sub: `${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')}`,
-            accent: '@accentGreen',
-          }),
-          {
-            label: 'Margen',
-            value: `${sales.marginPct}%`,
-            compact: `${sales.marginPct}%`,
-            sub: `${sales.unitsSold} und`,
-            accent: '@accentGreen',
-          },
-          kpi('Por cobrar', debt.totalCOP, {
-            sub: `${debt.salesCount} ${plural(debt.salesCount, 'venta', 'ventas')}`,
-            accent: debt.totalCOP > 0 ? '@accentAmber' : '@textMuted',
-          }),
-          {
-            label: 'Stock bajo',
-            value: `${inventory.lowStockCount}`,
-            compact: `${inventory.lowStockCount}`,
-            sub: `${inventory.outOfStockCount} agotados`,
-            accent:
-              inventory.outOfStockCount > 0
-                ? '@accentRed'
-                : inventory.lowStockCount > 0
-                  ? '@accentAmber'
-                  : '@textMuted',
-          },
-        ],
-        bars: debtBars(report),
-        // Sin cartera no se deja el bloque vacío: se dice, que es información.
-        emptyBars: debt.totalCOP > 0 ? '' : 'Sin cartera pendiente',
-        ticket: `Ticket promedio ${formatCOP(sales.averageTicketCOP)}`,
-      },
-    },
-  };
+  return panel('lynko-report', {
+    business: report.business.name,
+    period: PERIOD_TITLE[report.period],
+    hero: money('Ventas', sales.revenueCOP, {
+      sub: `${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')}`,
+      accent: '@accentGreen',
+    }),
+    tiles: [
+      money('Por cobrar', debt.totalCOP, {
+        sub: `${debt.salesCount} ${plural(debt.salesCount, 'venta', 'ventas')}`,
+        accent: debt.totalCOP > 0 ? '@accentAmber' : '@textMuted',
+      }),
+      plain('Stock bajo', `${inventory.lowStockCount}`, {
+        sub: `${inventory.outOfStockCount} agotados`,
+        accent:
+          inventory.outOfStockCount > 0
+            ? '@accentRed'
+            : inventory.lowStockCount > 0
+              ? '@accentAmber'
+              : '@textMuted',
+      }),
+      plain('Margen', `${sales.marginPct}%`, {
+        sub: `${sales.unitsSold} und`,
+        accent: '@accentGreen',
+      }),
+    ],
+    barsTitle: 'Quién me debe',
+    bars: debtBars(debt),
+    // Sin cartera no se deja el bloque vacío: se dice, que es información.
+    emptyBars: debt.totalCOP > 0 ? '' : 'Sin cartera pendiente',
+  });
+}
+
+/** "Quién me debe": el total manda y los nombres son el detalle que importa. */
+export function debtDocument(answer: PendingPaymentAnswer): RenderDocument {
+  const top = answer.customers[0];
+  return panel('lynko-debt', {
+    business: answer.business.name,
+    // La cartera no es de un período: es el saldo de hoy, venga de donde venga.
+    period: 'Cartera',
+    hero: money('Por cobrar', answer.totalCOP, {
+      sub: `${answer.salesCount} ${plural(answer.salesCount, 'venta', 'ventas')}`,
+      accent: answer.totalCOP > 0 ? '@accentAmber' : '@textMuted',
+    }),
+    tiles: [
+      plain('Clientes', `${answer.customers.length}`, {
+        sub: 'con saldo',
+        accent: '@textPrimary',
+      }),
+      money('El mayor', top?.amountCOP ?? 0, {
+        sub: top?.name ?? 'sin deudores',
+        accent: '@accentAmber',
+      }),
+      money('Sin cliente', answer.unidentified.amountCOP, {
+        sub: `${answer.unidentified.salesCount} ${plural(answer.unidentified.salesCount, 'venta', 'ventas')}`,
+        accent: answer.unidentified.amountCOP > 0 ? '@accentRed' : '@textMuted',
+      }),
+    ],
+    barsTitle: 'Saldo por cliente',
+    bars: debtBars(answer),
+    emptyBars: answer.totalCOP > 0 ? '' : 'Sin cartera pendiente',
+  });
+}
+
+/** "Cuánto vendí": sin barras, porque no hay nada que comparar entre sí. */
+export function salesDocument(answer: SalesAnswer): RenderDocument {
+  return panel('lynko-sales', {
+    business: answer.business.name,
+    period: PERIOD_TITLE[answer.period],
+    hero: money('Ventas', answer.revenueCOP, {
+      sub: `${answer.salesCount} ${plural(answer.salesCount, 'venta', 'ventas')}`,
+      accent: '@accentGreen',
+    }),
+    tiles: [
+      money('Ticket promedio', answer.averageTicketCOP, {
+        sub: `${answer.unitsSold} und`,
+        accent: '@textPrimary',
+      }),
+      plain('Margen', `${answer.marginPct}%`, {
+        sub: 'del período',
+        accent: '@accentGreen',
+      }),
+      // Lo fiado del período, no la cartera total: son cifras distintas.
+      money('Fiado', answer.creditedCOP, {
+        sub: 'en el período',
+        accent: answer.creditedCOP > 0 ? '@accentAmber' : '@textMuted',
+      }),
+    ],
+    barsTitle: '',
+    bars: [],
+    emptyBars: '',
+  });
 }
 
 function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
 }
 
-function kpi(
+function money(
   label: string,
   amount: number,
   rest: { sub: string; accent: string },
-) {
+): Cell {
   return {
     label,
     value: formatCOP(amount),
@@ -94,12 +182,21 @@ function kpi(
   };
 }
 
+/** Un porcentaje o un conteo: no hay nada que abreviar. */
+function plain(
+  label: string,
+  value: string,
+  rest: { sub: string; accent: string },
+): Cell {
+  return { label, value, compact: value, ...rest };
+}
+
 /**
- * '$ 1,16 M' para pantallas de cinco pulgadas.
+ * '$ 1,16 M' para los tiles chicos.
  *
- * En una Echo Show 5 el tile mide unos 210dp: '$ 1.164.500' se corta a media
- * cifra, y un número cortado miente. La voz sí dice el monto exacto, así que
- * abreviar en pantalla no pierde nada.
+ * El hero sí muestra la cifra completa: a 88dp de alto ocupa media pantalla de
+ * ancho y cabe entera. Un tile secundario mide un tercio de eso, y ahí un
+ * '$ 1.164.500' se corta a media cifra — un número cortado miente.
  */
 function compactCOP(amount: number): string {
   if (Math.abs(amount) < 1_000_000) return formatCOP(amount);
@@ -112,8 +209,8 @@ function compactCOP(amount: number): string {
  * un deudor grande y tres chicos, contra el total las tres últimas barras
  * quedarían en un hilo invisible.
  */
-function debtBars(report: BusinessReportAnswer) {
-  const { customers, unidentified } = report.debt;
+function debtBars(debt: DebtFigures) {
+  const { customers, unidentified } = debt;
   const rows = [
     ...customers.map((c) => ({ name: c.name, amount: c.amountCOP })),
     ...(unidentified.amountCOP > 0
@@ -132,8 +229,8 @@ function debtBars(report: BusinessReportAnswer) {
   }));
 }
 
-/** El tile de KPI, parametrizado para no repetirlo en los dos layouts. */
-const KPI_TILE = {
+/** Tile secundario. `tile` lo inyecta el `bind` de cada casilla. */
+const TILE = {
   type: 'Frame',
   grow: 1,
   shrink: 1,
@@ -152,16 +249,15 @@ const KPI_TILE = {
         type: 'Text',
         text: '${tile.label}',
         color: '@textMuted',
-        fontSize: '@kpiLabelSize',
+        fontSize: '@tileLabelSize',
         fontWeight: '600',
         maxLines: 1,
       },
       {
         type: 'Text',
-        // En pantalla angosta el monto va abreviado; cortado no sirve.
-        text: '${@compactValues ? tile.compact : tile.value}',
+        text: '${tile.compact}',
         color: '${tile.accent}',
-        fontSize: '@kpiValueSize',
+        fontSize: '@tileValueSize',
         fontWeight: '700',
         maxLines: 1,
       },
@@ -169,34 +265,26 @@ const KPI_TILE = {
         type: 'Text',
         text: '${tile.sub}',
         color: '@textMuted',
-        fontSize: '@kpiSubSize',
+        fontSize: '@tileSubSize',
         maxLines: 1,
       },
     ],
   },
 };
 
-/** Una fila de tiles: `from` e `in` son índices de `payload.kpis`. */
-const kpiRow = (indices: number[]) => ({
-  type: 'Container',
-  direction: 'row',
-  width: '100%',
-  paddingTop: '@gap',
-  items: indices.map((i, position) => ({
-    ...KPI_TILE,
-    marginRight: position < indices.length - 1 ? '@gap' : '0dp',
-    bind: [{ name: 'tile', value: `\${payload.kpis[${i}]}` }],
-  })),
+const tileAt = (index: number, last: boolean) => ({
+  ...TILE,
+  marginRight: last ? '0dp' : '@gap',
+  bind: [{ name: 'tile', value: `\${payload.tiles[${index}]}` }],
 });
 
 /**
- * Layout único para los dos destinos: Echo Show 5 (960x480, apaisada) y la app
- * móvil (vertical y angosta).
+ * Layout de dos destinos: Echo Show 5 (960x480) y la app móvil, vertical.
  *
- * En apaisada los cuatro KPIs van en una fila; en vertical van dos por fila,
- * porque cuatro tiles en 400dp de ancho dejan cada valor en tres caracteres.
- * Los tamaños salen de `resources`, con una variante para pantallas bajas: con
- * los tamaños de una Show 10 el bloque de deudores queda fuera de la Show 5.
+ * La regla de tamaños es la distancia de lectura, no el ancho disponible: el
+ * hero se lee desde el otro lado del cuarto y todo lo demás es apoyo. La
+ * tercera casilla solo aparece donde sobra pantalla; en la Show 5 su lugar lo
+ * ocupa el aire que hace legibles las otras dos.
  */
 const DOCUMENT = {
   type: 'APL',
@@ -217,36 +305,43 @@ const DOCUMENT = {
       },
     },
     {
-      description: 'Pantalla amplia: Show 8, 10, 15',
+      description: 'Pantalla amplia: Show 8, 10, 15, Fire TV',
       dimensions: {
-        kpiValueSize: '38dp',
-        kpiLabelSize: '16dp',
-        kpiSubSize: '15dp',
-        titleSize: '32dp',
-        rowSize: '20dp',
-        gap: '12dp',
-        tilePad: '14dp',
-        pad: '26dp',
-        barHeight: '8dp',
+        heroValueSize: '124dp',
+        heroLabelSize: '26dp',
+        heroSubSize: '24dp',
+        tileValueSize: '52dp',
+        tileLabelSize: '20dp',
+        tileSubSize: '19dp',
+        titleSize: '36dp',
+        rowSize: '28dp',
+        gap: '14dp',
+        tilePad: '16dp',
+        pad: '30dp',
+        barHeight: '12dp',
       },
-      booleans: { compactValues: false },
+      booleans: { roomy: true },
     },
     {
-      // 480dp de alto es la Echo Show 5; también entra la app móvil pequeña.
+      // La Echo Show 5 son 480dp de alto. Todo sube de tamaño y baja de
+      // cantidad: se lee de lejos o no sirve de nada.
       description: 'Pantalla baja o angosta: Echo Show 5, móvil',
-      when: '${viewport.height < 600 || viewport.width < 600}',
+      when: '${viewport.height < 600 || viewport.width < 900}',
       dimensions: {
-        kpiValueSize: '26dp',
-        kpiLabelSize: '12dp',
-        kpiSubSize: '11dp',
-        titleSize: '22dp',
-        rowSize: '15dp',
-        gap: '8dp',
-        tilePad: '9dp',
-        pad: '16dp',
-        barHeight: '6dp',
+        heroValueSize: '88dp',
+        heroLabelSize: '20dp',
+        heroSubSize: '19dp',
+        tileValueSize: '38dp',
+        tileLabelSize: '16dp',
+        tileSubSize: '15dp',
+        titleSize: '24dp',
+        rowSize: '24dp',
+        gap: '10dp',
+        tilePad: '12dp',
+        pad: '18dp',
+        barHeight: '10dp',
       },
-      booleans: { compactValues: true },
+      booleans: { roomy: false },
     },
   ],
   mainTemplate: {
@@ -262,7 +357,7 @@ const DOCUMENT = {
         paddingTop: '@pad',
         paddingBottom: '@pad',
         items: [
-          // Encabezado
+          // Encabezado: quién y cuándo, en letra pequeña a propósito.
           {
             type: 'Container',
             direction: 'row',
@@ -283,28 +378,62 @@ const DOCUMENT = {
                 type: 'Text',
                 text: '${payload.period}',
                 color: '@textMuted',
-                fontSize: '@kpiLabelSize',
+                fontSize: '@tileLabelSize',
                 fontWeight: '500',
               },
             ],
           },
-          // KPIs: una fila de cuatro en apaisada...
+          // La cifra que contesta la pregunta. Sin marco: el marco le quita
+          // los dos centímetros que la hacen legible de lejos.
           {
             type: 'Container',
-            when: '${viewport.width >= viewport.height}',
             width: '100%',
-            items: [kpiRow([0, 1, 2, 3])],
+            paddingTop: '@gap',
+            items: [
+              {
+                type: 'Text',
+                text: '${payload.hero.label}',
+                color: '@textMuted',
+                fontSize: '@heroLabelSize',
+                fontWeight: '600',
+                maxLines: 1,
+              },
+              {
+                type: 'Text',
+                // El hero va completo: es la cifra que se vino a ver.
+                text: '${payload.hero.value}',
+                color: '${payload.hero.accent}',
+                fontSize: '@heroValueSize',
+                fontWeight: '700',
+                maxLines: 1,
+              },
+              {
+                type: 'Text',
+                text: '${payload.hero.sub}',
+                color: '@textMuted',
+                fontSize: '@heroSubSize',
+                maxLines: 1,
+              },
+            ],
           },
-          // ...o dos filas de dos en vertical.
+          // Dos casillas de apoyo, tres donde sobra pantalla.
           {
             type: 'Container',
-            when: '${viewport.width < viewport.height}',
+            direction: 'row',
             width: '100%',
-            items: [kpiRow([0, 1]), kpiRow([2, 3])],
+            paddingTop: '@gap',
+            items: [
+              tileAt(0, false),
+              { ...tileAt(1, false), when: '${@roomy}' },
+              { ...tileAt(1, true), when: '${!@roomy}' },
+              { ...tileAt(2, true), when: '${@roomy}' },
+            ],
           },
-          // Cartera: barras proporcionales
+          // Barras proporcionales. Sin título no hay bloque: una consulta de
+          // ventas no tiene nada que comparar entre sí.
           {
             type: 'Container',
+            when: '${payload.barsTitle != ""}',
             width: '100%',
             grow: 1,
             shrink: 1,
@@ -312,9 +441,9 @@ const DOCUMENT = {
             items: [
               {
                 type: 'Text',
-                text: 'Quién me debe',
+                text: '${payload.barsTitle}',
                 color: '@textMuted',
-                fontSize: '@kpiLabelSize',
+                fontSize: '@tileLabelSize',
                 fontWeight: '600',
                 paddingBottom: '4dp',
               },
@@ -326,8 +455,8 @@ const DOCUMENT = {
                 fontSize: '@rowSize',
               },
               {
-                // Sequence y no Container: en la Show 5 el cuarto deudor queda
-                // abajo del borde y sin scroll no habría cómo verlo.
+                // Sequence y no Container: con la letra grande el tercer
+                // deudor queda bajo el borde, y sin scroll no habría cómo verlo.
                 type: 'Sequence',
                 when: '${payload.emptyBars == ""}',
                 width: '100%',
@@ -338,7 +467,7 @@ const DOCUMENT = {
                   {
                     type: 'Container',
                     width: '100%',
-                    paddingBottom: '7dp',
+                    paddingBottom: '9dp',
                     items: [
                       {
                         type: 'Container',
@@ -368,13 +497,13 @@ const DOCUMENT = {
                         width: '100%',
                         height: '@barHeight',
                         backgroundColor: '@border',
-                        borderRadius: '4dp',
+                        borderRadius: '5dp',
                         item: {
                           type: 'Frame',
                           width: '${data.width}',
                           height: '@barHeight',
                           backgroundColor: '@accentAmber',
-                          borderRadius: '4dp',
+                          borderRadius: '5dp',
                         },
                       },
                     ],
@@ -383,14 +512,8 @@ const DOCUMENT = {
               },
             ],
           },
-          {
-            type: 'Text',
-            text: '${payload.ticket}',
-            color: '@textMuted',
-            fontSize: '@kpiSubSize',
-            textAlign: 'right',
-            width: '100%',
-          },
+          // Empuja lo anterior hacia arriba cuando no hay bloque de barras.
+          { type: 'Container', grow: 1, shrink: 1 },
         ],
       },
     ],
