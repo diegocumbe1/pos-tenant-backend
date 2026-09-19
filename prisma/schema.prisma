@@ -76,6 +76,7 @@ model Tenant {
   webPushSubscriptions WebPushSubscription[]
   platformMessages     PlatformMessage[]
   whatsappTemplates    WhatsappTemplate[]
+  qrCodes              QrCode[]
 
   @@index([plan])
   @@index([verticalId])
@@ -3952,4 +3953,62 @@ model AssistantQueryLog {
   @@index([tenantId, intentId, at])
   @@index([intentId, outcome])
   @@map("assistant_query_log")
+}
+
+// ─── QR permanentes (tarjeta de presentación) ─────────────────────────────────
+
+/// Para qué se imprimió el QR. Hoy solo hay dos; el enum existe para que mañana
+/// entren TABLE / PRODUCT / LOYALTY sin migrar los códigos ya repartidos.
+enum QrCodeType {
+  /// Tarjeta de presentación del negocio.
+  BUSINESS_CARD
+  /// QR de la propia Lynko (landing). Sin tenant: lo administra el superadmin
+  /// desde Configuración.
+  PLATFORM
+}
+
+/// Un código corto y PERMANENTE que redirige a donde diga `targetUrl`.
+///
+/// El punto entero de esta tabla es la indirección: el QR se imprime en
+/// tarjetas, stickers y empaques, así que `code` no puede depender del slug del
+/// negocio, ni de su nombre, ni de la ruta interna. Todo eso cambia; el cartón
+/// ya repartido no.
+///
+/// Por eso NO se guarda la imagen del QR en ningún lado: el PNG/SVG se genera
+/// en el navegador a partir de `PUBLIC_APP_URL/q/<code>`, que es una función
+/// pura del código. Guardar el PNG solo agregaría una copia que se desincroniza.
+model QrCode {
+  id   String     @id @default(cuid())
+  /// Lo que va dentro del QR: uselynko.com/q/<code>. Aleatorio y no enumerable
+  /// a propósito —un /q/1 invita a recorrer la competencia—, sin IDs internos.
+  code String     @unique
+  type QrCodeType @default(BUSINESS_CARD)
+
+  /// null = QR de la plataforma (la landing de Lynko), que no es de nadie.
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// Ruta interna ("/sites/bella-chic") o URL absoluta. Se resuelve contra
+  /// PUBLIC_APP_URL al redirigir: guardar el host haría que el mismo registro
+  /// apunte a producción desde QA.
+  targetUrl String
+  /// false = el link deja de redirigir y muestra "enlace no disponible".
+  active    Boolean @default(true)
+
+  // Textos de la tarjeta. Van acá y no en `Tenant` porque son del artefacto
+  // impreso, no del negocio: el nombre legal del tenant y lo que dice su
+  // tarjeta no tienen por qué coincidir. Vacíos → se cae al nombre del tenant
+  // y a la descripción de su sitio público.
+  cardTitle    String?
+  cardSubtitle String?
+  cardCta      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Un QR principal por tenant y por tipo. La fila de plataforma (tenantId
+  /// null) la protege un índice parcial, porque en Postgres dos NULL no chocan.
+  @@unique([tenantId, type])
+  @@index([tenantId])
+  @@map("qr_codes")
 }

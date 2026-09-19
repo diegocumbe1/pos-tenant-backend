@@ -25,6 +25,7 @@ import { StaffCompensationModule } from './staff-compensation/staff-compensation
 import { LoggingInterceptor } from './monitoring/logging.interceptor';
 import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
 import { AlexaModule } from './integrations/alexa/alexa.module';
+import { QrModule } from './qr/qr.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { AlexaModule } from './integrations/alexa/alexa.module';
     NotificationsModule,
     PlatformModule,
     CatalogModule,
+    QrModule,
     PlatformMessagingModule,
     PlatformGatewayModule,
     StaffCompensationModule,
