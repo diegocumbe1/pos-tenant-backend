@@ -153,7 +153,7 @@ export class AlexaService {
       case 'IntentRequest':
         return this.observedIntent(envelope, skill, envelope.request);
       default:
-        return this.fallback();
+        return this.fallback(envelope);
     }
   }
 
@@ -436,14 +436,11 @@ export class AlexaService {
         // Alexa no encontró intent. Mensaje propio para distinguirlo de un
         // intent que existe en el modelo pero que este switch no maneja.
         this.logger.log('IntentRequest: AMAZON.FallbackIntent');
-        return this.speak(
-          'No entendí. Para activar el acceso di: mi código es, y luego tu frase.',
-          false,
-        );
+        return this.fallback(envelope);
       default:
         // El nombre del intent no es secreto; el valor de los slots sí, y no se registra.
         this.logger.log(`Unhandled intent: ${name}`);
-        return this.fallback();
+        return this.fallback(envelope);
     }
   }
 
@@ -1072,10 +1069,18 @@ export class AlexaService {
     }
   }
 
-  private fallback(): ResponseEnvelope {
+  private fallback(envelope: RequestEnvelope): ResponseEnvelope {
+    // No entender una consulta no implica que el acceso haya caducado.
+    // El siguiente intent de negocio valida la autorización y el tenant de nuevo.
+    const businessId = this.rememberedBusinessId(envelope);
+    const suggestions =
+      'Puedes decir: cuánto vendí hoy, qué se está agotando, o qué tengo por entregar.';
     return this.speak(
-      'No pude reconocer esa consulta. Por ahora puedes preguntarme por tus suscripciones.',
+      `No entendí esa consulta. ${suggestions}`,
       false,
+      suggestions,
+      undefined,
+      businessId ? { businessId } : undefined,
     );
   }
 

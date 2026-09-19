@@ -83,6 +83,29 @@ describe('AlexaService', () => {
     );
   };
 
+  it('keeps the business after fallback and validates authorization on the next query', async () => {
+    const result = await send({
+      ...envelope('IntentRequest', 'AMAZON.FallbackIntent'),
+      session: { attributes: { businessId: 't1', unexpected: 'private' } },
+    });
+    expect(result.sessionAttributes).toEqual({ businessId: 't1' });
+    expect(result.response.shouldEndSession).toBe(false);
+    expect(JSON.stringify(result.response)).not.toMatch(/código|clave|activar/);
+    expect(result.response.reprompt?.outputSpeech).toMatchObject({
+      type: 'PlainText',
+      text: 'Puedes decir: cuánto vendí hoy, qué se está agotando, o qué tengo por entregar.',
+    });
+    expect(auth.activate).not.toHaveBeenCalled();
+    expect(auth.logout).not.toHaveBeenCalled();
+    auth.actor.mockResolvedValue(null);
+    const expired = await send(envelope('IntentRequest', 'pending_payment'));
+    expect(expired.response.outputSpeech).toMatchObject({
+      type: 'PlainText',
+      text: ASK_FOR_CODE,
+    });
+    expect(assistant.pendingPayment).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     auth = {
       actor: jest.fn().mockResolvedValue(actor),
@@ -228,13 +251,13 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.FallbackIntent',
-      'No entendí. Para activar el acceso di: mi código es, y luego tu frase.',
+      'No entendí esa consulta. Puedes decir: cuánto vendí hoy, qué se está agotando, o qué tengo por entregar.',
       false,
     ],
     [
       'IntentRequest',
       'UnknownIntent',
-      'No pude reconocer esa consulta. Por ahora puedes preguntarme por tus suscripciones.',
+      'No entendí esa consulta. Puedes decir: cuánto vendí hoy, qué se está agotando, o qué tengo por entregar.',
       false,
     ],
   ])('handles %s %s', async (type, name, text, shouldEndSession) => {
