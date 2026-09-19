@@ -25,6 +25,7 @@ import {
   ReportPeriod,
   SalesAnswer,
   SalesFigures,
+  SalesRankingAnswer,
 } from './assistant.types';
 import { periodRange } from './report-period';
 
@@ -140,6 +141,39 @@ export class AssistantService {
   ): Promise<PendingDeliveryAnswer> {
     const scope = await this.open(actor, business, [SALES_READ]);
     return { business, ...(await this.deliveryFigures(scope)) };
+  }
+
+  /**
+   * Rankings del período: productos, presentaciones y clientes.
+   *
+   * Se compone con el catálogo para poder decir cuántos productos NO se
+   * vendieron. Preguntar "¿cuál es el menos vendido?" casi siempre quiere decir
+   * "¿qué está quieto?", y el que vendió dos unidades no es esa respuesta.
+   */
+  async salesRanking(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+    period: ReportPeriod,
+  ): Promise<SalesRankingAnswer> {
+    const { ctx } = await this.open(actor, business, [
+      SALES_READ,
+      CATALOG_READ,
+    ]);
+    const { from, to } = periodRange(period);
+    const [ranking, catalog] = await Promise.all([
+      this.retailSales.salesRanking(ctx, from.toISOString(), to.toISOString()),
+      this.mergedProducts(actor, business),
+    ]);
+
+    return {
+      business,
+      period,
+      products: ranking.products,
+      variants: ranking.variants,
+      customers: ranking.customers,
+      unsoldCount: Math.max(0, catalog.length - ranking.soldProductCount),
+      counterSales: ranking.counterSales,
+    };
   }
 
   // ─── Catálogo ─────────────────────────────────────────────────────────────

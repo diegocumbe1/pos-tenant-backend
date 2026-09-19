@@ -135,6 +135,24 @@ export interface ProductLookupAnswer {
   candidates: string[];
 }
 
+export interface SalesRankingAnswer {
+  business: BusinessRefLike;
+  period: ReportPeriod;
+  /** De más a menos unidades, ya netas de devoluciones. */
+  products: { name: string; units: number; revenueCOP: number }[];
+  /** Presentaciones —aromas, tallas, colores— de más a menos vendidas. */
+  variants: { label: string; units: number }[];
+  /** De mayor a menor facturado en el período. */
+  customers: { name: string; salesCount: number; totalCOP: number }[];
+  /**
+   * Productos del catálogo sin una sola unidad vendida en el período. Es la
+   * respuesta que de verdad busca quien pregunta "¿cuál es el menos vendido?".
+   */
+  unsoldCount: number;
+  /** Ventas sin cliente asociado: no entran al ranking de clientes. */
+  counterSales: number;
+}
+
 export interface PlatformOverviewAnswer {
   tenants: { total: number; active: number; suspended: number };
   subscriptions: {

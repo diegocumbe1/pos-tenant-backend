@@ -222,6 +222,7 @@ describe('AlexaService', () => {
       'Listo. Aquí estoy si necesitas algo más.',
       false,
     ],
+    ['IntentRequest', 'DespedidaIntent', 'Con gusto. Hasta luego.', true],
     ['IntentRequest', 'AMAZON.StopIntent', 'Hasta luego.', true],
     ['IntentRequest', 'AMAZON.CancelIntent', 'Hasta luego.', true],
     [

@@ -20,6 +20,7 @@ describe('AssistantService', () => {
     pendingPaymentByCustomer: jest.Mock;
     getSummary: jest.Mock;
     listSales: jest.Mock;
+    salesRanking: jest.Mock;
   };
   let retailInventory: { getSummary: jest.Mock };
   let retailPurchases: { getSummary: jest.Mock };
@@ -105,6 +106,7 @@ describe('AssistantService', () => {
     retailSales = {
       getSummary: jest.fn(),
       listSales: jest.fn(),
+      salesRanking: jest.fn(),
       pendingPaymentByCustomer: jest.fn().mockResolvedValue({
         totalCOP: 180000,
         salesCount: 3,
@@ -120,6 +122,44 @@ describe('AssistantService', () => {
       retailPurchases as unknown as RetailPurchasesService,
       retailCatalog as unknown as RetailCatalogService,
     );
+  });
+
+  describe('salesRanking', () => {
+    const business = { id: 't1', name: 'Bella Chic' };
+
+    beforeEach(() => {
+      retailSales.salesRanking = jest.fn().mockResolvedValue({
+        soldProductCount: 2,
+        products: [
+          { name: 'Mantequilla corporal', units: 30, revenueCOP: 960000 },
+          { name: 'Serum facial', units: 2, revenueCOP: 90000 },
+        ],
+        variants: [{ label: 'Vainilla', units: 12 }],
+        customers: [{ name: 'Marcela', salesCount: 4, totalCOP: 400000 }],
+        counterSales: 3,
+      });
+    });
+
+    it('cuenta lo que NO se vendió contra el catálogo', async () => {
+      // El catálogo tiene 3 productos; se vendieron 2.
+      const answer = await service.salesRanking(admin, business, 'month');
+      expect(answer.unsoldCount).toBe(1);
+    });
+
+    it('nunca reporta un no-vendido negativo', async () => {
+      retailCatalog.listProducts.mockResolvedValue([]);
+      const answer = await service.salesRanking(admin, business, 'month');
+      expect(answer.unsoldCount).toBe(0);
+    });
+
+    it('exige ventas y catálogo antes de consultar', async () => {
+      await service.salesRanking(admin, business, 'month');
+      const codes = (
+        scope.assertPermission.mock.calls as [unknown, string][]
+      ).map(([, code]) => code);
+      expect(codes).toContain('retail:sales:read');
+      expect(codes).toContain('retail:catalog:read');
+    });
   });
 
   describe('catálogo', () => {

@@ -257,6 +257,138 @@ export class RetailSalesService {
     };
   }
 
+  /**
+   * Qué se vendió más, qué menos, por presentación, y quién compró más.
+   *
+   * Las devoluciones se RESTAN. Sin eso, el producto que más se devuelve puede
+   * salir como el más vendido, que es justo la conclusión contraria a la útil.
+   * Se descuentan por `returnedAt` dentro del mismo rango, igual que en
+   * `getSummary`, y una devolución anulada no cuenta.
+   *
+   * `name` y `variantLabel` salen de la línea de venta, no del catálogo: son el
+   * snapshot del momento, así que renombrar un producto o un aroma no reescribe
+   * el histórico. Un producto renombrado aparece con los dos nombres, y eso es
+   * correcto: son dos cosas distintas para quien vendió.
+   *
+   * Sin `branchId` suma todo el tenant, en una sola consulta por bloque.
+   */
+  async salesRanking(
+    ctx: TenantContext,
+    from: string,
+    to: string,
+    opts: { branchId?: string } = {},
+  ) {
+    await this.tenantHelper.assertRetailTenant(ctx.tenantId);
+    const scope = {
+      tenantId: ctx.tenantId,
+      ...(opts.branchId ? { branchId: opts.branchId } : {}),
+    };
+
+    const [items, returned, sales] = await Promise.all([
+      this.prisma.retailSaleItem.findMany({
+        where: {
+          sale: {
+            ...scope,
+            status: 'COMPLETED',
+            ...this.soldAtRange(from, to),
+          },
+        },
+        select: {
+          productId: true,
+          name: true,
+          variantLabel: true,
+          quantity: true,
+          unitPriceCOP: true,
+        },
+      }),
+      this.prisma.retailSaleReturnItem.findMany({
+        where: {
+          return: {
+            ...scope,
+            voidedAt: null,
+            ...this.returnedAtRange(from, to),
+          },
+        },
+        select: { productId: true, variantLabel: true, quantity: true },
+      }),
+      this.prisma.retailSale.findMany({
+        where: { ...scope, status: 'COMPLETED', ...this.soldAtRange(from, to) },
+        select: {
+          totalCOP: true,
+          customerId: true,
+          customer: { select: { name: true } },
+        },
+      }),
+    ]);
+
+    const byProduct = new Map<
+      string,
+      { name: string; units: number; revenueCOP: number }
+    >();
+    const byVariant = new Map<string, { label: string; units: number }>();
+    for (const item of items) {
+      const product = byProduct.get(item.productId) ?? {
+        name: item.name,
+        units: 0,
+        revenueCOP: 0,
+      };
+      product.units += item.quantity;
+      product.revenueCOP += item.quantity * item.unitPriceCOP;
+      byProduct.set(item.productId, product);
+
+      if (!item.variantLabel) continue;
+      const variant = byVariant.get(item.variantLabel) ?? {
+        label: item.variantLabel,
+        units: 0,
+      };
+      variant.units += item.quantity;
+      byVariant.set(item.variantLabel, variant);
+    }
+
+    for (const row of returned) {
+      const product = byProduct.get(row.productId);
+      if (product) product.units -= row.quantity;
+      if (!row.variantLabel) continue;
+      const variant = byVariant.get(row.variantLabel);
+      if (variant) variant.units -= row.quantity;
+    }
+
+    const byCustomer = new Map<
+      string,
+      { name: string; salesCount: number; totalCOP: number }
+    >();
+    let counterSales = 0;
+    for (const sale of sales) {
+      if (!sale.customerId) {
+        counterSales += 1;
+        continue;
+      }
+      const entry = byCustomer.get(sale.customerId) ?? {
+        name: sale.customer?.name ?? 'Cliente',
+        salesCount: 0,
+        totalCOP: 0,
+      };
+      entry.salesCount += 1;
+      entry.totalCOP += sale.totalCOP;
+      byCustomer.set(sale.customerId, entry);
+    }
+
+    // Un producto que quedó en cero o negativo tras las devoluciones no es "el
+    // menos vendido": no se vendió. Se saca del ranking y se cuenta aparte.
+    const sold = [...byProduct.values()].filter((p) => p.units > 0);
+    return {
+      soldProductCount: sold.length,
+      products: sold.sort((a, b) => b.units - a.units),
+      variants: [...byVariant.values()]
+        .filter((v) => v.units > 0)
+        .sort((a, b) => b.units - a.units),
+      customers: [...byCustomer.values()].sort(
+        (a, b) => b.totalCOP - a.totalCOP,
+      ),
+      counterSales,
+    };
+  }
+
   async getSale(ctx: TenantContext, id: string) {
     await this.tenantHelper.assertScopedRecord('retailSale', ctx, id, 'Sale');
     const sale = await this.prisma.retailSale.findUniqueOrThrow({

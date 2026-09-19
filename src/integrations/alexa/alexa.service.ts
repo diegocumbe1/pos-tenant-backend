@@ -34,6 +34,7 @@ import {
   PlatformOverviewAnswer,
   ProductLookupAnswer,
   SalesAnswer,
+  SalesRankingAnswer,
 } from '../../assistant/assistant.types';
 import { periodLabel, parsePeriod } from '../../assistant/report-period';
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
@@ -247,6 +248,20 @@ export class AlexaService {
               await this.assistant.pendingDelivery(actor, business),
             ),
         );
+      case 'top_products':
+      case 'worst_products':
+      case 'top_customers':
+        this.logger.log(`IntentRequest: ${name}`);
+        return this.forBusiness(envelope, skill, request, async (a, b) =>
+          this.rankingSpeech(
+            await this.assistant.salesRanking(
+              a,
+              b,
+              parsePeriod(this.slotValue(request, PERIOD_SLOT)),
+            ),
+            name,
+          ),
+        );
       case 'catalog_overview':
         this.logger.log('IntentRequest: catalog_overview');
         return this.forBusiness(envelope, skill, request, async (a, b) =>
@@ -308,6 +323,11 @@ export class AlexaService {
       case 'AMAZON.NoIntent':
         this.logger.log('IntentRequest: AMAZON.NoIntent');
         return this.speak('Listo. Aquí estoy si necesitas algo más.', false);
+      case 'DespedidaIntent':
+        // Separado de Stop a propósito: quien agradece no está cancelando algo,
+        // y "Hasta luego" a secas suena a que le colgaron.
+        this.logger.log('IntentRequest: DespedidaIntent');
+        return this.speak('Con gusto. Hasta luego.', true);
       case 'AMAZON.StopIntent':
       case 'AMAZON.CancelIntent':
         this.logger.log(`IntentRequest: ${name}`);
@@ -615,6 +635,57 @@ export class AlexaService {
     return rest > 0
       ? `${shown.join(', ')} y ${rest} ${unit}`
       : shown.join(', ');
+  }
+
+  /**
+   * Los tres rankings salen de la misma consulta y cambian solo en qué se lee.
+   *
+   * "El menos vendido" se responde con los que NO se vendieron, no con el que
+   * vendió dos: quien pregunta eso quiere saber qué está quieto en la bodega.
+   */
+  private rankingSpeech(answer: SalesRankingAnswer, intent: string): string {
+    const { business, products, variants, customers } = answer;
+    const when = periodLabel(answer.period);
+    const units = (n: number) => (n === 1 ? '1 unidad' : `${n} unidades`);
+
+    if (intent === 'top_customers') {
+      if (!customers.length) {
+        return answer.counterSales
+          ? `${this.capitalize(when)} en ${business.name} todas las ventas fueron de mostrador, sin cliente registrado.`
+          : `No hay ventas ${when} en ${business.name}.`;
+      }
+      const top = customers
+        .slice(0, MAX_NAMES)
+        .map((c) => `${c.name}, ${c.totalCOP} pesos`);
+      // El mostrador se menciona aparte: si no, el "mejor cliente" puede ser
+      // una fracción chica de lo que de verdad se vendió.
+      const counter = answer.counterSales
+        ? ` Hubo además ${answer.counterSales === 1 ? '1 venta' : `${answer.counterSales} ventas`} de mostrador sin cliente.`
+        : '';
+      return `${this.capitalize(when)} en ${business.name} quien más compró fue ${top.join('; ')}.${counter}`;
+    }
+
+    if (!products.length) {
+      return `No hay ventas ${when} en ${business.name}.`;
+    }
+
+    if (intent === 'worst_products') {
+      const tail = [...products].reverse().slice(0, MAX_NAMES);
+      const quiet = answer.unsoldCount
+        ? ` Y hay ${answer.unsoldCount === 1 ? '1 producto que no vendiste' : `${answer.unsoldCount} productos que no vendiste`} ni una unidad.`
+        : '';
+      return `${this.capitalize(when)} lo menos vendido en ${business.name}: ${tail
+        .map((p) => `${p.name}, ${units(p.units)}`)
+        .join('; ')}.${quiet}`;
+    }
+
+    const top = products
+      .slice(0, MAX_NAMES)
+      .map((p) => `${p.name}, ${units(p.units)}`);
+    const byVariant = variants.length
+      ? ` La presentación más vendida fue ${variants[0].label}, con ${units(variants[0].units)}.`
+      : '';
+    return `${this.capitalize(when)} lo más vendido en ${business.name}: ${top.join('; ')}.${byVariant}`;
   }
 
   private catalogSpeech(answer: CatalogOverviewAnswer): string {
