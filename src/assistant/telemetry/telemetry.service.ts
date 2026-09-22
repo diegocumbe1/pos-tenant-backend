@@ -12,7 +12,7 @@ export class AssistantTelemetryService {
   record(
     ctx: TelemetryContext,
     events: unknown,
-    channel: 'WEB' | 'ALEXA' = 'WEB',
+    channel: 'WEB' | 'ALEXA' | 'WHATSAPP' = 'WEB',
   ): void {
     try {
       if (

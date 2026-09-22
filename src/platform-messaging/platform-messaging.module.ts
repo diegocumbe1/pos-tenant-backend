@@ -30,7 +30,10 @@ import { SEED_PAYMENT_METHOD } from './seed-templates';
     { provide: WHATSAPP_CHANNEL, useExisting: WhatsAppPlatformChannel },
     { provide: EMAIL_CHANNEL, useExisting: EmailPlatformChannel },
   ],
-  exports: [MessageSenderService],
+  // `MessagingSettingsService` se exporta para el agente de WhatsApp: el
+  // interruptor de "¿contesta o no?" es una configuración de mensajería de la
+  // plataforma, y debe leerse de un solo sitio.
+  exports: [MessageSenderService, MessagingSettingsService],
 })
 export class PlatformMessagingModule implements OnApplicationBootstrap {
   private readonly logger = new Logger(PlatformMessagingModule.name);

@@ -6,7 +6,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Client, RemoteAuth } from 'whatsapp-web.js';
+import { Client, Message, RemoteAuth } from 'whatsapp-web.js';
 import * as QRCode from 'qrcode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -43,6 +43,26 @@ interface SessionState {
  * módulo; al revés sería un ciclo).
  */
 export const PLATFORM_SESSION_TENANT_ID = '__platform__';
+
+/**
+ * Un mensaje que pasó por una sesión, entrante o saliente.
+ *
+ * Se publica por `EventEmitter2` y no se atiende aquí: este manager es el motor
+ * de sesión y debe poder seguir existiendo sin agente. Quien quiera responder
+ * se suscribe, y decide por sí mismo si esa sesión le incumbe —la de la
+ * plataforma o la de un tenant, que son mundos distintos—.
+ */
+export interface WhatsAppMessageEvent {
+  tenantId: string;
+  branchId: string;
+  /** Chat de la conversación: siempre el del interlocutor, no el nuestro. */
+  chatId: string;
+  body: string;
+  /** Salió de nuestra cuenta (incluido lo escrito a mano desde el celular). */
+  fromMe: boolean;
+  /** 'chat', 'image', 'audio'… Solo se sabe responder texto. */
+  type: string;
+}
 
 const sessionKey = (tenantId: string, branchId: string) => `${tenantId}:${branchId}`;
 
@@ -346,6 +366,30 @@ export class WhatsAppSessionManager
             update: { phoneNumber: state.phoneNumber },
           })
           .catch(() => undefined);
+      }
+    });
+
+    // `message_create` y no `message`: el primero incluye TAMBIÉN lo que sale de
+    // nuestra cuenta, incluido lo que alguien escribe a mano desde el celular.
+    // Esa es la señal que necesita el agente para callarse cuando una persona
+    // toma el chat; con `message` no habría forma de enterarse.
+    client.on('message_create', (message: Message) => {
+      try {
+        const chatId = message.fromMe ? message.to : message.from;
+        if (!chatId) return;
+        this.events.emit('wa.message', {
+          tenantId,
+          branchId,
+          chatId,
+          body: typeof message.body === 'string' ? message.body : '',
+          fromMe: !!message.fromMe,
+          type: message.type ?? 'chat',
+        } satisfies WhatsAppMessageEvent);
+      } catch (err) {
+        // Un mensaje mal formado no puede tumbar la sesión.
+        this.logger.warn(
+          `No se pudo publicar un mensaje de ${key}: ${(err as Error).message}`,
+        );
       }
     });
 

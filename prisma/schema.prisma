@@ -77,6 +77,7 @@ model Tenant {
   platformMessages     PlatformMessage[]
   whatsappTemplates    WhatsappTemplate[]
   qrCodes              QrCode[]
+  assistantConversations AssistantConversation[]
 
   @@index([plan])
   @@index([verticalId])
@@ -646,6 +647,12 @@ model User {
   alexaSkills     AlexaSkill[]
   email           String    @unique
   name            String
+  /// Celular con el que esta persona le escribe a Lynko (WhatsApp).
+  ///
+  /// SIN @unique a propósito: un `User` pertenece a UN tenant, así que quien
+  /// tiene dos negocios tiene dos filas, y las dos son del mismo teléfono. Ese
+  /// es justamente el caso multi-negocio que el agente resuelve preguntando.
+  phone           String?
   roleId          String
   role            Role      @relation(fields: [roleId], references: [id])
   // Identidad de plataforma (super-admin de Lynko). NO es un rol de tenant.
@@ -660,9 +667,11 @@ model User {
   notificationEvents   NotificationEvent[]
   notificationPrefs    NotificationPreference[]
   webPushSubscriptions WebPushSubscription[]
+  assistantConversations AssistantConversation[]
 
   @@index([tenantId])
   @@index([roleId])
+  @@index([phone])
   @@map("users")
 }
 
@@ -2066,6 +2075,11 @@ model PlatformMessagingSettings {
   id           String   @id @default("singleton")
   waEnabled    Boolean  @default(false)
   emailEnabled Boolean  @default(false)
+  // ¿El agente de Lynko contesta los mensajes que ENTRAN al número de la
+  // plataforma? Vive aquí y no en una variable de entorno porque encender y
+  // apagar un agente que le habla a los clientes no puede exigir un redeploy:
+  // cuando algo salga mal, se apaga desde la consola en diez segundos.
+  agentEnabled Boolean  @default(false)
   fromEmail    String?
   fromName     String?
   replyTo      String?
@@ -3919,6 +3933,7 @@ model AlexaAuthorization {
 enum AssistantChannel {
   WEB
   ALEXA
+  WHATSAPP
 }
 enum AssistantConfidence {
   HIGH
@@ -3954,6 +3969,65 @@ model AssistantQueryLog {
   @@index([tenantId, intentId, at])
   @@index([intentId, outcome])
   @@map("assistant_query_log")
+}
+
+/// Quién atiende una conversación del agente.
+enum AssistantConversationMode {
+  /// El agente responde siempre.
+  AGENT
+  /// Silencio total: la atiende una persona del equipo.
+  HUMAN
+  /// El agente responde lo que sabe y escala lo demás. Es el default.
+  HYBRID
+}
+
+/// Contexto conversacional del agente de Lynko, por canal e interlocutor.
+///
+/// Guarda el MÍNIMO para continuar una conversación: quién es, de qué negocio
+/// hablamos y qué se preguntó por última vez. Nunca el texto de los mensajes.
+model AssistantConversation {
+  id      String           @id @default(cuid())
+  channel AssistantChannel
+
+  /// Identificador del interlocutor EN SU CANAL: el teléfono normalizado en
+  /// WhatsApp, el userId de Amazon en Alexa. Nunca un id interno de Lynko.
+  externalUserId String
+
+  /// Usuario de Lynko al que resolvió el número. Null = desconocido, o un
+  /// contacto/cliente que no tiene cuenta.
+  personId String?
+  person   User?   @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  /// Negocio activo de la conversación. NO es un permiso: se revalida contra
+  /// los negocios del actor en cada mensaje.
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  lastIntent String?
+  /// Parámetros normalizados de la última consulta (`{ "period": "yesterday" }`),
+  /// para resolver seguimientos como "¿y ayer?". Nunca frases del usuario.
+  lastSlots Json?
+  /// El menú numerado que se ofreció, para poder mapear un "2" al negocio o a
+  /// la opción correcta sin volver a preguntar.
+  lastOptions Json?
+
+  mode AssistantConversationMode @default(HYBRID)
+  /// Mientras esté en el futuro, el agente no responde: alguien del equipo
+  /// tomó el chat. Lo fija un mensaje saliente escrito a mano.
+  humanTakeoverUntil DateTime?
+
+  lastInteractionAt DateTime  @default(now())
+  lastAgentReplyAt  DateTime?
+  /// Última vez que se dio la bienvenida completa. Evita saludar en cada mensaje.
+  greetedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([channel, externalUserId])
+  @@index([personId])
+  @@index([tenantId])
+  @@map("assistant_conversations")
 }
 
 // ─── QR permanentes (tarjeta de presentación) ─────────────────────────────────

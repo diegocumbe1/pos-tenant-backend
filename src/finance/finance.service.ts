@@ -353,10 +353,18 @@ export class FinanceService {
         productMap.set(item.productId, entry);
       }
     }
-    const topProductsByRevenue = [...productMap.entries()]
+    // El ranking COMPLETO. Lo que se recorta es la respuesta, no el cálculo:
+    // `productsCount` e `itemsSoldCount` salen de acá, así que la tarjeta de 10
+    // y el listado completo dicen el mismo total de unidades y de productos.
+    const rankedProducts = [...productMap.entries()]
       .map(([id, v]) => ({ id, ...v }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 10);
+      .sort((a, b) => b.revenue - a.revenue);
+    const topProductsByRevenue = rankedProducts.slice(0, query.topProducts ?? 10);
+    const productsCount = rankedProducts.length;
+    const itemsSoldCount = rankedProducts.reduce(
+      (sum, p) => sum + p.quantity,
+      0,
+    );
 
     const waiterAgg = new Map<
       string,
@@ -461,6 +469,10 @@ export class FinanceService {
       ordersCount,
       averageOrderValue,
       topProductsByRevenue,
+      /** Productos DISTINTOS vendidos en el período (el ranking sin recortar). */
+      productsCount,
+      /** Unidades vendidas en el período, sumando todo el ranking. */
+      itemsSoldCount,
       topWaitersByRevenue,
       revenueByDay,
       // ── Costo real de lo vendido (aditivo) ──

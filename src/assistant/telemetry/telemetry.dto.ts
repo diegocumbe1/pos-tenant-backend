@@ -65,7 +65,7 @@ const record = (value: unknown): Record<string, unknown> | null =>
 export function sanitizeEvent(
   value: unknown,
   ctx: TelemetryContext,
-  channel: 'WEB' | 'ALEXA',
+  channel: 'WEB' | 'ALEXA' | 'WHATSAPP',
 ): Prisma.AssistantQueryLogCreateManyInput | null {
   const e = record(value);
   if (

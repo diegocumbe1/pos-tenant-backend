@@ -26,6 +26,7 @@ import { LoggingInterceptor } from './monitoring/logging.interceptor';
 import { RequestMetricsMiddleware } from './monitoring/request-metrics.middleware';
 import { AlexaModule } from './integrations/alexa/alexa.module';
 import { QrModule } from './qr/qr.module';
+import { AssistantModule } from './assistant/assistant.module';
 
 @Module({
   imports: [
@@ -57,6 +58,10 @@ import { QrModule } from './qr/qr.module';
     PlatformGatewayModule,
     StaffCompensationModule,
     AlexaModule,
+    // Explícito aunque Alexa ya lo arrastre: el agente de WhatsApp escucha
+    // eventos desde este módulo, y su listener tiene que registrarse aunque
+    // mañana Alexa deje de existir.
+    AssistantModule,
   ],
   controllers: [AppController],
   providers: [

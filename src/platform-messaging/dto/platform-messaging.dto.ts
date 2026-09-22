@@ -135,6 +135,14 @@ export class UpdateMessagingSettingsDto {
   @IsBoolean()
   waEnabled?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'El agente de Lynko responde los mensajes entrantes del número de la plataforma.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  agentEnabled?: boolean;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
