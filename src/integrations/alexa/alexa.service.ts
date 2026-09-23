@@ -36,9 +36,11 @@ import {
   ReportPeriod,
   CatalogCategoryAnswer,
   CatalogOverviewAnswer,
+  ExpensesAnswer,
   InventoryStatusAnswer,
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
+  PendingPurchaseAnswer,
   PlatformOverviewAnswer,
   ProductLookupAnswer,
   SalesAnswer,
@@ -46,10 +48,19 @@ import {
 } from '../../assistant/assistant.types';
 import { periodLabel, parsePeriod } from '../../assistant/report-period';
 import { formatCOP } from '../../common/date.util';
+
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
 import { AlexaSkillRepository } from './alexa-skill.repository';
 import { debtDocument, reportDocument, salesDocument } from './apl/report.apl';
+/**
+ * Plata dicha en voz alta.
+ *
+ * Sin separadores de miles ni símbolo: Alexa lee mejor "450000 pesos" que
+ * "$450.000", que pronuncia como una cadena de puntos. `formatCOP` se reserva
+ * para las tarjetas y la pantalla, donde sí se LEE.
+ */
+const speakCOP = (amount: number): string => `${amount} pesos`;
 
 /**
  * Lo que un intent puede devolver: la frase hablada y, cuando hay pantalla,
@@ -74,7 +85,7 @@ const DENIED = 'Esta cuenta de Alexa no está autorizada para usar Lynko.';
 const UNCONFIGURED =
   'La autorización por voz de Lynko todavía no está configurada.';
 const DETAIL_HINT =
-  'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.';
+  'Para el detalle di: quién me debe, en qué se me va la plata, qué se está acabando, o qué tengo por recibir.';
 
 type ActorResult =
   | { status: 'active'; actor: AuthenticatedUser }
@@ -351,6 +362,26 @@ export class AlexaService {
             };
           },
         );
+      case 'units_sold':
+        this.logger.log('IntentRequest: units_sold');
+        return this.forBusiness(envelope, skill, request, async (a, b) =>
+          this.unitsSoldSpeech(
+            await this.assistant.sales(
+              a,
+              b,
+              // Unidades con un solo día de datos no dicen nada: el default es
+              // el mes, y la frase lo nombra para que nadie lo dé por otro.
+              this.periodOf(request, 'month'),
+            ),
+          ),
+        );
+      case 'expenses_summary':
+        this.logger.log('IntentRequest: expenses_summary');
+        return this.forBusiness(envelope, skill, request, async (a, b) =>
+          this.expensesSpeech(
+            await this.assistant.expenses(a, b, this.periodOf(request, 'month')),
+          ),
+        );
       case 'pending_delivery':
         this.logger.log('IntentRequest: pending_delivery');
         return this.forBusiness(
@@ -361,6 +392,11 @@ export class AlexaService {
             this.deliverySpeech(
               await this.assistant.pendingDelivery(actor, business),
             ),
+        );
+      case 'pending_purchase':
+        this.logger.log('IntentRequest: pending_purchase');
+        return this.forBusiness(envelope, skill, request, async (a, b) =>
+          this.purchaseSpeech(await this.assistant.pendingPurchase(a, b)),
         );
       case 'top_products':
       case 'worst_products':
@@ -443,7 +479,10 @@ export class AlexaService {
       case 'AMAZON.HelpIntent':
         this.logger.log('IntentRequest: AMAZON.HelpIntent');
         return this.speak(
-          'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, qué está agotado, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
+          // Se nombran siete de las catorce: una lista hablada más larga no se
+          // retiene, y estas cubren las cuatro áreas —entra, sale, mercancía,
+          // clientes— para que se entienda el alcance sin enumerarlo entero.
+          'Puedes preguntarme por un negocio: cuánto vendí hoy, cuántas unidades vendí este mes, en qué se me va la plata, quién me debe, qué tengo por entregar, qué pedidos faltan por recibir, o qué se está acabando. También puedes pedirme un período: el mes pasado, o los últimos quince días. Para activar el acceso di: mi código es, y tu frase.',
           false,
         );
       case 'AMAZON.YesIntent':
@@ -770,6 +809,60 @@ export class AlexaService {
       title: `Ventas · ${answer.business.name}`,
       content: lines.filter((line) => line !== '').join('\n'),
     };
+  }
+
+  /**
+   * El período del slot, con un default por capacidad.
+   *
+   * `parsePeriod` asume el día cuando no viene slot, y para ventas está bien
+   * —"cuánto vendí" es una pregunta sobre hoy—, pero para gastos o unidades un
+   * solo día no responde nada. La frase hablada siempre nombra el rango que se
+   * usó, así que asumir no es el problema: asumir en silencio, sí.
+   */
+  private periodOf(request: IntentRequest, fallback: ReportPeriod) {
+    const spoken = this.slotValue(request, PERIOD_SLOT);
+    return spoken ? parsePeriod(spoken) : fallback;
+  }
+
+  /** Unidades, no pesos. Se nombran las dos cifras porque la siguiente pregunta siempre es esa. */
+  private unitsSoldSpeech(answer: SalesAnswer): string {
+    if (!answer.unitsSold) this.outcome('NO_DATA');
+    const when = periodLabel(answer.period);
+    if (!answer.unitsSold) {
+      return `En ${answer.business.name} no se vendió ninguna unidad ${when}.`;
+    }
+    const units =
+      answer.unitsSold === 1 ? '1 unidad' : `${answer.unitsSold} unidades`;
+    return `${when.charAt(0).toUpperCase()}${when.slice(1)} en ${answer.business.name} se ${answer.unitsSold === 1 ? 'vendió' : 'vendieron'} ${units}, por ${speakCOP(answer.revenueCOP)}.`;
+  }
+
+  private expensesSpeech(answer: ExpensesAnswer): string {
+    if (!answer.totalCOP) this.outcome('NO_DATA');
+    const when = periodLabel(answer.period);
+    if (!answer.totalCOP) {
+      return `En ${answer.business.name} no hay gastos registrados ${when}.`;
+    }
+    // Por voz, dos categorías. Una lista de nueve no se retiene y lo que se
+    // busca es saber por dónde se va la plata, no el detalle contable.
+    const top = answer.byCategory
+      .slice(0, 2)
+      .map((row) => `${row.category}, ${speakCOP(row.amountCOP)}`)
+      .join('; y ');
+    return `En ${answer.business.name} los gastos ${when} suman ${speakCOP(answer.totalCOP)}${top ? `. Lo más alto: ${top}` : ''}.`;
+  }
+
+  /** Lo que falta RECIBIR del proveedor: se dice explícito para no confundirlo con lo que falta entregar. */
+  private purchaseSpeech(answer: PendingPurchaseAnswer): string {
+    if (!answer.openCount) this.outcome('NO_DATA');
+    if (!answer.openCount) {
+      return `En ${answer.business.name} no tienes pedidos pendientes por recibir.`;
+    }
+    const head = `En ${answer.business.name} tienes ${answer.openCount === 1 ? '1 pedido' : `${answer.openCount} pedidos`} por recibir, por unos ${speakCOP(answer.estimatedOpenCostCOP)}.`;
+    const first = answer.items
+      .slice(0, 3)
+      .map((item) => item.name)
+      .join(', ');
+    return first ? `${head} Los primeros: ${first}.` : head;
   }
 
   private salesSpeech(answer: SalesAnswer): string {

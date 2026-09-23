@@ -5,6 +5,7 @@ import { RetailCatalogService } from '../retail/modules/catalog/retail-catalog.s
 import { RetailInventoryService } from '../retail/modules/inventory/retail-inventory.service';
 import { RetailPurchasesService } from '../retail/modules/purchases/retail-purchases.service';
 import { RetailSalesService } from '../retail/modules/sales/retail-sales.service';
+import { FinanceService } from '../finance/finance.service';
 import { AssistantScopeService } from './assistant-scope.service';
 import { AssistantService } from './assistant.service';
 
@@ -23,8 +24,9 @@ describe('AssistantService', () => {
     salesRanking: jest.Mock;
   };
   let retailInventory: { getSummary: jest.Mock };
-  let retailPurchases: { getSummary: jest.Mock };
+  let retailPurchases: { getSummary: jest.Mock; list: jest.Mock };
   let retailCatalog: { listProducts: jest.Mock };
+  let finance: { expenses: jest.Mock };
   const admin = { id: 'u1', isPlatformAdmin: true } as AuthenticatedUser;
   const cashier = { id: 'u2', isPlatformAdmin: false } as AuthenticatedUser;
 
@@ -82,10 +84,24 @@ describe('AssistantService', () => {
       },
     ];
     retailCatalog = { listProducts: jest.fn().mockResolvedValue(shelf) };
+    finance = {
+      expenses: jest.fn().mockResolvedValue({
+        total: 0,
+        byCategory: [],
+        expenses: [],
+      }),
+    };
     retailPurchases = {
       getSummary: jest
         .fn()
-        .mockResolvedValue({ openCount: 3, estimatedOpenCostCOP: 1000 }),
+        .mockResolvedValue({
+          openCount: 3,
+          estimatedOpenCostCOP: 1000,
+          pendingCount: 1,
+          orderedCount: 2,
+          partiallyReceivedCount: 0,
+        }),
+      list: jest.fn().mockResolvedValue([]),
     };
     retailInventory = {
       getSummary: jest.fn().mockImplementation((ctx: { branchId: string }) =>
@@ -121,6 +137,7 @@ describe('AssistantService', () => {
       retailInventory as unknown as RetailInventoryService,
       retailPurchases as unknown as RetailPurchasesService,
       retailCatalog as unknown as RetailCatalogService,
+      finance as unknown as FinanceService,
     );
   });
 
@@ -307,6 +324,11 @@ describe('AssistantService', () => {
       expect(report.purchases).toEqual({
         openCount: 6,
         estimatedOpenCostCOP: 2000,
+        // El desglose distingue lo que depende de uno (sin pedir) de lo que
+        // depende del proveedor (en camino). Son dos acciones distintas.
+        pendingCount: 2,
+        orderedCount: 4,
+        partiallyReceivedCount: 0,
       });
     });
   });

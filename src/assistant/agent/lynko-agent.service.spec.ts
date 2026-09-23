@@ -280,6 +280,11 @@ describe('LynkoAgentService', () => {
     expect(result.action).toBe('CLARIFY');
     // Ni confirma ni niega que Malexca exista: solo ofrece los suyos.
     expect(result.reply).not.toContain('Malexca');
+    // Con un solo negocio no se pregunta "¿de cuál?": se afirma cuál es.
+    expect(result.reply).toContain(
+      'El negocio que tienes asociado es Bella Chic',
+    );
+    expect(result.reply).not.toContain('¿De cuál');
     expect(assistant.sales).not.toHaveBeenCalled();
   });
 });

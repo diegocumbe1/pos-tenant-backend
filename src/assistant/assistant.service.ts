@@ -3,6 +3,7 @@ import {
   AuthenticatedUser,
   TenantContext,
 } from '../auth/types/tenant-context.interface';
+import { FinanceService } from '../finance/finance.service';
 import { PlatformService } from '../platform/platform.service';
 import { RetailCatalogService } from '../retail/modules/catalog/retail-catalog.service';
 import { RetailInventoryService } from '../retail/modules/inventory/retail-inventory.service';
@@ -15,10 +16,13 @@ import {
   CatalogOverviewAnswer,
   DebtFigures,
   DeliveryFigures,
+  ExpenseFigures,
+  ExpensesAnswer,
   InventoryFigures,
   InventoryStatusAnswer,
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
+  PendingPurchaseAnswer,
   PlatformOverviewAnswer,
   ProductLookupAnswer,
   PurchaseFigures,
@@ -32,6 +36,13 @@ import { periodRange } from './report-period';
 const SALES_READ = 'retail:sales:read';
 const INVENTORY_READ = 'retail:inventory:read';
 const CATALOG_READ = 'retail:catalog:read';
+/**
+ * El prefijo dice "restaurant" por historia, no por vertical: es el permiso que
+ * protege `/finance` para todos los tenants, retail incluido. Renombrarlo es
+ * una migración de permisos y roles aparte; usar otro código aquí dejaría los
+ * gastos abiertos a quien no debe verlos.
+ */
+const FINANCE_READ = 'restaurant:finance:read';
 
 /** Alexa transcribe distinto cada vez: se compara sin tildes ni puntuación. */
 function normalizeName(value: string): string {
@@ -68,6 +79,7 @@ export class AssistantService {
     private readonly retailInventory: RetailInventoryService,
     private readonly retailPurchases: RetailPurchasesService,
     private readonly retailCatalog: RetailCatalogService,
+    private readonly finance: FinanceService,
   ) {}
 
   private async open(
@@ -141,6 +153,68 @@ export class AssistantService {
   ): Promise<PendingDeliveryAnswer> {
     const scope = await this.open(actor, business, [SALES_READ]);
     return { business, ...(await this.deliveryFigures(scope)) };
+  }
+
+  /**
+   * Lo pedido al proveedor que todavía no llega.
+   *
+   * Vive aparte de `businessReport` —que solo trae los contadores— porque
+   * "¿qué pedidos tengo pendientes por recibir?" pide la LISTA, y un número
+   * suelto no responde esa pregunta.
+   */
+  async pendingPurchase(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+  ): Promise<PendingPurchaseAnswer> {
+    const scope = await this.open(actor, business, [INVENTORY_READ]);
+    const [figures, items] = await Promise.all([
+      this.purchaseFigures(scope),
+      Promise.all(
+        scope.branchIds.map((branchId) =>
+          this.retailPurchases.list(
+            { ...scope.ctx, branchId },
+            { open: true },
+          ),
+        ),
+      ),
+    ]);
+
+    return {
+      business,
+      ...figures,
+      items: items
+        .flat()
+        .map((item) => ({
+          name: item.productName ?? item.name,
+          quantity: item.quantity,
+          supplier: item.supplier,
+          status: item.status,
+          isUrgent: item.isUrgent,
+        }))
+        // Lo urgente arriba, igual que la pantalla de compras. El `list` ya
+        // viene ordenado por sucursal; al unir varias hay que reordenar.
+        .sort((a, b) => Number(b.isUrgent) - Number(a.isUrgent)),
+    };
+  }
+
+  /**
+   * Los gastos del período, con el desglose por categoría.
+   *
+   * Usa `restaurant:finance:read` —el nombre es heredado— que es el mismo
+   * permiso que protege la pantalla de finanzas. Un cajero no lo tiene, y eso
+   * es deliberado: lo que cuesta el negocio no es dato de mostrador.
+   */
+  async expenses(
+    actor: AuthenticatedUser,
+    business: BusinessRef,
+    period: ReportPeriod = 'month',
+  ): Promise<ExpensesAnswer> {
+    const scope = await this.open(actor, business, [FINANCE_READ]);
+    return {
+      business,
+      period,
+      ...(await this.expenseFigures(scope, period)),
+    };
   }
 
   /**
@@ -448,12 +522,62 @@ export class AssistantService {
         this.retailPurchases.getSummary({ ...ctx, branchId }),
       ),
     );
+    // `?? 0` por la misma razón que en `salesFigures`: una sola clave
+    // indefinida contamina el reporte entero con NaN y lo vuelve ilegible.
+    const sum = (pick: (p: (typeof parts)[number]) => number | undefined) =>
+      parts.reduce((n, p) => n + (pick(p) ?? 0), 0);
     return {
-      openCount: parts.reduce((n, p) => n + p.openCount, 0),
-      estimatedOpenCostCOP: parts.reduce(
-        (n, p) => n + p.estimatedOpenCostCOP,
-        0,
+      openCount: sum((p) => p.openCount),
+      estimatedOpenCostCOP: sum((p) => p.estimatedOpenCostCOP),
+      pendingCount: sum((p) => p.pendingCount),
+      orderedCount: sum((p) => p.orderedCount),
+      partiallyReceivedCount: sum((p) => p.partiallyReceivedCount),
+    };
+  }
+
+  /**
+   * Gasto del período, sumado sobre todas las sucursales del negocio.
+   *
+   * Se le pide a `FinanceService` con `period: 'custom'` y las fechas ya
+   * resueltas por `periodRange`, en vez de traducir el período del asistente a
+   * uno de los de `PeriodQueryDto`: los períodos del asistente son más ricos
+   * —"los últimos 15 días", "marzo"— y mapearlos al más parecido daría una
+   * cifra correcta de la ventana equivocada.
+   */
+  private async expenseFigures(
+    { ctx, branchIds }: Scope,
+    period: ReportPeriod,
+  ): Promise<ExpenseFigures> {
+    const { from, to } = periodRange(period);
+    const parts = await Promise.all(
+      branchIds.map((branchId) =>
+        this.finance.expenses(
+          { ...ctx, branchId },
+          {
+            period: 'custom',
+            dateFrom: from.getTime(),
+            dateTo: to.getTime(),
+          },
+        ),
       ),
+    );
+
+    const byCategory = new Map<string, number>();
+    for (const part of parts) {
+      for (const row of part.byCategory) {
+        byCategory.set(
+          row.category,
+          (byCategory.get(row.category) ?? 0) + row.amountCOP,
+        );
+      }
+    }
+
+    return {
+      totalCOP: parts.reduce((n, p) => n + p.total, 0),
+      count: parts.reduce((n, p) => n + p.expenses.length, 0),
+      byCategory: [...byCategory.entries()]
+        .map(([category, amountCOP]) => ({ category, amountCOP }))
+        .sort((a, b) => b.amountCOP - a.amountCOP),
     };
   }
 

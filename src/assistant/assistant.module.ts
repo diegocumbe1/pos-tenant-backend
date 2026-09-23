@@ -1,6 +1,7 @@
 import { AssistantTelemetryModule } from './telemetry/telemetry.module';
 import { forwardRef, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { FinanceModule } from '../finance/finance.module';
 import { PlatformModule } from '../platform/platform.module';
 import { RetailCatalogModule } from '../retail/modules/catalog/retail-catalog.module';
 import { RetailInventoryModule } from '../retail/modules/inventory/retail-inventory.module';
@@ -26,6 +27,8 @@ import { IntentResolverService } from './intents/intent-resolver.service';
     RetailInventoryModule,
     RetailCatalogModule,
     RetailPurchasesModule,
+    // Para la capacidad de gastos. Ver `AssistantService.expenses`.
+    FinanceModule,
     AuthModule,
     // Solo para el motor de sesión: el agente escucha sus eventos y responde
     // por el mismo cliente. La dependencia va en este sentido a propósito —

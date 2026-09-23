@@ -1,13 +1,25 @@
 import { AssistantConfidence, AssistantOutcome, Prisma } from '@prisma/client';
 
+/**
+ * Los ids de capacidad que la telemetría acepta.
+ *
+ * Es una lista blanca a propósito: lo que no esté aquí se guarda como
+ * `unknown`. Eso significa que **añadir una capacidad sin añadirla aquí la hace
+ * ver como un fallback en los tableros**, o sea justo lo contrario de lo que
+ * pasó. Esta lista tiene que crecer con `AgentIntent` y con los intents del
+ * modelo de interacción de Alexa.
+ */
 export const INTENTS = new Set([
   'sales_summary',
+  'units_sold',
+  'expenses_summary',
   'low_stock',
   'out_of_stock',
   'inventory_value',
   'product_stock',
   'pending_payment',
   'pending_delivery',
+  'pending_purchase',
   'business_summary',
   'business_report',
   'top_products',
@@ -17,11 +29,25 @@ export const INTENTS = new Set([
   'catalog_category',
   'product_lookup',
   'list_businesses',
+  // Conversación: no son consultas de datos, pero saber cuántos mensajes se
+  // van en saludos y menús es lo que dice si el agente está ayudando o
+  // entreteniendo.
+  'welcome',
+  'options',
+  'select_option',
+  'switch_business',
+  'human_handoff',
+  'is_bot',
+  'about_lynko',
+  'demo_request',
+  'existing_customer',
+  'goodbye',
   'GetSubscriptionsIntent',
   'ActivarLynkoIntent',
   'CerrarAccesoIntent',
   'DespedidaIntent',
   'AMAZON.HelpIntent',
+  'AMAZON.NavigateHomeIntent',
   'AMAZON.YesIntent',
   'AMAZON.NoIntent',
   'AMAZON.StopIntent',

@@ -33,6 +33,7 @@ import {
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
   SetTenantStatusDto,
+  SetUserPhoneDto,
   SetUserStatusDto,
   SubscriptionActionDto,
   UpdateBillingContactDto,
@@ -369,6 +370,12 @@ export class PlatformController {
     return this.platform.getUsage(id);
   }
 
+  @Get('tenants/:id/audit')
+  @ApiOperation({ summary: 'Read administrative changes for one tenant' })
+  getTenantAudit(@Param('id') id: string, @Query('cursor') cursor?: string) {
+    return this.platform.getTenantAudit(id, cursor);
+  }
+
   @Get('tenants/:id/operations')
   @ApiOperation({
     summary: 'Read-only operational cockpit for a tenant',
@@ -397,6 +404,18 @@ export class PlatformController {
   @ApiOperation({ summary: 'List users of a tenant' })
   listTenantUsers(@Param('id') id: string) {
     return this.platform.listTenantUsers(id);
+  }
+
+  @Patch('users/:id/phone')
+  @ApiOperation({
+    summary: 'Set the phone this user writes from on WhatsApp (agent identity)',
+  })
+  setUserPhone(
+    @Param('id') id: string,
+    @Body() dto: SetUserPhoneDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.setUserPhone(id, dto.phone ?? null, actor.id);
   }
 
   @Patch('users/:id/status')

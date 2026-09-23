@@ -51,16 +51,21 @@ export class AssistantScopeService {
       select: { id: true, name: true, vertical: { select: { code: true } } },
       orderBy: { name: 'asc' as const },
     };
-    if (actor.isPlatformAdmin) {
-      return this.prisma.tenant.findMany({ where: listed, ...query });
-    }
-    // Un admin de plataforma puede no tener tenant propio; un usuario normal
-    // sin tenant no tiene nada que consultar.
-    if (!actor.tenantId) return [];
-    return this.prisma.tenant.findMany({
-      where: { ...listed, id: actor.tenantId },
-      ...query,
-    });
+    const rows = actor.isPlatformAdmin
+      ? await this.prisma.tenant.findMany({ where: listed, ...query })
+      : // Un admin de plataforma puede no tener tenant propio; un usuario normal
+        // sin tenant no tiene nada que consultar.
+        actor.tenantId
+        ? await this.prisma.tenant.findMany({
+            where: { ...listed, id: actor.tenantId },
+            ...query,
+          })
+        : [];
+    // El nombre se limpia aquí y no en cada canal: hay tenants guardados con
+    // espacios al final ("Bella Chic "), y eso sale a la cara del cliente como
+    // "Bella Chic  no registra ventas". Es un dato sucio que no vale la pena
+    // migrar, pero tampoco mostrar.
+    return rows.map((row) => ({ ...row, name: row.name.trim() }));
   }
 
   /**

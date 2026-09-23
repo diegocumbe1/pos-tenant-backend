@@ -162,7 +162,9 @@ export class PlanPricingService {
     });
 
     const bySpecificity = [
-      rows.find((r) => r.verticalCode === verticalCode && r.planCode === planCode),
+      rows.find(
+        (r) => r.verticalCode === verticalCode && r.planCode === planCode,
+      ),
       rows.find((r) => r.verticalCode === verticalCode && r.planCode === null),
       rows.find((r) => r.verticalCode === null && r.planCode === null),
     ];
@@ -195,12 +197,7 @@ export class PlanPricingService {
     const [priceUSD, rate, discountBps] = await Promise.all([
       this.getPlanPriceAt(input.verticalCode, input.planCode, at),
       this.getRateAt(at),
-      this.getTermDiscountBpsAt(
-        input.verticalCode,
-        input.planCode,
-        term,
-        at,
-      ),
+      this.getTermDiscountBpsAt(input.verticalCode, input.planCode, term, at),
     ]);
 
     if (priceUSD == null) {
@@ -400,7 +397,9 @@ export class PlanPricingService {
       where: {
         ...(filters.verticalCode ? { verticalCode: filters.verticalCode } : {}),
         ...(filters.planCode ? { planCode: filters.planCode } : {}),
-        ...(filters.termMonths ? { termMonths: Number(filters.termMonths) } : {}),
+        ...(filters.termMonths
+          ? { termMonths: Number(filters.termMonths) }
+          : {}),
       },
       orderBy: [{ effectiveFrom: 'desc' }, { createdAt: 'desc' }],
     });

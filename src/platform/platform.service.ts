@@ -1,3 +1,4 @@
+import { tenantVerticalOperations } from './tenant-vertical-operations';
 import {
   BadRequestException,
   Injectable,
@@ -16,6 +17,7 @@ import {
   monthStartDayCO,
   weekStartDayCO,
 } from '../common/date.util';
+import { normalizePhone } from '../platform-messaging/phone.util';
 import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlanPriceDto,
@@ -392,8 +394,35 @@ export class PlatformService {
    * productos, inventario, mesas y últimas órdenes de un tenant, sin necesidad
    * de impersonar. Devuelve conteos + listas acotadas para observabilidad.
    */
+  async getTenantAudit(tenantId: string, cursor?: string) {
+    await this.loadTenant(tenantId);
+    const users = await this.prisma.user.findMany({ where: { tenantId }, select: { id: true } });
+    const where: Prisma.PlatformAuditLogWhereInput = {
+      OR: [
+        { targetId: tenantId, targetType: { in: ['tenant', 'subscription'] } },
+        { targetType: 'user', targetId: { in: users.map(u => u.id) } },
+        { targetType: 'billing-contact', before: { path: ['tenantId'], equals: tenantId } },
+        { targetType: 'billing-contact', after: { path: ['tenantId'], equals: tenantId } },
+      ],
+    };
+    // Validate cursor inside the same account before using it.
+    if (cursor && !(await this.prisma.platformAuditLog.findFirst({ where: { AND: [where, { id: cursor }] }, select: { id: true } }))) {
+      throw new BadRequestException('Invalid audit cursor');
+    }
+    const rows = await this.prisma.platformAuditLog.findMany({
+      where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 26,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    const page = rows.slice(0, 25);
+    const actors = await this.prisma.user.findMany({ where: { id: { in: [...new Set(page.map(r => r.actorUserId))] } }, select: { id: true, name: true } });
+    return {
+      entries: page.map(row => ({ ...row, actorName: actors.find(a => a.id === row.actorUserId)?.name ?? row.actorUserId, createdAt: row.createdAt.toISOString() })),
+      nextCursor: rows.length > 25 ? page[page.length - 1].id : null,
+    };
+  }
+
   async getTenantOperations(id: string) {
-    await this.loadTenant(id);
+    const tenant = await this.loadTenant(id);
 
     const [
       branches,
@@ -407,6 +436,7 @@ export class PlatformService {
       counts,
       sites,
       menuConfig,
+      verticalOperations,
     ] = await Promise.all([
       this.prisma.branch.findMany({
         where: { tenantId: id },
@@ -556,9 +586,12 @@ export class PlatformService {
           updatedAt: true,
         },
       }),
+      tenantVerticalOperations(this.prisma, id, tenant.vertical?.code ?? 'restaurant'),
     ]);
 
     return {
+      vertical: tenant.vertical?.code ?? null,
+      verticalOperations,
       counts,
       publicPresence: {
         sites: sites.map((site) => ({
@@ -670,15 +703,130 @@ export class PlatformService {
 
   async listTenantUsers(tenantId: string) {
     await this.loadTenant(tenantId);
-    const users = await this.prisma.user.findMany({
-      where: { tenantId },
+    const [users, contacts] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { tenantId },
+        include: {
+          role: { select: { code: true } },
+          userBranches: { select: { branchId: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.billingContact.findMany({
+        where: { tenantId },
+        select: {
+          name: true,
+          email: true,
+          phone: true,
+          whatsapp: true,
+          isPrimary: true,
+        },
+        orderBy: { isPrimary: 'desc' },
+      }),
+    ]);
+    return {
+      users: users.map((u) => ({
+        ...this.toTenantUserDto(u),
+        ...this.phoneSuggestion(u, contacts),
+      })),
+    };
+  }
+
+  /**
+   * El número que PROBABLEMENTE es el de esta persona, sacado de Pagos.
+   *
+   * Es una sugerencia para que el super-admin no tenga que volver a teclear lo
+   * que ya escribió en el contacto de cobro, y **nada más**: no se aplica sola.
+   * La diferencia importa. Un contacto de cobro puede ser el contador, la
+   * esposa del dueño o un celular corporativo; tomarlo como identidad
+   * convertiría un dato administrativo en una llave a las cifras del negocio.
+   * Por eso alguien tiene que mirarlo y confirmarlo.
+   *
+   * Se dice también DE DÓNDE sale, para que esa confirmación sea informada: no
+   * es lo mismo un contacto con el mismo correo que el contacto principal del
+   * negocio, que puede ser otra persona.
+   */
+  private phoneSuggestion(
+    user: { email: string; phone: string | null },
+    contacts: {
+      name: string;
+      email: string | null;
+      phone: string;
+      whatsapp: string | null;
+      isPrimary: boolean;
+    }[],
+  ): { suggestedPhone: string | null; suggestedFrom: string | null } {
+    if (user.phone) return { suggestedPhone: null, suggestedFrom: null };
+
+    const sameEmail = contacts.find(
+      (c) => c.email?.trim().toLowerCase() === user.email.trim().toLowerCase(),
+    );
+    const source = sameEmail ?? contacts.find((c) => c.isPrimary) ?? null;
+    if (!source) return { suggestedPhone: null, suggestedFrom: null };
+
+    const raw = source.whatsapp?.trim() || source.phone;
+    return {
+      suggestedPhone: raw || null,
+      suggestedFrom: sameEmail
+        ? `Pagos · ${source.name} (mismo correo)`
+        : `Pagos · ${source.name}`,
+    };
+  }
+
+  /**
+   * Fija el celular con el que un usuario le escribe al WhatsApp de Lynko.
+   *
+   * Es el ÚNICO dato que el agente acepta como identidad, y por eso se pone
+   * aquí y no se deduce de ningún lado. El teléfono del contacto de cobro NO
+   * sirve: ese contacto puede ser el contador, no tiene rol ni permisos, y
+   * tomarlo como identidad convertiría un dato administrativo en una llave de
+   * acceso a las cifras del negocio.
+   *
+   * Se guarda normalizado a dígitos con indicativo para que la comparación con
+   * lo que entrega WhatsApp no dependa de cómo se haya escrito.
+   */
+  async setUserPhone(
+    userId: string,
+    phone: string | null,
+    actorUserId: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
       include: {
         role: { select: { code: true } },
         userBranches: { select: { branchId: true } },
       },
-      orderBy: { createdAt: 'asc' },
     });
-    return { users: users.map((u) => this.toTenantUserDto(u)) };
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+
+    let normalized: string | null = null;
+    if (phone?.trim()) {
+      try {
+        normalized = normalizePhone(phone);
+      } catch {
+        throw new BadRequestException('Teléfono inválido');
+      }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { phone: normalized },
+      include: {
+        role: { select: { code: true } },
+        userBranches: { select: { branchId: true } },
+      },
+    });
+    await this.audit(
+      actorUserId,
+      'user.phone.set',
+      'user',
+      userId,
+      // El número no entra al log: lo que importa auditar es que se cambió y
+      // por quién, no cuál era.
+      { hadPhone: !!user.phone },
+      { hasPhone: !!normalized },
+    );
+    return this.toTenantUserDto(updated);
   }
 
   async setUserStatus(
@@ -2512,6 +2660,10 @@ export class PlatformService {
       clerkId: user.id, // identidad de auth (Supabase) — el FE conserva el campo
       name: user.name,
       email: user.email,
+      // El celular con el que esta persona le escribe al WhatsApp de Lynko. Es
+      // lo ÚNICO que el agente acepta como identidad: un teléfono en el
+      // contacto de cobro no es una cuenta y no da acceso a nada.
+      phone: user.phone,
       role: ROLE_CODE_MAP[user.role.code] ?? user.role.code,
       branchIds: user.userBranches.map((ub) => ub.branchId),
       isActive: user.isActive,

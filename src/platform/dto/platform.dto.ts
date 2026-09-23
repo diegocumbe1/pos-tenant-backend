@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -264,6 +265,18 @@ export class SetUserStatusDto {
   @ApiProperty({ enum: USER_STATUSES })
   @IsIn(USER_STATUSES)
   status!: (typeof USER_STATUSES)[number];
+}
+
+export class SetUserPhoneDto {
+  @ApiPropertyOptional({
+    example: '3132542284',
+    description:
+      'Celular con el que esta persona le escribe al WhatsApp de Lynko. Vacío lo borra.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  phone?: string;
 }
 
 const CURRENCIES = ['COP', 'USD'] as const;

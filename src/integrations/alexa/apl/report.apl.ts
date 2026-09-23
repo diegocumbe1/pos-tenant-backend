@@ -6,6 +6,7 @@ import {
   ReportPeriod,
   SalesAnswer,
 } from '../../../assistant/assistant.types';
+import { periodLabel } from '../../../assistant/report-period';
 
 type RenderDocument = interfaces.alexa.presentation.apl.RenderDocumentDirective;
 
@@ -171,12 +172,28 @@ function panel(token: string, p: Panel): RenderDocument {
  * En pantalla el período se lee como título, no como frase hablada: la voz dice
  * "en lo que va del mes" y el encabezado dice "Este mes".
  */
-const PERIOD_TITLE: Record<ReportPeriod, string> = {
+const NAMED_TITLES: Partial<Record<ReportPeriod, string>> = {
   day: 'Hoy',
   yesterday: 'Ayer',
   week: 'Esta semana',
+  lastWeek: 'Semana pasada',
   month: 'Este mes',
+  lastMonth: 'Mes pasado',
+  year: 'Este año',
 };
+
+/**
+ * Los períodos abiertos —"los últimos 15 días", "marzo"— no caben en una tabla
+ * fija, así que se derivan de la frase hablada y se capitalizan. Es preferible
+ * a un `Record` exhaustivo: con `last:${number}` en el tipo, ese Record no se
+ * puede escribir y un default silencioso pondría "Hoy" sobre cifras de marzo.
+ */
+function periodTitle(period: ReportPeriod): string {
+  const named = NAMED_TITLES[period];
+  if (named) return named;
+  const spoken = periodLabel(period).replace(/^en /, '');
+  return spoken.charAt(0).toUpperCase() + spoken.slice(1);
+}
 
 /** "Cómo vamos": la venta manda, y debajo lo accionable. */
 export function reportDocument(report: BusinessReportAnswer): RenderDocument {
@@ -184,7 +201,7 @@ export function reportDocument(report: BusinessReportAnswer): RenderDocument {
 
   return panel('lynko-report', {
     business: report.business.name,
-    period: PERIOD_TITLE[report.period],
+    period: periodTitle(report.period),
     heroLabel: 'VENTAS',
     hero: formatCOP(sales.revenueCOP),
     heroAccent: sales.revenueCOP > 0 ? GREEN : MUTED,
@@ -254,7 +271,7 @@ export function debtDocument(answer: PendingPaymentAnswer): RenderDocument {
 export function salesDocument(answer: SalesAnswer): RenderDocument {
   return panel('lynko-sales', {
     business: answer.business.name,
-    period: PERIOD_TITLE[answer.period],
+    period: periodTitle(answer.period),
     heroLabel: 'VENTAS',
     hero: formatCOP(answer.revenueCOP),
     heroAccent: answer.revenueCOP > 0 ? GREEN : MUTED,

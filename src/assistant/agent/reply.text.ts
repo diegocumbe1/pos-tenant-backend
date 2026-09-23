@@ -1,8 +1,10 @@
 import { formatCOP } from '../../common/date.util';
 import {
+  ExpensesAnswer,
   InventoryStatusAnswer,
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
+  PendingPurchaseAnswer,
   SalesAnswer,
   SalesRankingAnswer,
 } from '../assistant.types';
@@ -104,6 +106,120 @@ export function inventoryValueText(inventory: InventoryStatusAnswer): string {
   ].join('\n');
 }
 
+/**
+ * "¿Cuántos productos he vendido?" — UNIDADES, no pesos.
+ *
+ * Sale de la misma lectura que `salesText` y por eso nombra también el dinero:
+ * quien pregunta cuántas unidades movió casi siempre quiere saber a continuación
+ * cuánto fue eso, y ahorrarle el segundo mensaje es la mitad del valor.
+ */
+export function unitsSoldText(sales: SalesAnswer): string {
+  const label = periodLabel(sales.period);
+  if (!sales.unitsSold) {
+    return `${capitalize(label)} ${sales.business.name} no ha vendido ninguna unidad.`;
+  }
+  return [
+    `${capitalize(label)} ${sales.business.name} vendió *${sales.unitsSold}* ${plural(sales.unitsSold, 'unidad', 'unidades')} en ${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')}.`,
+    `Eso son ${formatCOP(sales.revenueCOP)} en mercancía.`,
+  ].join('\n');
+}
+
+export function expensesText(expenses: ExpensesAnswer): string {
+  const label = periodLabel(expenses.period);
+  if (!expenses.totalCOP) {
+    return `${capitalize(label)} ${expenses.business.name} no registra gastos.`;
+  }
+  const lines = [
+    `${capitalize(label)} ${expenses.business.name} lleva *${formatCOP(expenses.totalCOP)}* en ${expenses.count} ${plural(expenses.count, 'gasto', 'gastos')}.`,
+  ];
+  for (const row of expenses.byCategory.slice(0, 5)) {
+    lines.push(`• ${row.category}: ${formatCOP(row.amountCOP)}`);
+  }
+  if (expenses.byCategory.length > 5) {
+    lines.push(`… y ${expenses.byCategory.length - 5} categorías más.`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Lo pedido al proveedor que todavía no llega.
+ *
+ * Se distingue explícitamente de lo que falta ENTREGAR: son dos listas
+ * distintas y la frase tiene que dejar claro cuál se está leyendo, porque la
+ * pregunta ("¿qué pedidos tengo pendientes?") suena igual para las dos.
+ */
+export function pendingPurchaseText(purchase: PendingPurchaseAnswer): string {
+  if (!purchase.openCount) {
+    return `${purchase.business.name} no tiene pedidos pendientes por recibir del proveedor.`;
+  }
+  const lines = [
+    `${purchase.business.name} tiene *${purchase.openCount}* ${plural(purchase.openCount, 'pedido', 'pedidos')} sin recibir, por unos ${formatCOP(purchase.estimatedOpenCostCOP)}.`,
+    // El desglose importa: "sin pedir" depende de uno, "en camino" del
+    // proveedor, y son dos acciones distintas.
+    `${purchase.pendingCount} sin pedir · ${purchase.orderedCount} en camino · ${purchase.partiallyReceivedCount} a medias`,
+  ];
+  for (const item of purchase.items.slice(0, 5)) {
+    const supplier = item.supplier ? ` (${item.supplier})` : '';
+    lines.push(
+      `• ${item.isUrgent ? '🔴 ' : ''}${item.name} — ${item.quantity}${supplier}`,
+    );
+  }
+  if (purchase.items.length > 5) {
+    lines.push(`… y ${purchase.items.length - 5} más.`);
+  }
+  return lines.join('\n');
+}
+
+export function customersText(ranking: SalesRankingAnswer): string {
+  const label = periodLabel(ranking.period);
+  if (!ranking.customers.length) {
+    return `No hay compras de clientes identificados ${label} en ${ranking.business.name}.`;
+  }
+  const lines = [`Quién más compró ${label} en ${ranking.business.name}:`];
+  ranking.customers.slice(0, 5).forEach((customer, index) => {
+    lines.push(
+      `${index + 1}. ${customer.name} — ${formatCOP(customer.totalCOP)} en ${customer.salesCount} ${plural(customer.salesCount, 'compra', 'compras')}`,
+    );
+  });
+  if (ranking.counterSales > 0) {
+    lines.push(
+      `${ranking.counterSales} ${plural(ranking.counterSales, 'venta', 'ventas')} de mostrador sin cliente asociado no ${plural(ranking.counterSales, 'entra', 'entran')} al ranking.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Lo que está quieto: la pregunta que de verdad hace quien dice "lo menos vendido". */
+export function worstProductsText(ranking: SalesRankingAnswer): string {
+  const label = periodLabel(ranking.period);
+  if (!ranking.unsoldCount && !ranking.unsoldProducts.length) {
+    return `Todo el catálogo de ${ranking.business.name} vendió algo ${label}.`;
+  }
+  const lines = [
+    `${ranking.unsoldCount} ${plural(ranking.unsoldCount, 'producto', 'productos')} no ${plural(ranking.unsoldCount, 'vendió', 'vendieron')} ni una unidad ${label} en ${ranking.business.name}.`,
+  ];
+  // De más a menos stock detenido: más unidades quietas es más plata dormida, y
+  // es por donde hay que empezar.
+  for (const product of ranking.unsoldProducts.slice(0, 5)) {
+    lines.push(`• ${product.name} — ${product.stock} en stock`);
+  }
+  return lines.join('\n');
+}
+
+/** Solo lo que YA está en cero: distinto de lo que se está acabando. */
+export function outOfStockText(inventory: InventoryStatusAnswer): string {
+  const out = inventory.lowStock.filter((item) => item.stock <= 0);
+  if (!out.length) {
+    return `Nada agotado en ${inventory.business.name}.`;
+  }
+  const lines = [
+    `${out.length} ${plural(out.length, 'producto', 'productos')} en cero en ${inventory.business.name}:`,
+  ];
+  for (const item of out.slice(0, 8)) lines.push(`• ${item.name}`);
+  if (out.length > 8) lines.push(`… y ${out.length - 8} más.`);
+  return lines.join('\n');
+}
+
 export function rankingText(ranking: SalesRankingAnswer): string {
   const label = periodLabel(ranking.period);
   if (!ranking.products.length) {
@@ -143,10 +259,14 @@ export function menuFor(vertical: string | null | undefined): MenuOption[] {
   if ((vertical ?? '').toLowerCase() === 'retail') {
     return [
       { value: 'sales_summary', label: 'Ventas' },
+      { value: 'expenses_summary', label: 'Gastos' },
       { value: 'pending_payment', label: 'Saldos por cobrar' },
       { value: 'low_stock', label: 'Qué se está acabando' },
       { value: 'pending_delivery', label: 'Pedidos por entregar' },
+      { value: 'pending_purchase', label: 'Pedidos por recibir' },
       { value: 'top_products', label: 'Lo más vendido' },
+      { value: 'top_customers', label: 'Quién compra más' },
+      { value: 'business_report', label: 'Reporte general' },
       { value: 'human_handoff', label: 'Hablar con un asesor de Lynko' },
     ];
   }
@@ -162,10 +282,24 @@ export function menuFor(vertical: string | null | undefined): MenuOption[] {
  */
 export function capabilityHint(vertical: string | null | undefined): string {
   if ((vertical ?? '').toLowerCase() === 'retail') {
-    return 'Pregúntame lo que necesites: cuánto has vendido, qué se está acabando, quién te debe o qué falta por entregar.';
+    // Se nombran cuatro, no las diez: una lista larga se lee como un menú y lo
+    // que se busca es que la siguiente frase sea una pregunta suya. Las cuatro
+    // elegidas cubren las cuatro áreas —entra, sale, mercancía, clientes— para
+    // que se entienda el alcance sin enumerarlo.
+    return 'Pregúntame lo que necesites: cuánto has vendido, en qué se te va la plata, qué se está acabando o quién te debe. Puedes pedirme un período: "de los últimos 15 días", "el mes pasado", "en marzo".';
   }
   return 'Cuéntame qué necesitas y, si no lo sé hacer todavía, te paso con un asesor.';
 }
+
+/**
+ * Lo que se responde cuando piden un total sin decir de cuándo.
+ *
+ * Es la diferencia entre titubear y preguntar bien: "cuánto llevo en ventas
+ * totales" no tiene una respuesta correcta sin período, y asumir hoy en
+ * silencio es dar una cifra exacta a una pregunta que nadie hizo.
+ */
+export const ASK_PERIOD =
+  '¿De qué período? Dime "hoy", "esta semana", "este mes", "el mes pasado" o algo como "los últimos 15 días".';
 
 /** Cuando ya se ofreció ayuda hace un momento, repetir el discurso sobra. */
 export const SHORT_HINT = '¿Qué quieres saber?';
@@ -179,6 +313,12 @@ export const SHORT_HINT = '¿Qué quieres saber?';
 export function businessQuestion(names: string[], total: number): string {
   if (total > names.length) {
     return `Tienes ${total} negocios. Escríbeme el nombre del que quieras consultar.`;
+  }
+  // Con uno solo no hay nada que elegir. Se llega aquí cuando alguien nombró un
+  // negocio que no es suyo, y "¿de cuál negocio? Tienes X" suena a pregunta con
+  // una sola respuesta posible: se afirma en vez de preguntar.
+  if (names.length === 1) {
+    return `El negocio que tienes asociado es ${names[0]}.`;
   }
   if (names.length === 2) {
     return `¿De cuál negocio: ${names[0]} o ${names[1]}?`;

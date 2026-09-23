@@ -5,7 +5,32 @@
  * Ver docs/ALEXA_VOICE_ACTIVATION.md §"Plan siguiente".
  */
 
-export type ReportPeriod = 'day' | 'yesterday' | 'week' | 'month';
+/**
+ * Ventanas con nombre propio. `week` y `month` son corridas —desde el lunes y
+ * desde el día 1—; `lastWeek` y `lastMonth` son cerradas, de punta a punta.
+ */
+export type NamedPeriod =
+  | 'day'
+  | 'yesterday'
+  | 'week'
+  | 'lastWeek'
+  | 'month'
+  | 'lastMonth'
+  | 'year';
+
+/**
+ * El período es un string y no un objeto a propósito: viaja tal cual en
+ * `AssistantConversation.lastSlots` (JSON), en la telemetría y en el slot de
+ * Alexa. Un objeto obligaría a serializarlo en cada frontera.
+ *
+ * `last:15`   → los últimos 15 días, hasta este momento.
+ * `month:2026-03` → marzo de 2026 completo (o lo que va, si es el mes en curso).
+ *
+ * Existen porque "de los últimos 15 días" y "en marzo" son preguntas que la
+ * gente hace y que antes se respondían en silencio con las cifras de HOY. Ver
+ * `periodRange`.
+ */
+export type ReportPeriod = NamedPeriod | `last:${number}` | `month:${string}`;
 
 export interface BusinessRefLike {
   id: string;
@@ -69,6 +94,20 @@ export interface PurchaseFigures {
   /** Pendientes + pedidos + recibidos a medias: lo que sigue abierto. */
   openCount: number;
   estimatedOpenCostCOP: number;
+  /** Apuntados y todavía sin pedir al proveedor. */
+  pendingCount: number;
+  /** Ya pedidos, en camino. Son los que de verdad "faltan por recibir". */
+  orderedCount: number;
+  /** Llegaron a medias: sigue faltando mercancía de ese pedido. */
+  partiallyReceivedCount: number;
+}
+
+export interface ExpenseFigures {
+  totalCOP: number;
+  /** Cuántos movimientos de gasto, no cuántas categorías. */
+  count: number;
+  /** De mayor a menor. Vacío = no hubo gastos en el período. */
+  byCategory: { category: string; amountCOP: number }[];
 }
 
 // ─── Respuestas ─────────────────────────────────────────────────────────────
@@ -88,6 +127,32 @@ export interface InventoryStatusAnswer extends InventoryFigures {
 
 export interface PendingDeliveryAnswer extends DeliveryFigures {
   business: BusinessRefLike;
+}
+
+/**
+ * Lo que le pedimos al PROVEEDOR y todavía no llega.
+ *
+ * Es lo contrario de `PendingDeliveryAnswer` —eso sale hacia el cliente, esto
+ * entra hacia nosotros— y por eso son dos respuestas distintas y no un campo
+ * más. Confundirlas manda al dueño a la pantalla equivocada.
+ */
+export interface PendingPurchaseAnswer extends PurchaseFigures {
+  business: BusinessRefLike;
+  /** Lo urgente primero, y dentro de eso lo más viejo: igual que la pantalla. */
+  items: {
+    name: string;
+    quantity: number;
+    supplier: string | null;
+    /** PENDING = sin pedir todavía; ORDERED = en camino. */
+    status: string;
+    isUrgent: boolean;
+  }[];
+}
+
+/** Sin rango no significa nada: un gasto siempre es de un período. */
+export interface ExpensesAnswer extends ExpenseFigures {
+  business: BusinessRefLike;
+  period: ReportPeriod;
 }
 
 /**

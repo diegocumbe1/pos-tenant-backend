@@ -247,13 +247,13 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.HelpIntent',
-      'Puedes preguntarme cuántas suscripciones tienes, o por un negocio: cuánto vendí hoy, quién me debe, qué tengo por entregar, qué se está acabando, qué está agotado, o cuánto vale mi inventario. Para activar el acceso di: mi código es, y tu frase.',
+      'Puedes preguntarme por un negocio: cuánto vendí hoy, cuántas unidades vendí este mes, en qué se me va la plata, quién me debe, qué tengo por entregar, qué pedidos faltan por recibir, o qué se está acabando. También puedes pedirme un período: el mes pasado, o los últimos quince días. Para activar el acceso di: mi código es, y tu frase.',
       false,
     ],
     [
       'IntentRequest',
       'AMAZON.YesIntent',
-      'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
+      'Para el detalle di: quién me debe, en qué se me va la plata, qué se está acabando, o qué tengo por recibir.',
       false,
     ],
     [
@@ -266,7 +266,7 @@ describe('AlexaService', () => {
     [
       'IntentRequest',
       'AMAZON.NavigateHomeIntent',
-      'Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
+      'Para el detalle di: quién me debe, en qué se me va la plata, qué se está acabando, o qué tengo por recibir.',
       false,
     ],
     ['IntentRequest', 'DespedidaIntent', 'Con gusto. Hasta luego.', true],
@@ -676,7 +676,7 @@ describe('AlexaService', () => {
         (await report()).response.outputSpeech as { text: string }
       ).text;
       expect(speech).toBe(
-        'Reporte de Bella Chic. Hoy vendiste 840000 pesos en 6 ventas. Te deben 1200000 pesos en total, de 2 clientes. Hay 4 productos bajos de stock, 1 agotados. Tienes 3 pedidos abiertos con el proveedor. Y 5 ventas por entregar. Para el detalle di: quién me debe, qué se está acabando, o qué tengo por entregar.',
+        'Reporte de Bella Chic. Hoy vendiste 840000 pesos en 6 ventas. Te deben 1200000 pesos en total, de 2 clientes. Hay 4 productos bajos de stock, 1 agotados. Tienes 3 pedidos abiertos con el proveedor. Y 5 ventas por entregar. Para el detalle di: quién me debe, en qué se me va la plata, qué se está acabando, o qué tengo por recibir.',
       );
       expect(speech).not.toContain('Marcela');
     });

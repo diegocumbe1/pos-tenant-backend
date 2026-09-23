@@ -25,6 +25,7 @@ import {
 import { AgentRequest, AgentResult } from './agent.types';
 import { handoffTiming } from './business-hours';
 import {
+  ASK_PERIOD,
   IDENTITY_DISCLOSURE,
   MAX_SPOKEN_BUSINESSES,
   MenuOption,
@@ -33,15 +34,21 @@ import {
   businessQuestion,
   capabilityHint,
   capabilityUnavailableText,
+  customersText,
   debtText,
   deliveryText,
+  expensesText,
   intentNeedsRetail,
   inventoryValueText,
   lowStockText,
   menuFor,
+  outOfStockText,
+  pendingPurchaseText,
   rankingText,
   salesText,
   strangerInvite,
+  unitsSoldText,
+  worstProductsText,
 } from './reply.text';
 
 /** Un negocio consultable y la cuenta con la que se consulta. */
@@ -111,11 +118,22 @@ export class LynkoAgentService {
     }
 
     const remembered = this.conversations.optionsOf(state.row);
-    const match = this.intents.resolve(message, remembered.length);
     const identity = await this.identity.resolveByPhone(externalUserId);
 
+    // Los negocios se resuelven ANTES de interpretar el mensaje, porque el
+    // resolver necesita la lista para reconocer "de bella chic" sin exigir la
+    // palabra "negocio". Un desconocido no tiene ninguno, y ahí no hay nada que
+    // buscar: la lista vacía también es la respuesta correcta.
+    const scopes = identity.actors.length
+      ? await this.accessibleScopes(identity)
+      : [];
+    const match = this.intents.resolve(message, {
+      knownOptions: remembered.length,
+      businessNames: scopes.map((s) => s.business.name),
+    });
+
     const result = identity.actors.length
-      ? await this.knownFlow(request, identity, match, remembered, state)
+      ? await this.knownFlow(request, identity, match, remembered, state, scopes)
       : await this.strangerFlow(request, identity, match, remembered, state);
 
     // De dónde salió la identidad, para el diagnóstico de la consola. Va aquí y
@@ -232,14 +250,20 @@ export class LynkoAgentService {
     match: IntentMatch,
     remembered: MenuOption[],
     state: ConversationState,
+    /**
+     * Los negocios autorizados de este actor. Vienen resueltos desde
+     * `process()` porque el resolver de intención también los necesita, y
+     * pedirlos dos veces serían dos viajes a la base por cada mensaje.
+     *
+     * La lista SIEMPRE sale de los negocios autorizados de cada cuenta, nunca
+     * de lo que diga el mensaje. Un admin de plataforma ve todos; un dueño, el
+     * suyo. Es la misma regla que aplica Alexa.
+     */
+    scopes: Scope[],
   ): Promise<AgentResult> {
     const { channel, externalUserId } = request;
     const personId = identity.actors[0].actor.id;
 
-    // La lista SIEMPRE sale de los negocios autorizados de cada cuenta, nunca
-    // de lo que diga el mensaje. Un admin de plataforma ve todos; un dueño, el
-    // suyo. Es la misma regla que aplica Alexa.
-    const scopes = await this.accessibleScopes(identity);
     if (!scopes.length) {
       await this.conversations.remember(channel, externalUserId, {
         personId,
@@ -293,20 +317,21 @@ export class LynkoAgentService {
     if (selectedBusinessId) {
       scope = scopes.find((s) => s.business.id === selectedBusinessId) ?? null;
     } else if (hint) {
-      const matches = scopes.filter((s) => nameMatches(s.business.name, hint));
-      // Un nombre que no esté entre los suyos NO existe para esta conversación.
-      // No se dice "no tienes acceso a ese negocio": eso ya confirmaría que
-      // existe.
-      if (matches.length === 1) scope = matches[0];
-      else if (matches.length === 0) {
-        return this.askForBusiness(
-          request,
-          personId,
-          scopes,
-          `No encuentro un negocio tuyo que se llame así.`,
-          intent,
-        );
-      }
+      // `businessHint` ya viene resuelto contra los negocios autorizados, así
+      // que esto encuentra exactamente uno. Se vuelve a filtrar igual porque
+      // quien decide sigue siendo la lista, no el texto del mensaje.
+      scope = scopes.find((s) => nameMatches(s.business.name, hint)) ?? null;
+    } else if (match.unknownBusiness) {
+      // Nombró un negocio que no es suyo. Un nombre que no esté entre los suyos
+      // NO existe para esta conversación: no se dice "no tienes acceso a ese
+      // negocio", porque eso ya confirmaría que existe.
+      return this.askForBusiness(
+        request,
+        personId,
+        scopes,
+        `No encuentro un negocio tuyo que se llame así.`,
+        intent,
+      );
     }
 
     if (!scope) {
@@ -372,6 +397,25 @@ export class LynkoAgentService {
       );
     }
 
+    // Pidió un TOTAL sin decir de cuándo ("¿cuánto llevo en ventas totales?").
+    // Se pregunta en vez de asumir: una cifra exacta de la ventana equivocada
+    // es peor que una repregunta, y es indistinguible de un error.
+    if (match.needsPeriod && intentNeedsPeriod(intent)) {
+      await this.conversations.remember(channel, externalUserId, {
+        personId,
+        tenantId: scope.business.id,
+        lastIntent: intent,
+        lastOptions: null,
+        greeted: true,
+        repliedByAgent: true,
+      });
+      return {
+        action: 'CLARIFY',
+        reply: ASK_PERIOD,
+        context: this.contextOf(personId, scope, intent),
+      };
+    }
+
     return this.answer(
       request,
       personId,
@@ -394,7 +438,7 @@ export class LynkoAgentService {
   ): Promise<AgentResult> {
     const { channel, externalUserId } = request;
     const { actor, business } = scope;
-    const effectivePeriod = period ?? 'day';
+    const effectivePeriod = period ?? defaultPeriodFor(intent);
 
     try {
       const body = await this.capability(
@@ -451,8 +495,32 @@ export class LynkoAgentService {
         return inventoryValueText(
           await this.assistant.inventoryStatus(actor, business),
         );
+      case 'pending_purchase':
+        return pendingPurchaseText(
+          await this.assistant.pendingPurchase(actor, business),
+        );
+      case 'expenses_summary':
+        return expensesText(
+          await this.assistant.expenses(actor, business, period),
+        );
+      case 'units_sold':
+        return unitsSoldText(
+          await this.assistant.sales(actor, business, period),
+        );
+      case 'out_of_stock':
+        return outOfStockText(
+          await this.assistant.inventoryStatus(actor, business),
+        );
       case 'top_products':
         return rankingText(
+          await this.assistant.salesRanking(actor, business, period),
+        );
+      case 'worst_products':
+        return worstProductsText(
+          await this.assistant.salesRanking(actor, business, period),
+        );
+      case 'top_customers':
+        return customersText(
           await this.assistant.salesRanking(actor, business, period),
         );
       case 'business_report': {
@@ -691,6 +759,42 @@ export class LynkoAgentService {
       context: { personId: null, tenantId: null, intent: 'unknown' },
     };
   }
+}
+
+/**
+ * El período que se asume cuando el mensaje no dice ninguno.
+ *
+ * No es el mismo para todo, y esa es la gracia: "¿cuánto vendí?" sin más es una
+ * pregunta sobre HOY —se hace mirando la caja—, mientras que "¿qué es lo que
+ * más vendo?" o "¿cuánto gasto?" con un solo día de datos no responden nada.
+ *
+ * Sea cual sea, la respuesta SIEMPRE nombra el rango que usó (`periodLabel` en
+ * cada texto de `reply.text.ts`): asumir está bien, asumir en silencio no.
+ */
+function defaultPeriodFor(intent: AgentIntent): ReportPeriod {
+  switch (intent) {
+    case 'expenses_summary':
+    case 'units_sold':
+    case 'top_products':
+    case 'worst_products':
+    case 'top_customers':
+      return 'month';
+    default:
+      return 'day';
+  }
+}
+
+/** Las capacidades cuyo resultado cambia con el período. */
+function intentNeedsPeriod(intent: AgentIntent): boolean {
+  return [
+    'sales_summary',
+    'units_sold',
+    'expenses_summary',
+    'business_report',
+    'top_products',
+    'worst_products',
+    'top_customers',
+  ].includes(intent);
 }
 
 /** Mismo criterio flexible que usa Alexa para los nombres de negocio. */

@@ -28,14 +28,15 @@ function makeService(options: {
       findMany: async () =>
         options.priceUSD == null
           ? []
-          : (['restaurant', 'barber', 'retail'] as const).flatMap((verticalCode) =>
-              (['BASIC', 'PRO', 'PREMIUM'] as const).map((planCode) => ({
-                verticalCode,
-                planCode,
-                priceUSD: options.priceUSD as number,
-                effectiveFrom: new Date('2026-01-01'),
-                note: null,
-              })),
+          : (['restaurant', 'barber', 'retail'] as const).flatMap(
+              (verticalCode) =>
+                (['BASIC', 'PRO', 'PREMIUM'] as const).map((planCode) => ({
+                  verticalCode,
+                  planCode,
+                  priceUSD: options.priceUSD as number,
+                  effectiveFrom: new Date('2026-01-01'),
+                  note: null,
+                })),
             ),
     },
     platformRate: {
@@ -53,7 +54,8 @@ function makeService(options: {
         orderBy?: { effectiveFrom: 'asc' | 'desc' };
       }) => {
         const rows = discounts.filter(
-          (row) => where.termMonths == null || row.termMonths === where.termMonths,
+          (row) =>
+            where.termMonths == null || row.termMonths === where.termMonths,
         );
         const asc = orderBy?.effectiveFrom === 'asc';
         return rows.sort((a, b) =>
@@ -69,7 +71,8 @@ function makeService(options: {
 }
 
 const row = (
-  partial: Partial<DiscountRow> & Pick<DiscountRow, 'termMonths' | 'discountBps'>,
+  partial: Partial<DiscountRow> &
+    Pick<DiscountRow, 'termMonths' | 'discountBps'>,
 ): DiscountRow => ({
   verticalCode: null,
   planCode: null,

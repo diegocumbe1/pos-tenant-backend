@@ -19,7 +19,9 @@ import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 @Injectable()
 export class PlatformAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
-    const req = context.switchToHttp().getRequest<{ user?: AuthenticatedUser }>();
+    const req = context
+      .switchToHttp()
+      .getRequest<{ user?: AuthenticatedUser }>();
     const user = req.user;
     if (!user) {
       throw new ForbiddenException('No authenticated user');
