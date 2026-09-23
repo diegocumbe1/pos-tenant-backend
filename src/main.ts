@@ -23,6 +23,11 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1');
 
+  // Sin esto Nest ignora el SIGTERM que manda la plataforma al redesplegar y
+  // ningún `onModuleDestroy` llega a correr. Importa sobre todo para WhatsApp:
+  // ahí es donde se sube el respaldo final de la sesión antes de morir.
+  app.enableShutdownHooks();
+
   // CORS: en prod se restringe vía CORS_ORIGINS (lista separada por comas,
   // p.ej. "https://uselynko.com"). Sin la env → refleja cualquier origen (dev).
   app.enableCors({

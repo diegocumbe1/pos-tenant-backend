@@ -114,10 +114,29 @@ export class StorageRemoteAuthStore {
     await fs.promises.writeFile(options.path, data);
   }
 
+  /**
+   * NO borra nada, a propósito.
+   *
+   * whatsapp-web.js llama a `authStrategy.disconnect()` —y con él a este
+   * delete()— ante CUALQUIER estado que no esté en su lista de aceptados
+   * (Client.js: ACCEPTED_STATES = CONNECTED, OPENING, PAIRING, TIMEOUT). Ahí
+   * caen CONFLICT, PROXYBLOCK, DEPRECATED_VERSION… es decir, situaciones
+   * transitorias y perfectamente recuperables.
+   *
+   * CONFLICT es exactamente lo que ocurre en cada deploy: mientras el
+   * contenedor nuevo restaura la sesión, el viejo sigue vivo unos segundos,
+   * WhatsApp detecta dos sesiones con las mismas credenciales y le manda
+   * CONFLICT al que pierde. Si ese cliente borrara el zip del bucket, el
+   * respaldo desaparecería y el siguiente arranque tendría que pedir QR — que
+   * es justo el síntoma que veíamos.
+   *
+   * El borrado real tiene un único dueño: `WhatsAppSessionManager
+   * .purgePersistedSession()`, que corre al desvincular desde el backoffice o
+   * cuando el celular hace logout/unpair de verdad.
+   */
   async delete(_options: { session: string }): Promise<void> {
-    await this.supabase.deletePrivateFile(this.objectPath);
-    await this.prisma.whatsappSession
-      .delete({ where: { clientId: this.clientId } })
-      .catch(() => undefined); // idempotente
+    this.logger.warn(
+      `whatsapp-web.js pidió borrar la sesión ${this.clientId}; se ignora (el borrado lo decide el manager)`,
+    );
   }
 }

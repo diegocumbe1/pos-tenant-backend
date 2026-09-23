@@ -106,6 +106,18 @@ export class WhatsAppSessionManager
     process.env.WA_RESTORE_ON_BOOT !== undefined
       ? process.env.WA_RESTORE_ON_BOOT === 'true'
       : process.env.NODE_ENV === 'production';
+  // En un deploy la plataforma mantiene vivo el contenedor viejo hasta que el
+  // nuevo pasa el healthcheck. Si restauramos de inmediato, los dos abren
+  // WhatsApp Web con las mismas credenciales y uno se lleva un CONFLICT.
+  // Esperar un poco deja que el viejo reciba su SIGTERM y se vaya.
+  private readonly restoreDelayMs = Number(
+    process.env.WA_RESTORE_DELAY_MS ?? 25000,
+  );
+  // Tope para el respaldo final al apagar: comprimir ~30MB y subirlos toma
+  // tiempo, y la plataforma no espera para siempre entre SIGTERM y SIGKILL.
+  private readonly shutdownBackupTimeoutMs = Number(
+    process.env.WA_SHUTDOWN_BACKUP_TIMEOUT_MS ?? 15000,
+  );
 
   constructor(
     private readonly events: EventEmitter2,
@@ -115,13 +127,21 @@ export class WhatsAppSessionManager
 
   // Reconecta al arrancar las sesiones ya guardadas (sin QR). Así WhatsApp
   // sigue conectado tras redeploys/reinicios, en cualquier ambiente.
-  async onApplicationBootstrap() {
+  //
+  // Sin `await`: Nest no termina de levantar el servidor HTTP hasta que este
+  // hook resuelva, y la restauración ahora espera a que el contenedor anterior
+  // muera. Bloquear ahí dejaría el healthcheck sin responder.
+  onApplicationBootstrap() {
     if (!this.restoreOnBoot) {
       this.logger.log(
         'Restore-on-boot de WhatsApp desactivado (WA_RESTORE_ON_BOOT=false o entorno no productivo)',
       );
       return;
     }
+    void this.restoreSavedSessions();
+  }
+
+  private async restoreSavedSessions() {
     try {
       const saved = await this.prisma.whatsappSession.findMany({
         where: { storagePath: { not: null } },
@@ -139,6 +159,12 @@ export class WhatsAppSessionManager
             ? 1
             : 0,
       );
+      if (saved.length > 0 && this.restoreDelayMs > 0) {
+        this.logger.log(
+          `Esperando ${this.restoreDelayMs}ms antes de restaurar sesiones de WhatsApp (deja morir al contenedor anterior)`,
+        );
+        await new Promise((r) => setTimeout(r, this.restoreDelayMs));
+      }
       for (const s of saved) {
         this.logger.log(
           `Restaurando sesión WhatsApp guardada: ${s.tenantId}/${s.branchId}`,
@@ -158,11 +184,51 @@ export class WhatsAppSessionManager
 
   async onModuleDestroy() {
     for (const [key, state] of this.sessions) {
+      // Respaldo final ANTES de matar el navegador. RemoteAuth solo sube el
+      // perfil cada `backupSyncIntervalMs`, así que sin esto un deploy se lleva
+      // todo lo ocurrido desde el último ciclo y el arranque siguiente restaura
+      // un perfil viejo (o ninguno, si la sesión se emparejó hace minutos).
+      if (state.status === 'ready') {
+        await this.backupNow(key, state);
+      }
       try {
         await state.client.destroy();
       } catch (err) {
         this.logger.warn(`Failed to destroy client ${key}: ${(err as Error).message}`);
       }
+    }
+  }
+
+  /**
+   * Fuerza un respaldo de la sesión a Storage, con tope de tiempo.
+   *
+   * `storeRemoteSession()` no está en los tipos públicos de whatsapp-web.js
+   * pero es la API de RemoteAuth que usa su propio `setInterval`; se llama por
+   * la misma puerta. Si falla o se demora, se sigue apagando: es mejor un
+   * respaldo de hace unos minutos que un contenedor colgado.
+   */
+  private async backupNow(key: string, state: SessionState) {
+    const strategy = (
+      state.client as unknown as {
+        authStrategy?: { storeRemoteSession?: () => Promise<void> };
+      }
+    ).authStrategy;
+    if (typeof strategy?.storeRemoteSession !== 'function') return;
+    try {
+      await Promise.race([
+        strategy.storeRemoteSession(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('timeout')),
+            this.shutdownBackupTimeoutMs,
+          ),
+        ),
+      ]);
+      this.logger.log(`Respaldo final de la sesión ${key} completado`);
+    } catch (err) {
+      this.logger.warn(
+        `Respaldo final de la sesión ${key} falló: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -273,6 +339,13 @@ export class WhatsAppSessionManager
           process.env.WA_WEB_VERSION_PATH ??
           'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
       },
+      // Durante un deploy los dos contenedores se solapan unos segundos y
+      // WhatsApp le manda CONFLICT al que pierde la carrera. Con esto el
+      // cliente reclama la sesión en vez de rendirse, y —más importante—
+      // whatsapp-web.js mete CONFLICT en su lista de estados aceptados, así que
+      // deja de tratarlo como una desconexión que hay que limpiar.
+      takeoverOnConflict: true,
+      takeoverTimeoutMs: Number(process.env.WA_TAKEOVER_TIMEOUT_MS ?? 10000),
       // Sesión persistida en Storage (sobrevive redeploys, igual en local/prod).
       authStrategy: new RemoteAuth({
         clientId,
@@ -406,7 +479,14 @@ export class WhatsAppSessionManager
       // Si el usuario desvinculó el dispositivo DESDE EL CELULAR (logout/unpaired),
       // la sesión murió: se limpia la persistencia en DB para no intentar
       // reconectarla al arrancar y para que la UI pida un QR nuevo.
-      const terminal = ['LOGOUT', 'UNPAIRED', 'UNPAIRED_IDLE', 'CONFLICT'];
+      //
+      // CONFLICT NO va en esta lista: significa "otro cliente tomó la sesión",
+      // y en cada deploy ese otro cliente somos nosotros mismos —el contenedor
+      // nuevo restaurando mientras el viejo aún respira—. Tratarlo como
+      // terminal borraba el respaldo en cada despliegue y obligaba a escanear
+      // el QR otra vez. La sesión sigue siendo válida; solo la perdió ESTE
+      // proceso.
+      const terminal = ['LOGOUT', 'UNPAIRED', 'UNPAIRED_IDLE'];
       const isTerminal = terminal.includes(String(reason).toUpperCase());
       void this.destroyClient(key, state, { remove: true }).then(() => {
         if (isTerminal) {
