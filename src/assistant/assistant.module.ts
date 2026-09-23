@@ -11,6 +11,8 @@ import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 import { AssistantScopeService } from './assistant-scope.service';
 import { AssistantService } from './assistant.service';
 import { LynkoAgentService } from './agent/lynko-agent.service';
+import { PlatformAdminGuard } from '../platform/guards/platform-admin.guard';
+import { WhatsAppAgentController } from './channels/whatsapp-agent.controller';
 import { WhatsAppInboundService } from './channels/whatsapp-inbound.service';
 import { ConversationService } from './conversation/conversation.service';
 import { IdentityResolverService } from './identity/identity-resolver.service';
@@ -33,7 +35,11 @@ import { IntentResolverService } from './intents/intent-resolver.service';
     // plataforma y se maneja desde el backoffice.
     PlatformMessagingModule,
   ],
+  controllers: [WhatsAppAgentController],
   providers: [
+    // Sin dependencias propias: se declara aquí para que el controlador del
+    // agente pueda usarlo sin importar PlatformModule solo por el guard.
+    PlatformAdminGuard,
     AssistantService,
     AssistantScopeService,
     IdentityResolverService,

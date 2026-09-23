@@ -16,6 +16,24 @@ import { AssistantTelemetryService } from '../telemetry/telemetry.service';
 const OWN_SEND_TTL_MS = 30_000;
 /** Cuánto vale el interruptor cacheado antes de volver a leerlo. */
 const SWITCH_TTL_MS = 15_000;
+/** Cuántos mensajes recientes se recuerdan para diagnóstico. */
+const TRACE_SIZE = 30;
+
+/** Un mensaje que pasó por el agente y qué se hizo con él. Sin el texto. */
+export interface InboundTrace {
+  at: string;
+  /** Últimos cuatro dígitos: alcanza para reconocer el chat, no para listarlo. */
+  chatId: string;
+  fromMe: boolean;
+  type: string;
+  outcome: string;
+}
+
+/** '573001234567@c.us' → '…4567@c.us'. */
+function maskChatId(chatId: string): string {
+  const [id, domain = ''] = chatId.split('@');
+  return `…${id.slice(-4)}@${domain}`;
+}
 
 /**
  * WhatsApp como canal del agente: recibe, entrega, y ejecuta lo que el agente
@@ -41,6 +59,8 @@ export class WhatsAppInboundService {
 
   /** El interruptor de la consola, cacheado unos segundos. Ver `isEnabled`. */
   private cachedSwitch: { value: boolean; at: number } | null = null;
+  /** Los últimos mensajes y su desenlace, para el diagnóstico de la consola. */
+  private readonly recent: InboundTrace[] = [];
 
   constructor(
     private readonly agent: LynkoAgentService,
@@ -91,29 +111,54 @@ export class WhatsAppInboundService {
 
   @OnEvent('wa.message')
   async onMessage(event: WhatsAppMessageEvent): Promise<void> {
-    if (!(await this.isEnabled())) return;
     const session = this.session;
-    if (
-      event.tenantId !== session.tenantId ||
-      event.branchId !== session.branchId
-    ) {
+    const mine =
+      event.tenantId === session.tenantId &&
+      event.branchId === session.branchId;
+    // Los mensajes de las sesiones de los tenants no son del agente y no se
+    // registran siquiera: son conversaciones privadas de otro negocio.
+    if (!mine) return;
+
+    if (!(await this.isEnabled())) {
+      this.trace(event, 'agente apagado');
       return;
     }
-    // Grupos, estados y difusiones: no se responden. Un agente contestando en
-    // un grupo es ruido garantizado.
-    if (!event.chatId.endsWith('@c.us')) return;
+    // Grupos, estados, listas de difusión y canales: no se responden. Un agente
+    // contestando en un grupo es ruido garantizado. Se rechaza por lo que SÍ
+    // sabemos que no sirve, y no aceptando solo `@c.us`: WhatsApp ya entrega
+    // chats normales como `…@lid`, y esa lista blanca los descartaba a todos.
+    if (
+      /@(g\.us|broadcast|newsletter)$/.test(event.chatId) ||
+      event.chatId === 'status@broadcast'
+    ) {
+      this.trace(event, 'no es un chat directo');
+      return;
+    }
 
-    const phone = this.phoneOf(event.chatId);
-    if (!phone) return;
+    const phone = event.phone ? this.normalize(event.phone) : null;
+    if (!phone) {
+      // Sin teléfono no hay a quién identificar. Pasa con los LID que la
+      // librería no logra traducir; se deja constancia porque es la diferencia
+      // entre "no llegó" y "llegó y no supe de quién era".
+      this.trace(event, 'no se pudo resolver el teléfono');
+      return;
+    }
 
     try {
       if (event.fromMe) {
-        await this.handleOutgoing(phone, event.body);
+        const takeover = await this.handleOutgoing(phone, event.body);
+        this.trace(
+          event,
+          takeover
+            ? 'respuesta manual: agente en silencio'
+            : 'lo envió el agente',
+        );
         return;
       }
       if (event.type !== 'chat' || !event.body.trim()) {
         // Audios, fotos y adjuntos: todavía no se saben leer. Callarse es mejor
         // que responder "no entendí" a una nota de voz.
+        this.trace(event, `sin texto (${event.type})`);
         return;
       }
 
@@ -125,12 +170,16 @@ export class WhatsAppInboundService {
       });
 
       if (result.action !== 'IGNORE' && result.reply) {
-        await this.send(event.chatId, result.reply);
+        await this.send(event.chatId, phone, result.reply);
       }
       if (result.action === 'HUMAN_HANDOFF') {
         // Fase 1: queda en el log. El aviso al equipo es el paso siguiente.
         this.logger.log(`Handoff sugerido (${result.reason ?? 'sin razón'})`);
       }
+      this.trace(
+        event,
+        `${result.action}${result.context.intent ? ` · ${result.context.intent}` : ''}`,
+      );
       this.record(result, started);
     } catch (err) {
       // Nunca se le responde al usuario un error técnico, y nunca se tumba la
@@ -138,7 +187,45 @@ export class WhatsAppInboundService {
       this.logger.error(
         `Fallo atendiendo un mensaje: ${(err as Error).message}`,
       );
+      this.trace(event, `error: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Deja constancia de qué llegó y qué se hizo con ello.
+   *
+   * Existe porque el modo de fallo de esto es el silencio: un mensaje que no se
+   * responde se ve exactamente igual que un mensaje que nunca llegó, y desde la
+   * consola no hay forma de distinguirlos. Guarda los últimos 30 en memoria
+   * —se pierden al reiniciar, y está bien: es para mirar ahora, no un histórico—
+   * y NUNCA el texto del mensaje: solo de quién venía, enmascarado, y el
+   * desenlace.
+   */
+  private trace(event: WhatsAppMessageEvent, outcome: string): void {
+    this.recent.unshift({
+      at: new Date().toISOString(),
+      chatId: maskChatId(event.chatId),
+      fromMe: event.fromMe,
+      type: event.type,
+      outcome,
+    });
+    if (this.recent.length > TRACE_SIZE) this.recent.length = TRACE_SIZE;
+    this.logger.log(
+      `${event.fromMe ? '←' : '→'} ${maskChatId(event.chatId)} · ${outcome}`,
+    );
+  }
+
+  /** Lo que ve la consola para saber si los mensajes están llegando. */
+  diagnostics(): {
+    enabled: boolean;
+    session: { tenantId: string; branchId: string };
+    recent: InboundTrace[];
+  } {
+    return {
+      enabled: this.cachedSwitch?.value ?? false,
+      session: this.session,
+      recent: this.recent,
+    };
   }
 
   /**
@@ -149,16 +236,21 @@ export class WhatsAppInboundService {
    * durante unas horas. Es la única heurística del módulo y es deliberadamente
    * conservadora: prefiere callarse de más.
    */
-  private async handleOutgoing(phone: string, body: string): Promise<void> {
-    if (this.consumeOwnSend(phone, body)) return;
+  private async handleOutgoing(phone: string, body: string): Promise<boolean> {
+    if (this.consumeOwnSend(phone, body)) return false;
     await this.conversations.markHumanTakeover(
       AssistantChannel.WHATSAPP,
       phone,
     );
     this.logger.log('Un mensaje manual tomó el chat: el agente se silencia');
+    return true;
   }
 
-  private async send(chatId: string, body: string): Promise<void> {
+  private async send(
+    chatId: string,
+    phone: string,
+    body: string,
+  ): Promise<void> {
     const { tenantId, branchId } = this.session;
     const client = this.sessions.getClient(tenantId, branchId);
     if (!client) {
@@ -168,7 +260,7 @@ export class WhatsAppInboundService {
     // Se marca ANTES de enviar: `message_create` puede llegar antes de que
     // `sendMessage` resuelva, y si no estuviera marcado el agente se tomaría a
     // sí mismo por una persona y se silenciaría solo.
-    this.rememberOwnSend(this.phoneOf(chatId) ?? chatId, body);
+    this.rememberOwnSend(phone, body);
     await client.sendMessage(chatId, body);
   }
 
@@ -196,10 +288,10 @@ export class WhatsAppInboundService {
     return true;
   }
 
-  /** '573001234567@c.us' → '573001234567'. */
-  private phoneOf(chatId: string): string | null {
+  /** Dígitos con indicativo, o null si no es un teléfono usable. */
+  private normalize(phone: string): string | null {
     try {
-      return normalizePhone(chatId.split('@')[0] ?? '');
+      return normalizePhone(phone);
     } catch {
       return null;
     }

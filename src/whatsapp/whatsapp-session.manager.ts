@@ -57,6 +57,15 @@ export interface WhatsAppMessageEvent {
   branchId: string;
   /** Chat de la conversación: siempre el del interlocutor, no el nuestro. */
   chatId: string;
+  /**
+   * Celular del interlocutor, en dígitos, cuando se pudo resolver.
+   *
+   * No sale siempre del `chatId`: WhatsApp ya entrega muchas conversaciones con
+   * un identificador oculto (`…@lid`) cuyo número NO es el teléfono. Ahí hay
+   * que preguntárselo a la librería, y por eso este campo existe en vez de
+   * dejar que cada consumidor parta el `chatId` por su cuenta y se equivoque.
+   */
+  phone: string | null;
   body: string;
   /** Salió de nuestra cuenta (incluido lo escrito a mano desde el celular). */
   fromMe: boolean;
@@ -374,23 +383,7 @@ export class WhatsAppSessionManager
     // Esa es la señal que necesita el agente para callarse cuando una persona
     // toma el chat; con `message` no habría forma de enterarse.
     client.on('message_create', (message: Message) => {
-      try {
-        const chatId = message.fromMe ? message.to : message.from;
-        if (!chatId) return;
-        this.events.emit('wa.message', {
-          tenantId,
-          branchId,
-          chatId,
-          body: typeof message.body === 'string' ? message.body : '',
-          fromMe: !!message.fromMe,
-          type: message.type ?? 'chat',
-        } satisfies WhatsAppMessageEvent);
-      } catch (err) {
-        // Un mensaje mal formado no puede tumbar la sesión.
-        this.logger.warn(
-          `No se pudo publicar un mensaje de ${key}: ${(err as Error).message}`,
-        );
-      }
+      void this.publishMessage(tenantId, branchId, key, client, message);
     });
 
     client.on('remote_session_saved', () => {
@@ -483,6 +476,63 @@ export class WhatsAppSessionManager
 
   private getSessionDir(tenantId: string, branchId: string) {
     return path.join(this.dataPath, `RemoteAuth-${safeClientId(tenantId, branchId)}`);
+  }
+
+  /**
+   * Publica un mensaje que pasó por la sesión, con el teléfono ya resuelto.
+   *
+   * El `chatId` no siempre contiene el número. WhatsApp está migrando las
+   * conversaciones a identificadores ocultos (`123…@lid`), donde esos dígitos
+   * NO son un celular: partir el chatId daría un número inventado, y quien lo
+   * use para identificar a alguien se equivocaría en silencio. Cuando el id es
+   * un LID se le pregunta a la librería por el teléfono real; si no se puede,
+   * el campo va nulo y el consumidor decide qué hacer, que es mejor que un dato
+   * falso.
+   */
+  private async publishMessage(
+    tenantId: string,
+    branchId: string,
+    key: string,
+    client: Client,
+    message: Message,
+  ): Promise<void> {
+    try {
+      const chatId = message.fromMe ? message.to : message.from;
+      if (!chatId) return;
+      this.events.emit('wa.message', {
+        tenantId,
+        branchId,
+        chatId,
+        phone: await this.phoneOfChat(client, chatId),
+        body: typeof message.body === 'string' ? message.body : '',
+        fromMe: !!message.fromMe,
+        type: message.type ?? 'chat',
+      } satisfies WhatsAppMessageEvent);
+    } catch (err) {
+      // Un mensaje mal formado no puede tumbar la sesión.
+      this.logger.warn(
+        `No se pudo publicar un mensaje de ${key}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async phoneOfChat(
+    client: Client,
+    chatId: string,
+  ): Promise<string | null> {
+    if (chatId.endsWith('@c.us')) return chatId.split('@')[0] || null;
+    if (!chatId.endsWith('@lid')) return null;
+    try {
+      // Existe desde whatsapp-web.js 1.34; si la versión instalada no la tiene,
+      // el catch deja el teléfono en null y el mensaje se atiende igual.
+      const [pair] = await client.getContactLidAndPhone([chatId]);
+      return pair?.pn?.split('@')[0] || null;
+    } catch (err) {
+      this.logger.warn(
+        `No se pudo resolver el teléfono de un LID: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   private emit(tenantId: string, branchId: string, state: SessionState) {
