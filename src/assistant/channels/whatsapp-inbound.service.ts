@@ -19,6 +19,36 @@ const SWITCH_TTL_MS = 15_000;
 /** Cuántos mensajes recientes se recuerdan para diagnóstico. */
 const TRACE_SIZE = 30;
 
+/**
+ * Silencio que hay que esperar antes de contestar una ráfaga.
+ *
+ * Tres segundos es lo que tarda alguien en mandar el segundo mensaje de una
+ * idea partida en dos. Subirlo hace la conversación lenta; bajarlo devuelve el
+ * problema de contestar tres veces.
+ */
+const DEBOUNCE_MS = Number(process.env.WA_AGENT_DEBOUNCE_MS ?? 3000);
+/** Arranque de la pausa de tecleo, antes de sumar el largo del texto. */
+const TYPING_BASE_MS = 900;
+/** ~45 palabras por minuto. */
+const TYPING_MS_PER_CHAR = 22;
+const MAX_TYPING_MS = Number(process.env.WA_AGENT_MAX_TYPING_MS ?? 6000);
+/** Conversaciones en vuelo a la vez. Es un tope de memoria, no de negocio. */
+const MAX_PENDING_CHATS = 200;
+/** Una ráfaga más larga que esto es ruido o un pegado: se corta. */
+const MAX_MESSAGE_CHARS = 1000;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Una ráfaga de mensajes esperando a que su autor termine de escribir. */
+interface PendingBurst {
+  phone: string;
+  /** El último evento, para el diagnóstico. */
+  event: WhatsAppMessageEvent;
+  parts: string[];
+  timer: NodeJS.Timeout;
+}
+
 /** Un mensaje que pasó por el agente y qué se hizo con él. Sin el texto. */
 export interface InboundTrace {
   at: string;
@@ -61,6 +91,14 @@ export class WhatsAppInboundService {
   private cachedSwitch: { value: boolean; at: number } | null = null;
   /** Los últimos mensajes y su desenlace, para el diagnóstico de la consola. */
   private readonly recent: InboundTrace[] = [];
+  /**
+   * Ráfagas esperando a que su autor termine de escribir.
+   *
+   * En memoria y no en base: son segundos de vida. Si el backend se reinicia
+   * se pierde una respuesta pendiente, que es mucho menos costoso que mantener
+   * una tabla de trabajos para esto.
+   */
+  private readonly pending = new Map<string, PendingBurst>();
 
   constructor(
     private readonly agent: LynkoAgentService,
@@ -147,6 +185,12 @@ export class WhatsAppInboundService {
     try {
       if (event.fromMe) {
         const takeover = await this.handleOutgoing(phone, event.body);
+        if (takeover) {
+          // Una persona entró al chat: lo que el agente tenía preparado se
+          // tira. Responder ahora sería hablarle encima a un asesor que ya
+          // está escribiendo, que es peor que no responder.
+          this.cancelPending(event.chatId, 'entró una persona');
+        }
         this.trace(
           event,
           takeover
@@ -162,28 +206,112 @@ export class WhatsAppInboundService {
         return;
       }
 
+      this.enqueue(event, phone);
+    } catch (err) {
+      // Nunca se le responde al usuario un error técnico, y nunca se tumba la
+      // sesión de WhatsApp por una consulta.
+      this.logger.error(
+        `Fallo atendiendo un mensaje: ${(err as Error).message}`,
+      );
+      this.trace(event, `error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Agrupa la ráfaga y responde una sola vez.
+   *
+   * "Hola" · "buenas" · "una pregunta" en cinco segundos son TRES eventos. Sin
+   * esto el agente corre tres veces —tres resoluciones de identidad, tres
+   * consultas— y contesta tres veces. Nadie escribe así, y el servidor hace el
+   * triple de trabajo para un resultado peor.
+   *
+   * La espera se reinicia con cada mensaje nuevo: mientras la persona siga
+   * escribiendo, no se procesa nada. Cuando por fin para, se atiende todo junto
+   * y con el contexto completo.
+   */
+  private enqueue(event: WhatsAppMessageEvent, phone: string): void {
+    const chatId = event.chatId;
+    const existing = this.pending.get(chatId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.parts.push(event.body);
+      existing.timer = setTimeout(() => void this.flush(chatId), DEBOUNCE_MS);
+      return;
+    }
+
+    // Tope de conversaciones en vuelo: si algo se desboca, se prefiere no
+    // responderle a alguien antes que quedarse sin memoria.
+    if (this.pending.size >= MAX_PENDING_CHATS) {
+      this.trace(event, 'demasiadas conversaciones en curso');
+      return;
+    }
+
+    this.pending.set(chatId, {
+      phone,
+      event,
+      parts: [event.body],
+      timer: setTimeout(() => void this.flush(chatId), DEBOUNCE_MS),
+    });
+  }
+
+  private cancelPending(chatId: string, reason: string): void {
+    const pending = this.pending.get(chatId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pending.delete(chatId);
+    this.logger.log(`Respuesta pendiente descartada: ${reason}`);
+  }
+
+  /** Procesa la ráfaga acumulada de un chat y responde una vez. */
+  private async flush(chatId: string): Promise<void> {
+    const pending = this.pending.get(chatId);
+    if (!pending) return;
+    this.pending.delete(chatId);
+    const { event, phone, parts } = pending;
+    // Los mensajes sueltos se unen con salto de línea: para el resolutor de
+    // intents es un solo texto, y "¿y ayer?" después de "hola" se entiende.
+    const message = parts.join('\n').slice(0, MAX_MESSAGE_CHARS);
+
+    try {
       const started = Date.now();
       const result = await this.agent.process({
         channel: AssistantChannel.WHATSAPP,
         externalUserId: phone,
-        message: event.body,
+        message,
       });
 
+      // Mientras se resolvía la consulta pudo llegar otro mensaje (hay una
+      // entrada nueva en `pending`) o pudo entrar un asesor. En los dos casos
+      // esta respuesta ya no corresponde: se descarta y la nueva ráfaga la
+      // recalculará con el contexto completo.
+      if (this.pending.has(chatId)) {
+        this.trace(event, 'descartada: llegó otro mensaje');
+        return;
+      }
+
       if (result.action !== 'IGNORE' && result.reply) {
-        await this.send(event.chatId, phone, result.reply);
+        await this.send(chatId, phone, result.reply);
       }
       if (result.action === 'HUMAN_HANDOFF') {
         // Fase 1: queda en el log. El aviso al equipo es el paso siguiente.
         this.logger.log(`Handoff sugerido (${result.reason ?? 'sin razón'})`);
       }
+      // El `identity` es lo que explica el caso más confuso de todos: "me
+      // saludó pero me trató como desconocido". Sin esto hay que ir a mirar la
+      // base para saber si el teléfono resolvió a una cuenta o no.
       this.trace(
         event,
-        `${result.action}${result.context.intent ? ` · ${result.context.intent}` : ''}`,
+        [
+          result.action,
+          result.context.identity === 'USER' ? 'cuenta' : 'sin cuenta',
+          result.context.intent,
+          parts.length > 1 ? `${parts.length} mensajes` : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
       );
       this.record(result, started);
     } catch (err) {
-      // Nunca se le responde al usuario un error técnico, y nunca se tumba la
-      // sesión de WhatsApp por una consulta.
       this.logger.error(
         `Fallo atendiendo un mensaje: ${(err as Error).message}`,
       );
@@ -246,6 +374,22 @@ export class WhatsAppInboundService {
     return true;
   }
 
+  /**
+   * Envía con el ritmo de alguien que escribe, no con el de una máquina.
+   *
+   * Dos cosas distintas, y conviene no confundirlas: esto **no** es simular ser
+   * una persona —el agente se presenta como asistente y lo dice si se lo
+   * preguntan—, es evitar que una respuesta formateada aparezca en 300 ms, que
+   * se lee como un volante automático y hace que nadie termine de leerla.
+   *
+   * Mientras espera manda el estado "escribiendo…", que es lo que hace honesta
+   * la pausa: el otro ve que algo está pasando en vez de quedar mirando el
+   * silencio. Sin eso, esperar solo se siente como que lo dejaron en visto.
+   *
+   * La demora es proporcional al largo de la respuesta y va con tope: quien
+   * pregunta cuánto vendió hoy está mirando la pantalla, y hacerlo esperar
+   * medio minuto por una cifra no es más humano, es peor servicio.
+   */
   private async send(
     chatId: string,
     phone: string,
@@ -257,11 +401,35 @@ export class WhatsAppInboundService {
       this.logger.warn('No hay cliente de WhatsApp para responder');
       return;
     }
+
+    const chat = await client.getChatById(chatId).catch(() => null);
+    const pause = Math.min(
+      MAX_TYPING_MS,
+      TYPING_BASE_MS + body.length * TYPING_MS_PER_CHAR,
+    );
+    if (chat) {
+      await chat.sendSeen().catch(() => undefined);
+      await chat.sendStateTyping().catch(() => undefined);
+    }
+    await sleep(pause);
+
+    // Se vuelve a mirar DESPUÉS de la pausa: en esos segundos pudo llegar otro
+    // mensaje o pudo entrar un asesor. Esta es la última oportunidad de callar
+    // una respuesta que ya no corresponde.
+    if (this.pending.has(chatId)) {
+      await chat?.clearState().catch(() => undefined);
+      this.logger.log(
+        'Respuesta descartada durante la pausa: llegó otro mensaje',
+      );
+      return;
+    }
+
     // Se marca ANTES de enviar: `message_create` puede llegar antes de que
     // `sendMessage` resuelva, y si no estuviera marcado el agente se tomaría a
     // sí mismo por una persona y se silenciaría solo.
     this.rememberOwnSend(phone, body);
     await client.sendMessage(chatId, body);
+    await chat?.clearState().catch(() => undefined);
   }
 
   private rememberOwnSend(key: string, body: string): void {

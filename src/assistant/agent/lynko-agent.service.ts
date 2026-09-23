@@ -23,8 +23,15 @@ import {
   ResolvedIdentity,
 } from '../identity/identity-resolver.service';
 import { AgentRequest, AgentResult } from './agent.types';
+import { handoffTiming } from './business-hours';
 import {
+  IDENTITY_DISCLOSURE,
+  MAX_SPOKEN_BUSINESSES,
   MenuOption,
+  SHORT_HINT,
+  handoffText,
+  businessQuestion,
+  capabilityHint,
   capabilityUnavailableText,
   debtText,
   deliveryText,
@@ -33,8 +40,8 @@ import {
   lowStockText,
   menuFor,
   rankingText,
-  renderMenu,
   salesText,
+  strangerInvite,
 } from './reply.text';
 
 /** Un negocio consultable y la cuenta con la que se consulta. */
@@ -45,11 +52,10 @@ interface Scope {
 
 const BUSINESS_PREFIX = 'business:';
 
-const UNKNOWN_WELCOME = [
-  '¡Hola! 👋 Bienvenido a Lynko.',
-  'Soy el asistente de nuestro equipo. ¿En qué podemos ayudarte?',
-].join('\n');
-
+/**
+ * Las salidas de un desconocido. No se muestran numeradas —ver
+ * `strangerInvite`—, pero se guardan para poder entender un "2".
+ */
 const UNKNOWN_MENU: MenuOption[] = [
   { value: 'about_lynko', label: 'Quiero conocer Lynko' },
   { value: 'demo_request', label: 'Quiero una demostración' },
@@ -108,16 +114,17 @@ export class LynkoAgentService {
     const match = this.intents.resolve(message, remembered.length);
     const identity = await this.identity.resolveByPhone(externalUserId);
 
-    if (!identity.actors.length) {
-      return this.strangerFlow(
-        request,
-        identity,
-        match,
-        remembered,
-        state.stale,
-      );
-    }
-    return this.knownFlow(request, identity, match, remembered, state);
+    const result = identity.actors.length
+      ? await this.knownFlow(request, identity, match, remembered, state)
+      : await this.strangerFlow(request, identity, match, remembered, state);
+
+    // De dónde salió la identidad, para el diagnóstico de la consola. Va aquí y
+    // no en cada `return` porque es una propiedad del mensaje entero, no de la
+    // rama que lo atendió.
+    return {
+      ...result,
+      context: { ...result.context, identity: identity.kind },
+    };
   }
 
   // ─── Desconocidos ─────────────────────────────────────────────────────────
@@ -130,10 +137,38 @@ export class LynkoAgentService {
     identity: ResolvedIdentity,
     match: IntentMatch,
     remembered: MenuOption[],
-    stale: boolean,
+    state: ConversationState,
   ): Promise<AgentResult> {
     const { channel, externalUserId } = request;
     const intent = this.effectiveIntent(match, remembered);
+    const asked = state.row?.lastIntent ?? null;
+
+    // El agente preguntó algo y esto es la respuesta.
+    //
+    // Sin esto, pedir "escríbeme el nombre del negocio" y luego no entender
+    // "DC Tech" hacía que se repitiera el menú entero: la conversación más
+    // frustrante posible, porque el usuario SÍ contestó lo que se le pidió.
+    // Aquí no se interpreta el contenido —ni falta—: basta con saber que
+    // respondió para pasarle el caso a una persona.
+    if (
+      intent === 'unknown' &&
+      (asked === 'existing_customer' || asked === 'demo_request')
+    ) {
+      await this.conversations.remember(channel, externalUserId, {
+        lastIntent: 'human_handoff',
+        lastOptions: null,
+        repliedByAgent: true,
+      });
+      return {
+        action: 'HUMAN_HANDOFF',
+        reply: handoffText(
+          asked === 'existing_customer' ? 'Gracias.' : 'Listo, tomo nota.',
+          handoffTiming(),
+        ),
+        reason: `stranger answered the ${asked} question`,
+        context: { personId: null, tenantId: null, intent: 'human_handoff' },
+      };
+    }
 
     if (intent === 'human_handoff') {
       await this.conversations.remember(channel, externalUserId, {
@@ -142,8 +177,7 @@ export class LynkoAgentService {
       });
       return {
         action: 'HUMAN_HANDOFF',
-        reply:
-          'Con gusto. Ya le paso tu mensaje a alguien del equipo de Lynko y te escribe por aquí.',
+        reply: handoffText('Con gusto.', handoffTiming()),
         reason: 'user asked for a human',
         context: { personId: null, tenantId: null, intent },
       };
@@ -152,48 +186,39 @@ export class LynkoAgentService {
     const reply =
       intent === 'about_lynko'
         ? 'Lynko es el sistema con el que un negocio maneja ventas, inventario, caja y clientes desde el celular o el computador. ¿Quieres que te muestren cómo funciona con tu negocio?'
-        : intent === 'demo_request'
-          ? 'Perfecto. Cuéntame qué tipo de negocio tienes (tienda, restaurante, barbería) y alguien del equipo te contacta para mostrarte Lynko.'
-          : intent === 'existing_customer'
-            ? [
-                'No encontramos este número asociado a una cuenta de Lynko.',
-                'Podemos ayudarte a verificar tu información: escríbeme el nombre del negocio y le paso el caso a alguien del equipo.',
-              ].join('\n')
-            : [
-                stale || !identity.firstName
-                  ? identity.firstName
-                    ? `¡Hola, ${identity.firstName}! 👋 Bienvenido a Lynko.\nSoy el asistente de nuestro equipo. ¿En qué podemos ayudarte?`
-                    : UNKNOWN_WELCOME
-                  : '¿En qué te puedo ayudar?',
-                renderMenu(UNKNOWN_MENU),
-              ].join('\n\n');
+        : intent === 'is_bot'
+          ? IDENTITY_DISCLOSURE
+          : intent === 'demo_request'
+            ? 'Perfecto. Cuéntame qué tipo de negocio tienes (tienda, restaurante, barbería) y un asesor te contacta para mostrarte Lynko.'
+            : intent === 'existing_customer'
+              ? [
+                  'No encontramos este número asociado a una cuenta de Lynko.',
+                  'Escríbeme el nombre del negocio y le paso el caso a un asesor para que verifique tu información.',
+                ].join('\n')
+              : // Ya se le ofreció ayuda hace un momento: repetir la invitación
+                // entera suena a grabación. Se acorta.
+                asked === 'welcome' || asked === 'options'
+                ? 'No estoy seguro de haber entendido. ¿Buscas información de Lynko, una demostración, o ayuda con una cuenta?'
+                : strangerInvite(identity.firstName, state.stale);
 
-    const offersMenu = ![
-      'about_lynko',
-      'demo_request',
-      'existing_customer',
-    ].includes(intent);
+    // Las tres opciones siguen guardadas aunque no se muestren numeradas: quien
+    // conteste "2" porque vio una lista antes merece que funcione.
     await this.conversations.remember(channel, externalUserId, {
       personId: null,
       tenantId: null,
       lastIntent: intent,
-      lastOptions: offersMenu ? UNKNOWN_MENU : null,
+      lastOptions: UNKNOWN_MENU,
       greeted: true,
       repliedByAgent: true,
     });
 
-    // "Ya soy cliente" con un número que no resuelve es un caso para una
-    // persona: puede ser un socio, un empleado nuevo, o un número que cambió.
-    if (intent === 'existing_customer') {
-      return {
-        action: 'HUMAN_HANDOFF',
-        reply,
-        reason: 'claims to be a customer but the phone resolves to no account',
-        context: { personId: null, tenantId: null, intent },
-      };
-    }
+    // `existing_customer` y `demo_request` PREGUNTAN algo: no son el final de
+    // la conversación sino la mitad. El handoff ocurre cuando la persona
+    // conteste, arriba. Marcarlos como escalados aquí haría que el equipo
+    // recibiera un caso sin el dato que se acaba de pedir.
     return {
-      action: offersMenu ? 'CLARIFY' : 'RESPOND',
+      action:
+        intent === 'about_lynko' || intent === 'is_bot' ? 'RESPOND' : 'CLARIFY',
       reply,
       context: { personId: null, tenantId: null, intent },
     };
@@ -223,7 +248,10 @@ export class LynkoAgentService {
       });
       return {
         action: 'HUMAN_HANDOFF',
-        reply: `Hola${identity.firstName ? `, ${identity.firstName}` : ''}. Tu cuenta no tiene ningún negocio activo para consultar. Le paso el caso a alguien del equipo.`,
+        reply: handoffText(
+          `Hola${identity.firstName ? `, ${identity.firstName}` : ''}. Tu cuenta no tiene ningún negocio activo para consultar.`,
+          handoffTiming(),
+        ),
         reason: 'no accessible businesses',
         context: { personId, tenantId: null, intent: 'human_handoff' },
       };
@@ -239,8 +267,7 @@ export class LynkoAgentService {
       });
       return {
         action: 'HUMAN_HANDOFF',
-        reply:
-          'Claro. Le paso tu mensaje a alguien del equipo y te escribe por aquí.',
+        reply: handoffText('Claro.', handoffTiming()),
         reason: 'user asked for a human',
         context: { personId, tenantId: null, intent },
       };
@@ -302,31 +329,47 @@ export class LynkoAgentService {
         request,
         personId,
         scopes,
-        [greeting, '¿Sobre cuál negocio quieres consultar?']
-          .filter(Boolean)
-          .join('\n'),
+        greeting,
         intent,
         state.stale,
       );
     }
 
     // ── Qué se pregunta ──────────────────────────────────────────────────────
+    // Que ya se haya ofrecido ayuda en el turno anterior cambia la redacción:
+    // decir el mismo párrafo dos veces seguidas es lo que hace que algo suene a
+    // contestador.
+    const offered = state.row?.lastIntent === 'options';
     if (
       intent === 'switch_business' ||
       intent === 'options' ||
       intent === 'welcome'
     ) {
-      return this.offerMenu(request, personId, scope, identity, state.stale);
+      return this.offerMenu(
+        request,
+        personId,
+        scope,
+        identity,
+        state.stale,
+        offered && intent !== 'switch_business',
+      );
     }
 
     if (intent === 'unknown') {
       // "¿Y ayer?" reusa la última capacidad con el período nuevo. Si no hay
-      // nada que reusar, se ofrece el menú en vez de adivinar.
+      // nada que reusar, se dice qué sí se puede preguntar en vez de adivinar.
       const previous = state.row && this.previousIntent(state.row);
       if (match.period && previous && intentNeedsRetail(previous)) {
         return this.answer(request, personId, scope, previous, match.period);
       }
-      return this.offerMenu(request, personId, scope, identity, state.stale);
+      return this.offerMenu(
+        request,
+        personId,
+        scope,
+        identity,
+        state.stale,
+        offered,
+      );
     }
 
     return this.answer(
@@ -480,8 +523,10 @@ export class LynkoAgentService {
     );
     return {
       action: 'HUMAN_HANDOFF',
-      reply:
-        'No pude sacar ese dato en este momento. Le aviso a alguien del equipo para que lo revise.',
+      reply: handoffText(
+        'No pude sacar ese dato en este momento.',
+        handoffTiming(),
+      ),
       reason: 'capability threw',
       context: this.contextOf(personId, scope, intent),
     };
@@ -495,16 +540,26 @@ export class LynkoAgentService {
     scope: Scope,
     identity: ResolvedIdentity,
     stale: boolean,
+    /** Ya se le dijo qué puede preguntar en el turno anterior. */
+    offered = false,
   ): Promise<AgentResult> {
     const { channel, externalUserId } = request;
     const options = menuFor(scope.business.vertical?.code);
-    const header = stale
+    const vertical = scope.business.vertical?.code;
+    // Sin lista numerada: se saluda y se dice con un ejemplo qué se puede
+    // preguntar. El objetivo es que la siguiente frase del usuario sea una
+    // pregunta suya, no el número de una opción.
+    const reply = stale
       ? [
-          `¡Hola${identity.firstName ? `, ${identity.firstName}` : ''}! 👋`,
-          `Qué gusto tenerte por aquí. Veo que estás en ${scope.business.name}.`,
-          '¿En qué te puedo ayudar?',
+          `¡Hola${identity.firstName ? `, ${identity.firstName}` : ''}! 👋 Qué gusto tenerte por aquí.`,
+          `Estás en ${scope.business.name}. ${capabilityHint(vertical)}`,
         ].join('\n')
-      : `¿Qué quieres consultar de ${scope.business.name}?`;
+      : offered
+        ? SHORT_HINT
+        : // Se nombra el negocio: se llega aquí justo después de elegirlo o de
+          // cambiarlo, y confirmar con cuál se está trabajando evita que la
+          // cifra siguiente se lea sobre el negocio equivocado.
+          `Listo, estamos en ${scope.business.name}. ${capabilityHint(vertical)}`;
 
     await this.conversations.remember(channel, externalUserId, {
       personId,
@@ -516,7 +571,7 @@ export class LynkoAgentService {
     });
     return {
       action: 'CLARIFY',
-      reply: `${header}\n\n${renderMenu(options)}`,
+      reply,
       context: this.contextOf(personId, scope, 'options'),
     };
   }
@@ -525,25 +580,36 @@ export class LynkoAgentService {
     request: AgentRequest,
     personId: string,
     scopes: Scope[],
-    header: string,
+    header: string | null,
     intent: AgentIntent,
     greeted = false,
   ): Promise<AgentResult> {
     const { channel, externalUserId } = request;
-    const options: MenuOption[] = scopes.map((s) => ({
+    // Un admin de plataforma ve TODOS los tenants, y una lista de cuarenta
+    // negocios en un chat no es una pregunta, es un muro. Se numeran los
+    // primeros y para el resto se escribe el nombre, que igual se resuelve
+    // contra los autorizados.
+    const shown = scopes.slice(0, MAX_SPOKEN_BUSINESSES);
+    const options: MenuOption[] = shown.map((s) => ({
       value: `${BUSINESS_PREFIX}${s.business.id}`,
       label: s.business.name,
     }));
     await this.conversations.remember(channel, externalUserId, {
       personId,
       lastIntent: intent,
+      // Se recuerdan solo los que se nombraron: si no, un "3" apuntaría a un
+      // negocio que el usuario nunca vio.
       lastOptions: options,
       greeted: greeted || undefined,
       repliedByAgent: true,
     });
+    const question = businessQuestion(
+      shown.map((s) => s.business.name),
+      scopes.length,
+    );
     return {
       action: 'CLARIFY',
-      reply: `${header}\n\n${renderMenu(options)}`,
+      reply: header ? `${header}\n${question}` : question,
       context: { personId, tenantId: null, intent },
     };
   }

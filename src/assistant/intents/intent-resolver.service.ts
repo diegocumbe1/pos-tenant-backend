@@ -21,6 +21,7 @@ export type AgentIntent =
   | 'inventory_value'
   | 'top_products'
   | 'human_handoff'
+  | 'is_bot'
   | 'about_lynko'
   | 'demo_request'
   | 'existing_customer'
@@ -49,6 +50,18 @@ const normalize = (value: string): string =>
 
 /** Una regla por capacidad. El orden decide los empates. */
 const RULES: { intent: AgentIntent; patterns: RegExp[] }[] = [
+  {
+    // Va PRIMERO: "¿eres un robot?" se responde con la verdad antes que
+    // cualquier otra cosa, y nunca se deja pasar como si no se hubiera oído.
+    intent: 'is_bot',
+    patterns: [
+      /\b(eres|es|sos) (un |una )?(bot|robot|maquina|inteligencia artificial|ia)\b/,
+      /\bcon quien (hablo|estoy hablando)\b/,
+      /\b(eres|sos) (una )?persona\b/,
+      /\bhumano\b/,
+      /\besto es automatico\b/,
+    ],
+  },
   {
     intent: 'human_handoff',
     patterns: [

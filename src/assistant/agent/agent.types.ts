@@ -36,5 +36,14 @@ export interface AgentResult {
     vertical?: string | null;
     /** Rol con el que se respondió, que no siempre es el mismo del teléfono. */
     roleCode?: string | null;
+    /**
+     * De dónde salió la identidad: `USER` es el único que da acceso.
+     *
+     * Se propaga para el diagnóstico de la consola. Sin esto, "te saludó por tu
+     * nombre pero te trató como desconocido" no tiene explicación visible: el
+     * nombre pudo salir de un contacto de cobro o de un cliente de un negocio,
+     * y ninguno de los dos es una cuenta.
+     */
+    identity?: string;
   };
 }

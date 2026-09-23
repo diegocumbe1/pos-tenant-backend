@@ -131,10 +131,13 @@ export interface MenuOption {
 /**
  * Lo que el agente puede hacer HOY por ese negocio.
  *
+ * Ya NO se muestra como lista numerada —ver `capabilityHint`—, pero se sigue
+ * guardando en el contexto para poder resolver un "2" de quien viene de una
+ * conversación anterior donde sí vio números.
+ *
  * Se construye por vertical y solo con capacidades implementadas: prometer
- * "consultar mesas" en un menú y después no saber responderlo es peor que no
- * ofrecerlo. Restaurante y barbería no tienen capacidades en `AssistantService`,
- * así que su menú lo dice en vez de inventar opciones.
+ * "consultar mesas" y después no saber responderlo es peor que no ofrecerlo.
+ * Restaurante y barbería no tienen capacidades en `AssistantService`.
  */
 export function menuFor(vertical: string | null | undefined): MenuOption[] {
   if ((vertical ?? '').toLowerCase() === 'retail') {
@@ -144,16 +147,86 @@ export function menuFor(vertical: string | null | undefined): MenuOption[] {
       { value: 'low_stock', label: 'Qué se está acabando' },
       { value: 'pending_delivery', label: 'Pedidos por entregar' },
       { value: 'top_products', label: 'Lo más vendido' },
-      { value: 'human_handoff', label: 'Hablar con el equipo de Lynko' },
+      { value: 'human_handoff', label: 'Hablar con un asesor de Lynko' },
     ];
   }
-  return [{ value: 'human_handoff', label: 'Hablar con el equipo de Lynko' }];
+  return [{ value: 'human_handoff', label: 'Hablar con un asesor de Lynko' }];
 }
 
-export function renderMenu(options: MenuOption[]): string {
-  return options
-    .map((option, index) => `${index + 1}. ${option.label}`)
-    .join('\n');
+/**
+ * Lo que se puede preguntar, dicho como lo diría una persona.
+ *
+ * No es la lista de `menuFor` con comas: las etiquetas de un menú ("Saldos por
+ * cobrar") no son lo que alguien escribe. Estas frases son ejemplos de
+ * preguntas reales, que además le enseñan al usuario que puede escribir libre.
+ */
+export function capabilityHint(vertical: string | null | undefined): string {
+  if ((vertical ?? '').toLowerCase() === 'retail') {
+    return 'Pregúntame lo que necesites: cuánto has vendido, qué se está acabando, quién te debe o qué falta por entregar.';
+  }
+  return 'Cuéntame qué necesitas y, si no lo sé hacer todavía, te paso con un asesor.';
+}
+
+/** Cuando ya se ofreció ayuda hace un momento, repetir el discurso sobra. */
+export const SHORT_HINT = '¿Qué quieres saber?';
+
+/**
+ * La pregunta de cuál negocio, en prosa.
+ *
+ * Hasta seis se nombran; más arriba de eso, leer una lista en un chat es peor
+ * que escribir el nombre. Los números se siguen aceptando aunque no se vean.
+ */
+export function businessQuestion(names: string[], total: number): string {
+  if (total > names.length) {
+    return `Tienes ${total} negocios. Escríbeme el nombre del que quieras consultar.`;
+  }
+  if (names.length === 2) {
+    return `¿De cuál negocio: ${names[0]} o ${names[1]}?`;
+  }
+  const last = names[names.length - 1];
+  return `¿De cuál negocio? Tienes ${names.slice(0, -1).join(', ')} y ${last}.`;
+}
+
+/** Cuántos negocios se nombran en prosa antes de pedir el nombre escrito. */
+export const MAX_SPOKEN_BUSINESSES = 6;
+
+/**
+ * La invitación a un desconocido, sin menú.
+ *
+ * Las tres salidas reales (conocer Lynko, ver una demo, soporte) van dichas en
+ * una frase. Quien responda "demo", "quiero verlo" o "ya soy cliente" cae en su
+ * intent igual que antes.
+ */
+export function strangerInvite(
+  firstName: string | null,
+  greet: boolean,
+): string {
+  const hello = greet
+    ? `¡Hola${firstName ? `, ${firstName}` : ''}! 👋 Soy el asistente de Lynko.\n`
+    : '';
+  return `${hello}¿Quieres saber qué hace Lynko, que te muestren una demostración, o ya eres cliente y necesitas ayuda?`;
+}
+
+/**
+ * Lo que se responde a "¿eres un bot?", y lo que define el tono de todo esto.
+ *
+ * El agente NUNCA se hace pasar por una persona. No es un escrúpulo abstracto:
+ * quien cree que habló con alguien del equipo y después descubre que no,
+ * desconfía de todo lo que le dijeron, incluidas las cifras. Presentarse como
+ * asistente desde el primer mensaje cuesta cero y evita eso entero.
+ */
+export const IDENTITY_DISCLOSURE =
+  'Soy el asistente automático de Lynko, no una persona. Puedo consultarte cifras de tu negocio al instante, y cuando algo se me sale de las manos te paso con un asesor.';
+
+/**
+ * El escalamiento, con la espera dicha de frente.
+ *
+ * `timing` sale de `handoffTiming()`: dentro del horario dice "en un momento",
+ * fuera dice cuándo. Prometer que "alguien te escribe ya" un domingo a las
+ * once de la noche es la forma más barata de quedar mal.
+ */
+export function handoffText(reason: string, timing: string): string {
+  return `${reason} Te comunico con un asesor más experto para atender tu caso. ${timing}`;
 }
 
 export function capabilityUnavailableText(
@@ -169,7 +242,7 @@ export function capabilityUnavailableText(
         : '';
   return [
     `Por aquí todavía no puedo consultar las cifras${kind} de ${businessName}.`,
-    'Están completas en la app. Si necesitas algo del equipo de Lynko, escríbeme y te paso con alguien.',
+    'Están completas en la app. Si necesitas algo más, dime y te paso con un asesor.',
   ].join(' ');
 }
 

@@ -4,13 +4,14 @@ import { normalizePhone } from '../../platform-messaging/phone.util';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
- * Qué es el número para Lynko.
+ * Qué es el número para Lynko: o una cuenta, o nadie.
  *
- * El orden importa: `USER` es el único que trae permisos. Los demás sirven para
- * saludar por el nombre y para no tratar a un cliente conocido como a un
- * desconocido, pero NO autorizan ninguna consulta.
+ * No hay estados intermedios a propósito. Un número que aparece en un contacto
+ * de cobro o en la lista de clientes de un negocio NO es una identidad para
+ * este agente: no puede consultar nada, así que tratarlo distinto solo serviría
+ * para revelar que lo conocemos.
  */
-export type IdentityKind = 'USER' | 'BILLING_CONTACT' | 'CUSTOMER' | 'UNKNOWN';
+export type IdentityKind = 'USER' | 'UNKNOWN';
 
 export interface IdentityActor {
   actor: AuthenticatedUser;
@@ -84,27 +85,21 @@ export class IdentityResolverService {
     return [full, national];
   }
 
-  /** Ids de filas cuyo teléfono, sin puntuación, coincide con alguna variante. */
-  private async matchingIds(
-    table:
-      | 'users'
-      | 'billing_contacts'
-      | 'retail_customers'
-      | 'barber_customers',
-    columns: string[],
-    variants: [string, string],
-  ): Promise<string[]> {
-    // Se normaliza en SQL (no en TypeScript) para no traer la tabla entera solo
-    // para comparar dígitos. La lista de tablas y columnas es literal y cerrada:
-    // nada de esto viene del mensaje del usuario, que nunca toca esta consulta.
-    const where = columns
-      .map(
-        (c) =>
-          `regexp_replace(coalesce("${c}", ''), '\\D', '', 'g') IN ($1, $2)`,
-      )
-      .join(' OR ');
+  /**
+   * Ids de usuarios cuyo teléfono, sin puntuación, coincide con el que escribe.
+   *
+   * Se compara normalizado EN SQL para no traer la tabla entera solo para
+   * limpiar dígitos. La consulta es literal salvo los dos parámetros, y esos
+   * salen del identificador de WhatsApp, nunca del texto del mensaje.
+   *
+   * Solo consulta `users`: es la única tabla cuyo teléfono corresponde a una
+   * cuenta con rol y permisos.
+   */
+  private async matchingUserIds(variants: [string, string]): Promise<string[]> {
     const rows = await this.prisma.$queryRawUnsafe<{ id: string }[]>(
-      `SELECT "id" FROM "${table}" WHERE ${where} LIMIT 20`,
+      `SELECT "id" FROM "users"
+        WHERE regexp_replace(coalesce("phone", ''), '\\D', '', 'g') IN ($1, $2)
+        LIMIT 20`,
       variants[0],
       variants[1],
     );
@@ -115,7 +110,7 @@ export class IdentityResolverService {
     const variants = this.digitVariants(phone);
     if (!variants) return UNKNOWN;
 
-    const userIds = await this.matchingIds('users', ['phone'], variants);
+    const userIds = await this.matchingUserIds(variants);
     if (userIds.length) {
       const users = await this.prisma.user.findMany({
         where: { id: { in: userIds }, isActive: true },
@@ -152,54 +147,18 @@ export class IdentityResolverService {
       }
     }
 
-    // Sin cuenta. Se sigue buscando SOLO para saber cómo llamar a la persona y
-    // para no darle el discurso comercial a un cliente de un negocio nuestro.
-    // Ninguna de estas filas otorga acceso a nada, y el NEGOCIO al que
-    // pertenecen no se nombra nunca: sería enumerar tenants.
-    const contactIds = await this.matchingIds(
-      'billing_contacts',
-      ['phone', 'whatsapp'],
-      variants,
-    );
-    if (contactIds.length) {
-      const contact = await this.prisma.billingContact.findFirst({
-        where: { id: { in: contactIds } },
-        select: { name: true },
-      });
-      return {
-        known: true,
-        kind: 'BILLING_CONTACT',
-        firstName: firstNameOf(contact?.name),
-        actors: [],
-      };
-    }
-
-    const [retailIds, barberIds] = await Promise.all([
-      this.matchingIds('retail_customers', ['phone'], variants),
-      this.matchingIds('barber_customers', ['phone'], variants),
-    ]);
-    if (retailIds.length || barberIds.length) {
-      const name = retailIds.length
-        ? (
-            await this.prisma.retailCustomer.findFirst({
-              where: { id: { in: retailIds }, deletedAt: null },
-              select: { name: true },
-            })
-          )?.name
-        : (
-            await this.prisma.barberCustomer.findFirst({
-              where: { id: { in: barberIds } },
-              select: { name: true },
-            })
-          )?.name;
-      return {
-        known: true,
-        kind: 'CUSTOMER',
-        firstName: firstNameOf(name),
-        actors: [],
-      };
-    }
-
+    // Sin cuenta de Lynko, desconocido. Punto.
+    //
+    // Antes se buscaba también en contactos de cobro y en los clientes de cada
+    // negocio, solo para poder saludar por el nombre. Se quitó a propósito: ese
+    // nombre no es de quien escribe, es de una fila que COINCIDE con su número.
+    // Saludar con él le confirma a cualquiera que tenga ese teléfono —o que lo
+    // herede, o que se lo robe— que Lynko tiene datos suyos, y no aporta nada a
+    // cambio: esa persona no puede consultar nada igual.
+    //
+    // Los nombres de clientes, además, son de los NEGOCIOS, no de la
+    // plataforma. Leerlos para redactar un saludo del número de Lynko es usar
+    // datos de un tenant para otra cosa.
     return UNKNOWN;
   }
 }

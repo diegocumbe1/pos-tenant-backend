@@ -97,9 +97,69 @@ describe('LynkoAgentService', () => {
       identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
     });
     const result = await ask(agent, 'hola');
-    expect(result.reply).toContain('Bienvenido a Lynko');
+    expect(result.reply).toContain('asistente de Lynko');
     expect(result.reply).not.toContain('Bella Chic');
     expect(result.context.tenantId).toBeNull();
+  });
+
+  /**
+   * La regla que sostiene todo lo demás: decir el nombre de un negocio no es
+   * una credencial. Un desconocido que escribe "mi negocio es DC Tech" no puede
+   * obtener NADA de DC Tech — ni sus cifras, ni la confirmación de que exista.
+   */
+  it('un desconocido que nombra un negocio no obtiene nada de ese negocio', async () => {
+    const { agent, assistant, scope } = build({
+      identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
+      businesses: [BELLA, DC],
+      conversation: {
+        row: { lastIntent: 'existing_customer' },
+        stale: false,
+        humanActive: false,
+      },
+    });
+    const result = await ask(agent, 'mi negocio es DC Tech');
+
+    expect(result.action).toBe('HUMAN_HANDOFF');
+    expect(result.context.tenantId).toBeNull();
+    // Nunca se le preguntó a la base por los negocios de nadie.
+    expect(scope.accessibleBusinesses).not.toHaveBeenCalled();
+    expect(assistant.sales).not.toHaveBeenCalled();
+    // Ni se confirma que DC Tech exista.
+    expect(result.reply).not.toContain('DC Tech');
+  });
+
+  it('contesta la pregunta que él mismo hizo, sin repetir el menú', async () => {
+    const { agent } = build({
+      identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
+      conversation: {
+        row: { lastIntent: 'existing_customer' },
+        stale: false,
+        humanActive: false,
+      },
+    });
+    const result = await ask(agent, 'Dc Tech');
+    expect(result.action).toBe('HUMAN_HANDOFF');
+    expect(result.reply).toContain('asesor');
+  });
+
+  it('nunca se hace pasar por una persona', async () => {
+    const { agent } = build({
+      identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
+    });
+    const result = await ask(agent, '¿eres un bot o una persona?');
+    expect(result.action).toBe('RESPOND');
+    expect(result.reply).toContain('asistente automático');
+    expect(result.reply).toContain('no una persona');
+  });
+
+  it('no saluda por el nombre a quien no tiene cuenta', async () => {
+    // El nombre de un contacto de cobro o de un cliente NO se usa: es de un
+    // negocio, no de quien escribe, y saludar con él confirma que lo tenemos.
+    const { agent } = build({
+      identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
+    });
+    const result = await ask(agent, 'hola');
+    expect(result.reply).not.toMatch(/Hola,/);
   });
 
   it('responde directo cuando la persona tiene un solo negocio', async () => {
@@ -114,12 +174,36 @@ describe('LynkoAgentService', () => {
     );
   });
 
-  it('con varios negocios pregunta cuál, sin asumir', async () => {
+  it('con varios negocios pregunta cuál, en prosa y sin asumir', async () => {
     const { agent, assistant } = build({ businesses: [BELLA, DC] });
     const result = await ask(agent, '¿cuánto vendí hoy?');
     expect(result.action).toBe('CLARIFY');
-    expect(result.reply).toContain('1. Bella Chic');
-    expect(result.reply).toContain('2. DC Tech');
+    expect(result.reply).toContain('Bella Chic');
+    expect(result.reply).toContain('DC Tech');
+    // Nada de listas numeradas: esto es una conversación, no un conmutador.
+    expect(result.reply).not.toMatch(/^\s*1\./m);
+    expect(assistant.sales).not.toHaveBeenCalled();
+  });
+
+  it('acepta un número aunque ya no muestre la lista numerada', async () => {
+    // Quien viene de una conversación donde sí vio números merece que funcione.
+    const { agent, assistant } = build({
+      businesses: [BELLA, DC],
+      conversation: {
+        row: {
+          lastIntent: 'sales_summary',
+          lastOptions: [
+            { value: 'business:t1', label: 'Bella Chic' },
+            { value: 'business:t2', label: 'DC Tech' },
+          ],
+        },
+        stale: false,
+        humanActive: false,
+      },
+    });
+    const result = await ask(agent, '2');
+    expect(result.action).toBe('CLARIFY');
+    expect(result.reply).toContain('DC Tech');
     expect(assistant.sales).not.toHaveBeenCalled();
   });
 
