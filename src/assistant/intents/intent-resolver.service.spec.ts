@@ -80,10 +80,18 @@ const CASES: Case[] = [
     intent: 'units_sold',
     period: 'month',
   },
-  { text: 'cuantos productos vendi ayer', intent: 'units_sold', period: 'yesterday' },
+  {
+    text: 'cuantos productos vendi ayer',
+    intent: 'units_sold',
+    period: 'yesterday',
+  },
 
   // ─── Gastos ───────────────────────────────────────────────────────────────
-  { text: 'cuanto he gastado este mes', intent: 'expenses_summary', period: 'month' },
+  {
+    text: 'cuanto he gastado este mes',
+    intent: 'expenses_summary',
+    period: 'month',
+  },
   { text: 'en que se me va la plata', intent: 'expenses_summary' },
   { text: 'dame los gastos de marzo', intent: 'expenses_summary' },
   { text: 'cuanto pague de arriendo', intent: 'expenses_summary' },

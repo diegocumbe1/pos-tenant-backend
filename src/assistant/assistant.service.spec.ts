@@ -92,15 +92,13 @@ describe('AssistantService', () => {
       }),
     };
     retailPurchases = {
-      getSummary: jest
-        .fn()
-        .mockResolvedValue({
-          openCount: 3,
-          estimatedOpenCostCOP: 1000,
-          pendingCount: 1,
-          orderedCount: 2,
-          partiallyReceivedCount: 0,
-        }),
+      getSummary: jest.fn().mockResolvedValue({
+        openCount: 3,
+        estimatedOpenCostCOP: 1000,
+        pendingCount: 1,
+        orderedCount: 2,
+        partiallyReceivedCount: 0,
+      }),
       list: jest.fn().mockResolvedValue([]),
     };
     retailInventory = {

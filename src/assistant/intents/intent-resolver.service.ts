@@ -295,7 +295,10 @@ const RULES: IntentRule[] = [
     intent: 'inventory_value',
     anchors: [{ terms: ['inventario'], w: 0.5 }],
     modifiers: [
-      { terms: ['cuanto', 'valor', 'vale', 'plata', 'total', 'reporte'], w: 0.25 },
+      {
+        terms: ['cuanto', 'valor', 'vale', 'plata', 'total', 'reporte'],
+        w: 0.25,
+      },
       { terms: ['tengo', 'hay'], w: 0.1 },
     ],
     negative: ['agotado', 'sin stock', 'venta', 'compra'],
@@ -313,7 +316,10 @@ const RULES: IntentRule[] = [
     intent: 'pending_purchase',
     anchors: [{ terms: ['compra'], w: 0.6 }],
     modifiers: [
-      { terms: ['cuanto', 'cual', 'que tengo', 'pendiente', 'pendientes'], w: 0.2 },
+      {
+        terms: ['cuanto', 'cual', 'que tengo', 'pendiente', 'pendientes'],
+        w: 0.2,
+      },
     ],
     negative: ['entrega', 'cliente', 'venta'],
   },
@@ -321,7 +327,10 @@ const RULES: IntentRule[] = [
     intent: 'pending_delivery',
     anchors: [{ terms: ['entrega'], w: 0.6 }],
     modifiers: [
-      { terms: ['cuanto', 'cual', 'que tengo', 'pendiente', 'pendientes'], w: 0.2 },
+      {
+        terms: ['cuanto', 'cual', 'que tengo', 'pendiente', 'pendientes'],
+        w: 0.2,
+      },
     ],
     negative: ['compra', 'fiado'],
   },
@@ -422,19 +431,45 @@ const RULES: IntentRule[] = [
   {
     intent: 'demo_request',
     anchors: [
-      { terms: ['demo', 'demostracion', 'cotizar', 'cotizacion', 'precio', 'precios'], w: 0.8 },
+      {
+        terms: [
+          'demo',
+          'demostracion',
+          'cotizar',
+          'cotizacion',
+          'precio',
+          'precios',
+        ],
+        w: 0.8,
+      },
     ],
   },
   {
     intent: 'about_lynko',
     anchors: [
-      { terms: ['que es lynko', 'conocer lynko', 'informacion', 'como funciona'], w: 0.8 },
+      {
+        terms: [
+          'que es lynko',
+          'conocer lynko',
+          'informacion',
+          'como funciona',
+        ],
+        w: 0.8,
+      },
     ],
   },
   {
     intent: 'existing_customer',
     anchors: [
-      { terms: ['ya soy cliente', 'tengo una cuenta', 'tengo cuenta', 'soy usuario'], w: 0.85 },
+      {
+        terms: [
+          'ya soy cliente',
+          'tengo una cuenta',
+          'tengo cuenta',
+          'soy usuario',
+        ],
+        w: 0.85,
+      },
     ],
   },
   {
@@ -473,7 +508,9 @@ export class IntentResolverService {
     // acotó la pregunta a un negocio concreto. Si además no es de los suyos, la
     // pregunta no tiene respuesta y hay que decirlo, no contestar por otro.
     const unknownBusiness =
-      !businessHint && NAMED_BUSINESS.test(normalized) && businessNames.length > 0;
+      !businessHint &&
+      NAMED_BUSINESS.test(normalized) &&
+      businessNames.length > 0;
     const needsPeriod =
       period === null &&
       TOTALIZING_TERMS.some((term) => hasTerm(normalized, tokens, term));

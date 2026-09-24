@@ -171,10 +171,7 @@ export class AssistantService {
       this.purchaseFigures(scope),
       Promise.all(
         scope.branchIds.map((branchId) =>
-          this.retailPurchases.list(
-            { ...scope.ctx, branchId },
-            { open: true },
-          ),
+          this.retailPurchases.list({ ...scope.ctx, branchId }, { open: true }),
         ),
       ),
     ]);

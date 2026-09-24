@@ -133,7 +133,14 @@ export class LynkoAgentService {
     });
 
     const result = identity.actors.length
-      ? await this.knownFlow(request, identity, match, remembered, state, scopes)
+      ? await this.knownFlow(
+          request,
+          identity,
+          match,
+          remembered,
+          state,
+          scopes,
+        )
       : await this.strangerFlow(request, identity, match, remembered, state);
 
     // De dónde salió la identidad, para el diagnóstico de la consola. Va aquí y

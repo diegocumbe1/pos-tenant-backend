@@ -344,13 +344,22 @@ export class WhatsAppInboundService {
   }
 
   /** Lo que ve la consola para saber si los mensajes están llegando. */
-  diagnostics(): {
+  async diagnostics(): Promise<{
     enabled: boolean;
+    connected: boolean;
     session: { tenantId: string; branchId: string };
     recent: InboundTrace[];
-  } {
+  }> {
+    const { tenantId, branchId } = this.session;
     return {
-      enabled: this.cachedSwitch?.value ?? false,
+      // Se lee el interruptor de verdad, no el caché: el caché solo se llena
+      // cuando llega un mensaje, así que un diagnóstico recién abierto decía
+      // "apagado" con el switch encendido — justo la pregunta que se viene a
+      // responder aquí.
+      enabled: await this.isEnabled(),
+      // Sin sesión conectada no llega nada, y eso explica un diagnóstico vacío
+      // mejor que cualquier otra cosa.
+      connected: await this.sessions.isReady(tenantId, branchId),
       session: this.session,
       recent: this.recent,
     };
