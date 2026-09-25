@@ -82,8 +82,8 @@ export class BarberSiteStrategy implements VerticalSiteStrategy {
         },
         { type: 'gallery', sortOrder: 30, width: 'wide', title: 'Galeria' },
         {
+          // Visible como en retail: el renderer solo la pinta si hay posts.
           type: 'instagram',
-          isVisible: Boolean(settings?.instagramProfileUrl),
           sortOrder: 40,
           title: 'Instagram',
         },

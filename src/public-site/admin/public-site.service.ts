@@ -381,6 +381,14 @@ export class PublicSiteService {
           sortOrder: post.sortOrder,
         })),
       });
+
+      // La sección Instagram no tiene toggle propio: se enciende cuando hay
+      // posts visibles. Sin esto, un sitio sembrado con la sección oculta
+      // guardaba los posts pero nunca los mostraba.
+      await tx.publicSiteSection.updateMany({
+        where: { siteId: site.id, type: 'instagram' },
+        data: { isVisible: dto.posts.some((post) => post.isVisible) },
+      });
     }, PUBLIC_SITE_TRANSACTION_OPTIONS);
 
     return this.toAdminResponse(await this.persistDraftPayload(site.id));
