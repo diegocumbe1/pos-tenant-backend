@@ -167,6 +167,11 @@ export class BarberServiceAssetsService {
    * Asegura un único asset con kind="primary" por servicio y sincroniza
    * `BarberService.primaryImageUrl` con su URL — el frontend público lo
    * lee directo del servicio sin tener que cargar todos los assets.
+   *
+   * La portada anterior queda como histórico pero FUERA de la galería pública:
+   * la pantalla de Servicios solo maneja una portada, así que "cambiar la foto"
+   * es reemplazarla. Antes quedaba con showInPublicGallery=true y cada cambio
+   * sumaba una foto vieja al sitio publicado que el dueño no veía en el editor.
    */
   private async applyPrimaryAsset(
     tx: Prisma.TransactionClient,
@@ -179,7 +184,7 @@ export class BarberServiceAssetsService {
     }
     await tx.barberServiceAsset.updateMany({
       where: { serviceId, kind: 'primary', NOT: { id: assetId } },
-      data: { kind: 'gallery' },
+      data: { kind: 'gallery', showInPublicGallery: false },
     });
     await tx.barberService.update({
       where: { id: serviceId },
