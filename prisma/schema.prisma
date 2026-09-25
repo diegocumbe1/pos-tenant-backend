@@ -2130,6 +2130,36 @@ model PlatformGatewaySettings {
   @@map("platform_gateway_settings")
 }
 
+/// Tarifa de un medio de pago a partir de una fecha. Append-only, igual que
+/// `plan_prices`: cambiar una tarifa es INSERTAR una fila, nunca UPDATE. Así el
+/// cobro de junio sigue explicándose con la tarifa de junio cuando la suban.
+///
+/// Las retenciones (fuente, ICA, IVA) NO son costo: son anticipo de impuestos.
+/// Van aquí porque bajan el depósito, pero se separan del costo en el cálculo.
+model PlatformGatewayFee {
+  id            String   @id @default(cuid())
+  /// CARD_PRESENT | CARD_ONLINE | PSE | NEQUI | BREB | CASH
+  method        String
+  percentBps    Int      @default(0)
+  fixedCOP      Int      @default(0)
+  /// IVA sobre la comisión.
+  taxBps        Int      @default(1900)
+  /// Solo tarjeta: las practica el banco adquirente al liquidar.
+  retefuenteBps Int      @default(0)
+  reteIcaBps    Int      @default(0)
+  /// Sobre el IVA de la venta, no sobre el total.
+  reteIvaBps    Int      @default(0)
+  /// Días hábiles hasta que el dinero está disponible.
+  settlementDays Int     @default(1)
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([method, effectiveFrom])
+  @@map("platform_gateway_fees")
+}
+
 // Cobro de suscripción: existe ANTES de que exista el pago. Es lo que da algo
 // contra qué conciliar cuando llega el webhook — sin esto, un aviso de Wompi no
 // se puede atar a ningún tenant ni periodo.
@@ -2167,9 +2197,17 @@ model SubscriptionCharge {
   providerTxId      String? @unique
   paymentMethodType String?
 
-  /// Comisión calculada con la tarifa configurada, y lo que queda neto.
+  /// Comisión + su IVA: el COSTO real del cobro. Se congela al conciliar.
   gatewayFee Int  @default(0)
+  /// Retenciones practicadas (fuente + ICA + IVA). NO son costo: se recuperan
+  /// en la declaración. Se guardan aparte para no inflar el gasto.
+  withheld   Int  @default(0)
+  /// Lo que efectivamente llega al banco: amount - gatewayFee - withheld.
   netSettled Int?
+  /// Medio con el que se pagó, en el vocabulario de tarifas (CARD_ONLINE, …).
+  feeMethod  String?
+  /// Cuándo se espera el abono, según los días hábiles de la tarifa.
+  expectedSettlementAt DateTime?
 
   /// SubscriptionPayment creado al conciliar. Sin FK dura: el pago puede
   /// borrarse sin que el cobro pierda su rastro de lo que pasó.

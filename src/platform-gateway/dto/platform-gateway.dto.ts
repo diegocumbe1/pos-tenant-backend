@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -18,6 +19,87 @@ import {
   GatewayEnvironment,
   GatewayMethod,
 } from '../platform-gateway.constants';
+import { FEE_METHODS, FeeMethod } from '../fee-calculator';
+
+export class UpsertFeeRateDto {
+  @ApiProperty({ enum: FEE_METHODS })
+  @IsIn(FEE_METHODS as unknown as string[])
+  method!: FeeMethod;
+
+  @ApiProperty({ example: 265, description: 'Comisión en puntos básicos' })
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  percentBps!: number;
+
+  @ApiProperty({ example: 700 })
+  @IsInt()
+  @Min(0)
+  fixedCOP!: number;
+
+  @ApiProperty({ example: 1900, description: 'IVA sobre la comisión' })
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  taxBps!: number;
+
+  @ApiProperty({ example: 150, description: 'Retefuente. Solo tarjeta.' })
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  retefuenteBps!: number;
+
+  @ApiProperty({ example: 20, description: 'ReteICA. Cambia por municipio.' })
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  reteIcaBps!: number;
+
+  @ApiProperty({
+    example: 1500,
+    description: 'ReteIVA, sobre el IVA de la venta',
+  })
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  reteIvaBps!: number;
+
+  @ApiProperty({ example: 1, description: 'Días hábiles hasta el abono' })
+  @IsInt()
+  @Min(0)
+  @Max(30)
+  settlementDays!: number;
+
+  @ApiPropertyOptional({
+    description: 'Desde cuándo rige. Vacío = ahora. No reescribe el pasado.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
+}
+
+export class SimulateFeeDto {
+  @ApiProperty({ example: 92000 })
+  @IsInt()
+  @Min(0)
+  amount!: number;
+
+  @ApiPropertyOptional({
+    example: 1900,
+    description: 'IVA de la VENTA, no de la comisión. 0 si es excluida.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  saleIvaBps?: number;
+}
 
 export class CreateChargeDto {
   @ApiProperty({

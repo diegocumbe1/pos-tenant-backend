@@ -20,8 +20,12 @@ import { PlatformActor } from '../platform/decorators/platform-actor.decorator';
 import { PlatformAdminGuard } from '../platform/guards/platform-admin.guard';
 import {
   CreateChargeDto,
+  SimulateFeeDto,
   UpdateGatewaySettingsDto,
+  UpsertFeeRateDto,
 } from './dto/platform-gateway.dto';
+import { FeeMethod } from './fee-calculator';
+import { FeeRatesService } from './services/fee-rates.service';
 import { ChargesService } from './services/charges.service';
 import { GatewaySettingsService } from './services/gateway-settings.service';
 import { WompiClient } from './services/wompi.client';
@@ -43,6 +47,7 @@ export class PlatformGatewayController {
     private readonly settings: GatewaySettingsService,
     private readonly wompi: WompiClient,
     private readonly charges: ChargesService,
+    private readonly rates: FeeRatesService,
   ) {}
 
   @Get('gateway/settings')
@@ -65,6 +70,42 @@ export class PlatformGatewayController {
   })
   test() {
     return this.wompi.testConnection();
+  }
+
+  // ─── Tarifas por medio de pago ──────────────────────────────────────────────
+
+  @Get('gateway/fees')
+  @ApiOperation({
+    summary: 'Tarifa vigente de cada medio (comisión + retenciones)',
+  })
+  fees() {
+    return this.rates.current();
+  }
+
+  @Get('gateway/fees/:method/history')
+  @ApiOperation({ summary: 'Histórico de una tarifa. Append-only.' })
+  feeHistory(@Param('method') method: string) {
+    return this.rates.history(method as FeeMethod);
+  }
+
+  @Post('gateway/fees')
+  @ApiOperation({
+    summary:
+      'Guarda una tarifa nueva con fecha efectiva (no reescribe el pasado)',
+  })
+  saveFee(
+    @Body() dto: UpsertFeeRateDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.rates.upsertRate(dto, actor.id);
+  }
+
+  @Post('gateway/fees/simulate')
+  @ApiOperation({
+    summary: 'Cuánto llega y cuánto cuesta un monto por cada medio de pago',
+  })
+  simulate(@Body() dto: SimulateFeeDto) {
+    return this.rates.simulate(dto.amount, dto.saleIvaBps ?? 0);
   }
 
   // ─── Bitácora de eventos ────────────────────────────────────────────────────
