@@ -764,7 +764,7 @@ export class PublicSiteService {
     ]);
 
     const seed = await strategy.buildSiteSeed(ctx, { tenant, branch });
-    const slug = await this.nextAvailableSlug(seed.slug, strategy);
+    const slug = await this.nextAvailableSlug(seed.slug, strategy, ctx.branchId);
 
     const created = await this.prisma.publicSite.create({
       data: {
@@ -1211,12 +1211,15 @@ export class PublicSiteService {
   private async nextAvailableSlug(
     baseSlug: string,
     strategy: VerticalSiteStrategy,
+    ownerBranchId?: string,
   ) {
     const candidate = slugify(baseSlug) || strategy.verticalCode;
     for (let index = 0; index < 100; index += 1) {
       const slug = index === 0 ? candidate : `${candidate}-${index + 1}`;
       try {
-        await this.assertSlugAvailable(slug, strategy);
+        // Sin la sede, el bookingSlug de la PROPIA sede cuenta como conflicto
+        // y el sitio nace como `<slug>-2`.
+        await this.assertSlugAvailable(slug, strategy, undefined, ownerBranchId);
         return slug;
       } catch (error) {
         if (!(error instanceof ConflictException)) throw error;
