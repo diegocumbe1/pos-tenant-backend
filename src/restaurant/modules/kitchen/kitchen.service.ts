@@ -38,7 +38,10 @@ export class KitchenService {
     const tickets = await this.prisma.kitchenTicket.findMany({
       where: {
         tenantId: ctx.tenantId,
-        order: { branchId: ctx.branchId },
+        // Solo órdenes abiertas: cerrar o anular una orden no toca el estado de
+        // sus comandas, y sin este filtro todo lo que quedó PENDING en órdenes
+        // ya cobradas se acumulaba en el KDS para siempre.
+        order: { branchId: ctx.branchId, status: 'OPEN' },
         ...(status ? { status } : {}),
       },
       include: TICKET_INCLUDE,

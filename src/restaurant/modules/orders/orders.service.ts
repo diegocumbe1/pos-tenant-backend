@@ -942,7 +942,7 @@ export class OrdersService {
     });
     if (paymentSplits.length === 0) {
       throw new UnprocessableEntityException(
-        'Order must have at least one payment split before close',
+        'La orden no tiene pagos registrados: registra el pago antes de cerrar',
       );
     }
 
@@ -952,8 +952,11 @@ export class OrdersService {
       0,
     );
     if (totalCOP !== orderTotalCOP) {
+      // Con los montos: sin ellos el cajero no puede saber si falta cobrar algo
+      // o si a la orden se le sumó un ítem después del pago.
+      const cop = (n: number) => `$${n.toLocaleString('es-CO')}`;
       throw new UnprocessableEntityException(
-        'Registered payments must equal order total before close',
+        `Los pagos registrados (${cop(totalCOP)}) no coinciden con el total de la orden (${cop(orderTotalCOP)}). Revisa los ítems de la mesa antes de cerrar.`,
       );
     }
     const terminalId = dto.terminalId ?? order.terminalId;
