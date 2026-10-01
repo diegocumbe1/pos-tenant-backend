@@ -54,6 +54,7 @@ model Tenant {
   roles                Role[]
   barberSettings       BarberSettings[]
   barberServices       BarberService[]
+  barberServiceCategories BarberServiceCategory[]
   barberStaff          BarberStaff[]
   barberCustomers      BarberCustomer[]
   barberAppointments   BarberAppointment[]
@@ -158,6 +159,7 @@ model Branch {
   userBranches         UserBranch[]
   barberSettings       BarberSettings?
   barberServices       BarberService[]
+  barberServiceCategories BarberServiceCategory[]
   barberStaff          BarberStaff[]
   barberCustomers      BarberCustomer[]
   barberAppointments   BarberAppointment[]
@@ -454,6 +456,25 @@ model BarberService {
   @@index([branchId, isActive])
   @@index([category])
   @@map("barber_services")
+}
+
+// Lista gestionada de categorías de servicios (como RetailCategory). El servicio
+// sigue guardando el NOMBRE en `BarberService.category`: el sitio público y los
+// reportes agrupan por ese texto. Renombrar aquí reescribe los servicios.
+model BarberServiceCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, name])
+  @@index([tenantId])
+  @@map("barber_service_categories")
 }
 
 model BarberServiceAsset {

@@ -39,6 +39,7 @@ export class BarberServicesService {
 
   async createService(ctx: TenantContext, dto: CreateBarberServiceDto) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
+    const category = await this.ensureCategory(ctx, dto.category);
     const created = await this.prisma.barberService.create({
       data: {
         tenantId: ctx.tenantId,
@@ -52,7 +53,7 @@ export class BarberServicesService {
           []) as unknown as Prisma.InputJsonValue,
         color: dto.color,
         imageUrls: dto.imageUrls ?? [],
-        category: dto.category,
+        category,
         resultDuration: dto.resultDuration,
         retouchPriceCOP: dto.retouchPriceCOP,
         retouchNote: dto.retouchNote,
@@ -81,6 +82,7 @@ export class BarberServicesService {
       id,
       'Service',
     );
+    const category = await this.ensureCategory(ctx, dto.category);
     const updated = await this.prisma.barberService.update({
       where: { id },
       data: {
@@ -95,7 +97,7 @@ export class BarberServicesService {
             : (dto.durationOptions as unknown as Prisma.InputJsonValue),
         color: dto.color,
         imageUrls: dto.imageUrls,
-        category: dto.category,
+        category,
         resultDuration: dto.resultDuration,
         retouchPriceCOP: dto.retouchPriceCOP,
         retouchNote: dto.retouchNote,
@@ -196,6 +198,126 @@ export class BarberServicesService {
         appointments: rows.length,
       };
     });
+  }
+
+  /**
+   * Copia el servicio para editarlo como otro (p. ej. la versión para hombres).
+   * Las fotos se copian como filas apuntando al MISMO archivo: borrar una foto
+   * solo borra su fila, nunca el archivo del storage, así que compartirlo es
+   * seguro. También hereda quién del staff lo presta. No copia citas.
+   */
+  async duplicateService(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      id,
+      'Service',
+    );
+    const source = await this.prisma.barberService.findUniqueOrThrow({
+      where: { id },
+      include: { assets: true, staffServices: true },
+    });
+    const name = await this.nextCopyName(ctx, source.name);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const copy = await tx.barberService.create({
+        data: {
+          tenantId: source.tenantId,
+          branchId: source.branchId,
+          name,
+          description: source.description,
+          durationMin: source.durationMin,
+          priceCOP: source.priceCOP,
+          costCOP: source.costCOP,
+          durationOptions: source.durationOptions as Prisma.InputJsonValue,
+          color: source.color,
+          imageUrls: source.imageUrls,
+          category: source.category,
+          resultDuration: source.resultDuration,
+          retouchPriceCOP: source.retouchPriceCOP,
+          retouchNote: source.retouchNote,
+          retouchAfterDays: source.retouchAfterDays,
+          maintenanceAfterDays: source.maintenanceAfterDays,
+          primaryImageUrl: source.primaryImageUrl,
+          isActive: source.isActive,
+          sortOrder: source.sortOrder,
+        },
+      });
+      if (source.assets.length > 0) {
+        await tx.barberServiceAsset.createMany({
+          data: source.assets.map((asset) => ({
+            tenantId: asset.tenantId,
+            serviceId: copy.id,
+            url: asset.url,
+            alt: asset.alt,
+            kind: asset.kind,
+            fit: asset.fit,
+            focalPoint: asset.focalPoint,
+            showInPublicGallery: asset.showInPublicGallery,
+            sortOrder: asset.sortOrder,
+          })),
+        });
+      }
+      if (source.staffServices.length > 0) {
+        await tx.barberStaffService.createMany({
+          data: source.staffServices.map((link) => ({
+            staffId: link.staffId,
+            serviceId: copy.id,
+          })),
+        });
+      }
+      return tx.barberService.findUniqueOrThrow({
+        where: { id: copy.id },
+        include: {
+          assets: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        },
+      });
+    });
+    return this.toServiceDto(created);
+  }
+
+  // "Microblading" → "Microblading (copia)" → "Microblading (copia 2)"...
+  // El nombre es único por sede.
+  private async nextCopyName(ctx: TenantContext, base: string) {
+    const taken = new Set(
+      (
+        await this.prisma.barberService.findMany({
+          where: { branchId: ctx.branchId, name: { startsWith: base } },
+          select: { name: true },
+        })
+      ).map((s) => s.name),
+    );
+    let candidate = `${base} (copia)`;
+    for (let n = 2; taken.has(candidate); n++) {
+      candidate = `${base} (copia ${n})`;
+    }
+    return candidate;
+  }
+
+  // Un servicio guardado con una categoría que no está en la lista la agrega:
+  // la lista gestionada y el texto del servicio nunca se desincronizan.
+  private async ensureCategory(
+    ctx: TenantContext,
+    category: string | undefined | null,
+  ): Promise<string | null | undefined> {
+    // undefined = no tocar; null o "" = sin categoría.
+    if (category === undefined) return undefined;
+    const name = category?.trim();
+    if (!name) return null;
+    const count = await this.prisma.barberServiceCategory.count({
+      where: { branchId: ctx.branchId },
+    });
+    await this.prisma.barberServiceCategory.upsert({
+      where: { branchId_name: { branchId: ctx.branchId, name } },
+      create: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        name,
+        sortOrder: count,
+      },
+      update: {},
+    });
+    return name;
   }
 
   private toServiceDto(service: ServiceWithAssets) {

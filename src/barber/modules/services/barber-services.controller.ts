@@ -46,6 +46,12 @@ export class BarberServicesController {
     return this.servicesService.createService(ctx, dto);
   }
 
+  @Post(':id/duplicate')
+  @RequirePermissions('barber:services:write')
+  duplicate(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.servicesService.duplicateService(ctx, id);
+  }
+
   @Patch(':id')
   @RequirePermissions('barber:services:write')
   update(
