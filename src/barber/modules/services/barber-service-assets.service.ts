@@ -132,6 +132,84 @@ export class BarberServiceAssetsService {
     });
   }
 
+  /**
+   * Pone como portada una foto que el servicio ya tiene, por URL. A diferencia
+   * de subir una portada nueva (que REEMPLAZA y oculta la anterior), aquí el
+   * dueño solo está eligiendo entre sus fotos: la portada de antes sigue
+   * visible como foto más del servicio.
+   */
+  async setPrimaryPhoto(ctx: TenantContext, serviceId: string, url: string) {
+    await this.assertService(ctx, serviceId);
+    const target = url?.trim();
+    if (!target) throw new BadRequestException('url is required');
+
+    const service = await this.prisma.barberService.findUnique({
+      where: { id: serviceId },
+      select: {
+        imageUrls: true,
+        primaryImageUrl: true,
+        assets: { select: { id: true, url: true, kind: true } },
+      },
+    });
+    if (!service) throw new NotFoundException(`Service ${serviceId} not found`);
+
+    const owned =
+      service.primaryImageUrl === target ||
+      service.imageUrls.includes(target) ||
+      service.assets.some((asset) => asset.url === target);
+    if (!owned) {
+      throw new NotFoundException('La foto no pertenece a este servicio');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const previous = service.primaryImageUrl;
+      // Una portada vieja que solo vivía en la columna (sin fila de asset)
+      // desaparecería de la lista al dejar de ser portada: se le crea su fila.
+      if (
+        previous &&
+        previous !== target &&
+        !service.imageUrls.includes(previous) &&
+        !service.assets.some((asset) => asset.url === previous)
+      ) {
+        await tx.barberServiceAsset.create({
+          data: {
+            tenantId: ctx.tenantId,
+            serviceId,
+            url: previous,
+            kind: 'gallery',
+            showInPublicGallery: true,
+          },
+        });
+      }
+      await tx.barberServiceAsset.updateMany({
+        where: { serviceId, kind: 'primary', NOT: { url: target } },
+        data: { kind: 'gallery', showInPublicGallery: true },
+      });
+
+      const existing = service.assets.find((asset) => asset.url === target);
+      const asset = existing
+        ? await tx.barberServiceAsset.update({
+            where: { id: existing.id },
+            data: { kind: 'primary', showInPublicGallery: true },
+          })
+        : await tx.barberServiceAsset.create({
+            data: {
+              tenantId: ctx.tenantId,
+              serviceId,
+              url: target,
+              kind: 'primary',
+              showInPublicGallery: true,
+            },
+          });
+      await tx.barberService.update({
+        where: { id: serviceId },
+        data: { primaryImageUrl: target },
+      });
+
+      return this.toAssetDto(asset);
+    });
+  }
+
   async deleteAsset(ctx: TenantContext, serviceId: string, assetId: string) {
     await this.assertService(ctx, serviceId);
     const existing = await this.prisma.barberServiceAsset.findUnique({

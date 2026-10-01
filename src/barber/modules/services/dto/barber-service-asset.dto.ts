@@ -119,3 +119,9 @@ export class UpdateBarberServiceAssetDto {
   @Min(0)
   sortOrder?: number;
 }
+
+/** Body de PATCH /barber/services/:serviceId/assets/primary. */
+export class SetPrimaryBarberServicePhotoDto {
+  @IsUrl({ require_tld: false })
+  url!: string;
+}

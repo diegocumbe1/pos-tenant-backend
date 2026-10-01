@@ -714,6 +714,7 @@ export class PublicSiteService {
         const primaryImageUrl =
           service.primaryImageUrl ??
           primaryFromAssets ??
+          galleryUrls[0] ??
           service.imageUrls[0] ??
           null;
 

@@ -28,6 +28,7 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberServiceAssetsService } from './barber-service-assets.service';
 import {
   CreateBarberServiceAssetDto,
+  SetPrimaryBarberServicePhotoDto,
   UpdateBarberServiceAssetDto,
   UploadBarberServiceAssetDto,
 } from './dto/barber-service-asset.dto';
@@ -64,6 +65,17 @@ export class BarberServiceAssetsController {
     @UploadedFile() file?: UploadedImageFile,
   ) {
     return this.assetsService.uploadAsset(ctx, serviceId, dto, file);
+  }
+
+  // Antes de `:assetId`: si no, Nest toma "primary" como un id.
+  @Patch('primary')
+  @RequirePermissions('barber:services:write')
+  setPrimary(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('serviceId') serviceId: string,
+    @Body() dto: SetPrimaryBarberServicePhotoDto,
+  ) {
+    return this.assetsService.setPrimaryPhoto(ctx, serviceId, dto.url);
   }
 
   @Patch(':assetId')
