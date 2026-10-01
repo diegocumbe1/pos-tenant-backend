@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -74,6 +75,17 @@ export class BarberServiceAssetsController {
     @Body() dto: UpdateBarberServiceAssetDto,
   ) {
     return this.assetsService.updateAsset(ctx, serviceId, assetId, dto);
+  }
+
+  /** Borra una foto por URL de todos lados (assets, imageUrls, portada). */
+  @Delete()
+  @RequirePermissions('barber:services:write')
+  removePhoto(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('serviceId') serviceId: string,
+    @Query('url') url: string,
+  ) {
+    return this.assetsService.removePhoto(ctx, serviceId, url);
   }
 
   @Delete(':assetId')
