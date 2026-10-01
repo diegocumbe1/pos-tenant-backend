@@ -388,7 +388,8 @@ export class BarberAppointmentsService {
    * SOLO CUENTAN LOS SERVICIOS REALIZADOS. Canceladas, rechazadas, no-show y
    * pendientes no suman: un no-show no es un servicio prestado.
    */
-  private async syncCustomerVisits(
+  // Público: el borrado de un servicio con su historial también se lleva citas.
+  async syncCustomerVisits(
     tx: Prisma.TransactionClient,
     customerId: string,
   ) {

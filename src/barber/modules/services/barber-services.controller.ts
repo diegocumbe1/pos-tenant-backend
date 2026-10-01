@@ -56,6 +56,22 @@ export class BarberServicesController {
     return this.servicesService.updateService(ctx, id, dto);
   }
 
+  @Get(':id/appointments')
+  @RequirePermissions('barber:services:read', 'barber:appointments:read')
+  appointments(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.servicesService.listServiceAppointments(ctx, id);
+  }
+
+  // Borra también las citas: exige poder escribir en ambos módulos.
+  @Delete(':id/with-appointments')
+  @RequirePermissions('barber:services:write', 'barber:appointments:write')
+  removeWithAppointments(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.servicesService.deleteServiceWithAppointments(ctx, id);
+  }
+
   @Delete(':id')
   @RequirePermissions('barber:services:write')
   remove(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {

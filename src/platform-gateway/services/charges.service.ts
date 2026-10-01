@@ -18,8 +18,45 @@ import {
   readTransaction,
 } from '../event-checksum';
 import { CreateChargeDto } from '../dto/platform-gateway.dto';
+import { FeeMethod, quoteFee } from '../fee-calculator';
+import { FeeRatesService } from './fee-rates.service';
 import { GatewaySettingsService } from './gateway-settings.service';
 import { WompiClient } from './wompi.client';
+
+/**
+ * Traduce el medio que reporta Wompi al vocabulario de tarifas. Todo lo que
+ * cobramos por checkout es tarjeta EN LÍNEA: el datáfono no pasa por aquí, se
+ * registra a mano, pero la tarifa existe para poder simularlo.
+ */
+function toFeeMethod(paymentMethodType: string | null): FeeMethod {
+  switch (paymentMethodType) {
+    case 'CARD':
+      return 'CARD_ONLINE';
+    case 'PSE':
+      return 'PSE';
+    case 'NEQUI':
+    case 'DAVIPLATA':
+    case 'BANCOLOMBIA_TRANSFER':
+    case 'BANCOLOMBIA_QR':
+      return 'NEQUI';
+    default:
+      // Ante la duda, la tarifa más cara: preferible sobreestimar el costo que
+      // creer que un cobro dejó más de lo que dejó.
+      return 'CARD_ONLINE';
+  }
+}
+
+/** Suma días hábiles (lun–vie). No contempla festivos colombianos. */
+function addBusinessDays(from: Date, days: number): Date {
+  const result = new Date(from);
+  let remaining = days;
+  while (remaining > 0) {
+    result.setDate(result.getDate() + 1);
+    const day = result.getDay();
+    if (day !== 0 && day !== 6) remaining -= 1;
+  }
+  return result;
+}
 
 /** Quién queda como autor del pago cuando lo registra la pasarela y no una persona. */
 const WEBHOOK_ACTOR = 'wompi-webhook';
@@ -53,6 +90,7 @@ export class ChargesService {
     private readonly settings: GatewaySettingsService,
     private readonly platform: PlatformService,
     private readonly pricing: PlanPricingService,
+    private readonly rates: FeeRatesService,
   ) {}
 
   // ─── Cobros ─────────────────────────────────────────────────────────────────
@@ -385,7 +423,12 @@ export class ChargesService {
     }
 
     const paidAt = tx.finalizedAt ? new Date(tx.finalizedAt) : new Date();
-    const fee = await this.gatewayFee(charge.amount);
+
+    // El costo depende del medio con el que pagaron: un datáfono no cuesta lo
+    // mismo que el link. Se resuelve con la tarifa vigente A LA FECHA del pago.
+    const feeMethod = toFeeMethod(tx.paymentMethodType);
+    const rate = await this.rates.rateAt(feeMethod, paidAt);
+    const quote = quoteFee({ amountCOP: charge.amount, rate });
 
     const payment = await this.platform.createPayment(
       charge.tenantId,
@@ -413,21 +456,25 @@ export class ChargesService {
         statusDetail: null,
         paidAt,
         paymentMethodType: tx.paymentMethodType,
-        gatewayFee: fee,
-        netSettled: charge.amount - fee,
+        feeMethod,
+        gatewayFee: quote.totalCost,
+        withheld: quote.totalWithheld,
+        netSettled: quote.deposited,
+        expectedSettlementAt: addBusinessDays(paidAt, rate.settlementDays),
         paymentId: payment.id,
       },
     });
 
-    // La comisión NO es un descuento: es plata que salió. Sin este gasto la
-    // utilidad del backoffice queda inflada ~3,5%. Ver §4 del plan.
-    if (fee > 0) {
+    // Solo la COMISIÓN se registra como gasto. Las retenciones bajan el
+    // depósito pero son anticipo de impuestos: se cruzan en la declaración, así
+    // que meterlas aquí haría ver la pasarela el doble de cara. Ver §4 del plan.
+    if (quote.totalCost > 0) {
       await this.prisma.platformExpense.create({
         data: {
           category: 'fees',
           concept: `Comisión pasarela · ${charge.reference}`,
           vendor: 'Wompi',
-          amount: fee,
+          amount: quote.totalCost,
           currency: 'COP',
           kind: 'one_time',
           incurredAt: paidAt,
@@ -442,13 +489,6 @@ export class ChargesService {
       detail: `Pago registrado por ${charge.amount} COP`,
       chargeId: charge.id,
     };
-  }
-
-  /** Comisión con la tarifa configurada: (monto × % + fijo) × (1 + IVA). */
-  private async gatewayFee(amountCOP: number): Promise<number> {
-    const row = await this.settings.get();
-    const base = (amountCOP * row.feePercentBps) / 10_000 + row.feeFixedCOP;
-    return Math.round(base * (1 + row.feeTaxBps / 10_000));
   }
 
   private async loadCharge(id: string): Promise<SubscriptionCharge> {

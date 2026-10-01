@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import { BarberAppointmentsService } from '../appointments/barber-appointments.service';
 import {
   CreateBarberServiceDto,
   UpdateBarberServiceDto,
@@ -19,6 +20,7 @@ export class BarberServicesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantHelper: BarberTenantHelper,
+    private readonly appointments: BarberAppointmentsService,
   ) {}
 
   async listServices(ctx: TenantContext) {
@@ -119,11 +121,81 @@ export class BarberServicesService {
       id,
       'Service',
     );
-    await this.prisma.barberService.update({
-      where: { id },
-      data: { isActive: false },
+    // Las citas referencian el servicio sin cascade: si tiene historial, borrarlo
+    // rompería la agenda y las finanzas pasadas, así que solo se archiva. Sin
+    // citas se borra de verdad (assets y asignaciones a staff caen por cascade).
+    const appointments = await this.prisma.barberAppointment.count({
+      where: { serviceId: id },
     });
-    return { ok: true };
+    if (appointments > 0) {
+      await this.prisma.barberService.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return { ok: true, deleted: false, archived: true, appointments };
+    }
+    await this.prisma.barberService.delete({ where: { id } });
+    return { ok: true, deleted: true, archived: false, appointments: 0 };
+  }
+
+  // Las citas que impiden borrar el servicio, para que el admin decida con el
+  // historial a la vista y no a ciegas.
+  async listServiceAppointments(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      id,
+      'Service',
+    );
+    const rows = await this.prisma.barberAppointment.findMany({
+      where: { serviceId: id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      include: {
+        customer: { select: { id: true, name: true, phone: true } },
+        staff: { select: { id: true, name: true } },
+      },
+      orderBy: { scheduledAt: 'desc' },
+    });
+    return rows.map((a) => ({
+      id: a.id,
+      scheduledAt: a.scheduledAt,
+      servedAt: a.servedAt,
+      status: a.status,
+      priceCOP: a.priceCOP,
+      notes: a.notes,
+      customer: a.customer,
+      staff: a.staff,
+    }));
+  }
+
+  /**
+   * Borra el servicio CON sus citas. Es para limpiar pruebas o errores: se va
+   * el ingreso de esas citas y sus eventos (cascade). Las visitas de cada
+   * cliente afectado se recalculan para que no queden contadores fantasma.
+   */
+  async deleteServiceWithAppointments(ctx: TenantContext, id: string) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      id,
+      'Service',
+    );
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.barberAppointment.findMany({
+        where: { serviceId: id },
+        select: { customerId: true },
+      });
+      await tx.barberAppointment.deleteMany({ where: { serviceId: id } });
+      for (const customerId of new Set(rows.map((r) => r.customerId))) {
+        await this.appointments.syncCustomerVisits(tx, customerId);
+      }
+      await tx.barberService.delete({ where: { id } });
+      return {
+        ok: true,
+        deleted: true,
+        archived: false,
+        appointments: rows.length,
+      };
+    });
   }
 
   private toServiceDto(service: ServiceWithAssets) {
