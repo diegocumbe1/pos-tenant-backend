@@ -1,5 +1,5 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { ExpenseFrequency } from '@prisma/client';
+import { ExpenseFrequency, ExpenseNature } from '@prisma/client';
 import {
   IsBoolean,
   IsEnum,
@@ -49,6 +49,23 @@ export class CreateExpenseDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  /**
+   * Fijo / variable / ocasional. Omitirlo = la de su categoría. Se manda
+   * explícito solo cuando el dueño la cambia.
+   */
+  @IsOptional()
+  @IsEnum(ExpenseNature)
+  nature?: ExpenseNature;
+
+  /**
+   * Descuento recibido sobre el valor normal. `amountCOP` es lo PAGADO (puede
+   * ser 0 si el descuento fue del 100%); esto solo deja ver el ahorro.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountCOP?: number;
 }
 
 export class UpdateExpenseDto extends PartialType(CreateExpenseDto) {}

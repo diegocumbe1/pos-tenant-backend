@@ -210,3 +210,32 @@ export class ResolveRetailPurchaseVarianceDto {
   @MaxLength(300)
   note?: string;
 }
+
+/**
+ * El descuento que dio el proveedor en el pedido. Es un valor ABSOLUTO, no un
+ * delta: poner 0 lo quita. El backend escribe en el libro solo la diferencia.
+ */
+export class SetPurchaseDiscountDto {
+  @ApiProperty({ example: 139700 })
+  @IsInt()
+  @Min(0)
+  amountCOP!: number;
+
+  @ApiPropertyOptional({ example: '10% por pago de contado' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}
+
+/** Marca que el pedido no generó gasto (obsequio, muestra, $0). */
+export class SkipPurchaseExpenseDto {
+  @ApiPropertyOptional({ example: 'Obsequio del proveedor' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}
+
+/** "El proveedor obsequió lo que llegó de más." Nota opcional. */
+export class GiftPurchaseOverageDto extends SkipPurchaseExpenseDto {}

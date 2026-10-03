@@ -4,11 +4,18 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { ExpenseFrequency, PayFrequency, Prisma } from '@prisma/client';
+import {
+  CapitalMovementKind,
+  ExpenseFrequency,
+  PayFrequency,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { COMPLETED_STATUS_VARIANTS } from '../barber/shared/appointment-status';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { accumulateBuckets } from './expense-buckets';
+import { ExpenseRow, toExpenseDto } from './expense-dto';
+import { resolveNature } from './expense-nature';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
 import { PayrollQueryDto } from './dto/payroll-query.dto';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
@@ -33,7 +40,7 @@ interface Range {
   label: Period;
 }
 
-type FinanceVertical = 'restaurant' | 'barber' | 'retail' | 'unknown';
+export type FinanceVertical = 'restaurant' | 'barber' | 'retail' | 'unknown';
 type DashboardSplit = Prisma.PaymentSplitGetPayload<{
   include: {
     items: true;
@@ -84,6 +91,48 @@ type DashboardRetailSale = Prisma.RetailSaleGetPayload<{
 type DashboardRetailPayment = Prisma.RetailSalePaymentGetPayload<{
   include: { sale: { include: { items: true } } };
 }>;
+/**
+ * Gastos que son la MERCANCÍA misma: cuando hay costo de lo vendido, se
+ * reemplazan por él. El flete de compra (INVENTORY_SHIPPING) no está aquí a
+ * propósito: el costo unitario no lo incluye, así que se resta como gasto.
+ */
+const GOODS_PURCHASE_CATEGORIES = ['INVENTORY_PURCHASE', 'KITCHEN'];
+
+/** Un movimiento de plata del negocio, para el flujo de caja. */
+export interface CashMovement {
+  at: Date;
+  direction: 'IN' | 'OUT';
+  /**
+   * Categoría de gasto, o SALES / SALES_REFUND / RETURN_CHARGE, o la de un
+   * movimiento de capital (CAPITAL_CONTRIBUTION, LOAN_IN, PROFIT_WITHDRAWAL,
+   * CAPITAL_RETURN, LOAN_REPAYMENT).
+   */
+  category: string;
+  /** De qué lado viene: operación del negocio o plata del dueño/préstamos. */
+  origin: 'SALES' | 'EXPENSE' | 'CAPITAL';
+  amountCOP: number;
+  /** id del gasto o del movimiento de capital (para vincular aportes a gastos). */
+  refId?: string;
+  /** Concepto del gasto, para mostrarlo por nombre y no por fecha. */
+  label?: string;
+  /** Medio con que se cobró (solo cobros de tienda): CASH, TRANSFER, CARD… */
+  method?: string;
+}
+
+/** Cómo entra a la caja cada tipo de movimiento de capital. */
+const CAPITAL_CASH: Record<
+  CapitalMovementKind,
+  { direction: 'IN' | 'OUT'; category: string }
+> = {
+  INITIAL_CONTRIBUTION: { direction: 'IN', category: 'CAPITAL_CONTRIBUTION' },
+  CONTRIBUTION: { direction: 'IN', category: 'CAPITAL_CONTRIBUTION' },
+  LOAN_IN: { direction: 'IN', category: 'LOAN_IN' },
+  PROFIT_WITHDRAWAL: { direction: 'OUT', category: 'PROFIT_WITHDRAWAL' },
+  CAPITAL_RETURN: { direction: 'OUT', category: 'CAPITAL_RETURN' },
+  LOAN_REPAYMENT: { direction: 'OUT', category: 'LOAN_REPAYMENT' },
+  OWNER_WITHDRAWAL: { direction: 'OUT', category: 'OWNER_WITHDRAWAL' },
+};
+
 type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
   include: { service: { select: { priceCOP: true } } };
 }>;
@@ -279,7 +328,26 @@ export class FinanceService {
     const grossProfitCOP = revenue - cogsCOP;
     const grossMarginPct =
       revenue > 0 ? Math.round((grossProfitCOP / revenue) * 1000) / 10 : 0;
-    const netProfitCOP = revenue - cogsCOP - expensesTotal;
+    // LA MERCANCÍA NO SE RESTA DOS VECES. Las compras de inventario son gasto
+    // (salió la plata) y el costo de lo vendido es esa misma mercancía cuando
+    // se vende. Con COGS, manda el COGS y las compras salen de la resta; sin
+    // COGS (negocio sin costos cargados) se usan las compras, que es lo único
+    // que hay. Es la misma regla de `dashboardToProfitability` en el frontend:
+    // antes solo la pantalla la aplicaba y este campo restaba las dos.
+    //
+    // EL FLETE DE COMPRA NO SE VA CON LAS COMPRAS. El costo unitario del kardex
+    // es el precio de compra, SIN flete; si el COGS reemplazaba todo el grupo
+    // de insumos, el flete no restaba en ninguna parte (en Bella Chic eran
+    // $215.300 que no aparecían en la utilidad). Con COGS solo se reemplazan
+    // las compras; el flete se resta como gasto.
+    const suppliesCOP = accumulateBuckets(expensesByCategory).suppliesCOP;
+    const purchasesOnlyCOP = expensesByCategory
+      .filter((row) => GOODS_PURCHASE_CATEGORIES.includes(row.category))
+      .reduce((acc, row) => acc + row.amountCOP, 0);
+    const replacedByCogsCOP = cogsCOP > 0 ? purchasesOnlyCOP : suppliesCOP;
+    const goodsCostCOP = cogsCOP > 0 ? cogsCOP : suppliesCOP;
+    const netProfitCOP =
+      revenue - goodsCostCOP - (expensesTotal - replacedByCogsCOP);
     const netMarginPct =
       revenue > 0 ? Math.round((netProfitCOP / revenue) * 1000) / 10 : 0;
     const coverageBase = cogs.knownRevenueCOP + cogs.unknownRevenueCOP;
@@ -359,7 +427,10 @@ export class FinanceService {
     const rankedProducts = [...productMap.entries()]
       .map(([id, v]) => ({ id, ...v }))
       .sort((a, b) => b.revenue - a.revenue);
-    const topProductsByRevenue = rankedProducts.slice(0, query.topProducts ?? 10);
+    const topProductsByRevenue = rankedProducts.slice(
+      0,
+      query.topProducts ?? 10,
+    );
     const productsCount = rankedProducts.length;
     const itemsSoldCount = rankedProducts.reduce(
       (sum, p) => sum + p.quantity,
@@ -736,6 +807,393 @@ export class FinanceService {
     };
   }
 
+  /**
+   * Flujo de caja REAL: plata que entró y salió, con el saldo acumulado.
+   *
+   * ANTES el frontend armaba esto con dos filas sacadas del dashboard y una
+   * apertura FIJA de $5.000.000 que era un valor de prueba: a clientes reales se
+   * les mostraba un saldo inventado. Aquí la apertura es lo acumulado desde el
+   * primer movimiento del negocio hasta el inicio del período.
+   *
+   * BASE CAJA, NO BASE VENTA. Cuenta el día en que la plata se movió:
+   * - Tienda: cada abono por `settledAt` (lo financiado entra cuando gira la
+   *   financiera), BRUTO y CON flete — eso es lo que entró. La comisión de la
+   *   financiera ya está como gasto (`FINANCING_FEE`) y sale por ese lado.
+   * - Devoluciones: lo que se le devolvió al cliente sale; lo que pagó de
+   *   diferencia entra.
+   * - Gastos: todos, incluida la compra de inventario — es plata que salió,
+   *   aunque para la utilidad cuente recién cuando se vende.
+   *
+   * - Capital: aportes y préstamos entran; retiros y abonos a préstamos salen.
+   *   Un aporte EN MERCANCÍA no pasa por la caja.
+   *
+   * Sin aportes registrados el saldo puede salir negativo (el dueño puso plata
+   * que Lynko no sabe). Se avisa con `hasCapitalTracking: false`.
+   */
+  async cashflow(ctx: TenantContext, query: PeriodQueryDto) {
+    const range = this.resolveRange(query);
+    const vertical = await this.resolveTenantVertical(ctx);
+
+    const [before, during, capitalCount] = await Promise.all([
+      this.cashMovements(ctx, vertical, null, range.from),
+      this.cashMovements(ctx, vertical, range.from, range.to),
+      this.prisma.capitalMovement.count({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          deletedAt: null,
+        },
+      }),
+    ]);
+
+    const sum = (rows: CashMovement[], direction: 'IN' | 'OUT') =>
+      rows
+        .filter((row) => row.direction === direction)
+        .reduce((acc, row) => acc + row.amountCOP, 0);
+
+    const openingBalanceCOP = sum(before, 'IN') - sum(before, 'OUT');
+    const inflowCOP = sum(during, 'IN');
+    const outflowCOP = sum(during, 'OUT');
+
+    // Serie diaria en hora Colombia, con el saldo que iba quedando.
+    // Las entradas se separan: VENTAS es ingreso; APORTES y PRÉSTAMOS no — es
+    // plata que se puso (para comprar mercancía, casi siempre). Sumarlas en un
+    // solo "Entradas" hacía ver los préstamos como si fueran ventas extra.
+    const byDay = new Map<
+      string,
+      {
+        inflowCOP: number;
+        outflowCOP: number;
+        salesCOP: number;
+        financingCOP: number;
+      }
+    >();
+    for (const row of during) {
+      const key = calendarDayCO(row.at);
+      const entry = byDay.get(key) ?? {
+        inflowCOP: 0,
+        outflowCOP: 0,
+        salesCOP: 0,
+        financingCOP: 0,
+      };
+      if (row.direction === 'IN') {
+        entry.inflowCOP += row.amountCOP;
+        if (row.origin === 'CAPITAL') entry.financingCOP += row.amountCOP;
+        else entry.salesCOP += row.amountCOP;
+      } else entry.outflowCOP += row.amountCOP;
+      byDay.set(key, entry);
+    }
+    const sumWhere = (pred: (r: CashMovement) => boolean) =>
+      during.filter(pred).reduce((acc, r) => acc + r.amountCOP, 0);
+    const salesByMethod = new Map<string, number>();
+    for (const row of during) {
+      if (row.origin !== 'SALES' || row.direction !== 'IN') continue;
+      const key = row.method ?? 'UNKNOWN';
+      salesByMethod.set(key, (salesByMethod.get(key) ?? 0) + row.amountCOP);
+    }
+    let running = openingBalanceCOP;
+    const days = [...byDay.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, entry]) => {
+        running += entry.inflowCOP - entry.outflowCOP;
+        return { date, ...entry, balanceCOP: running };
+      });
+
+    const group = (direction: 'IN' | 'OUT') => {
+      const map = new Map<string, number>();
+      for (const row of during) {
+        if (row.direction !== direction) continue;
+        map.set(row.category, (map.get(row.category) ?? 0) + row.amountCOP);
+      }
+      return [...map.entries()]
+        .map(([category, amountCOP]) => ({ category, amountCOP }))
+        .sort((a, b) => b.amountCOP - a.amountCOP);
+    };
+
+    const all = [...before, ...during];
+    const firstMovementAt = all.length
+      ? all.reduce((min, row) => (row.at < min ? row.at : min), all[0].at)
+      : null;
+
+    return {
+      period: range.label,
+      dateFrom: range.from.toISOString(),
+      dateTo: range.to.toISOString(),
+      /** Saldo acumulado desde el primer movimiento hasta el inicio del período. */
+      openingBalanceCOP,
+      inflowCOP,
+      outflowCOP,
+      /** Ingresos: ventas cobradas (y diferencias cobradas en cambios). */
+      salesInflowCOP: sumWhere(
+        (r) => r.direction === 'IN' && r.origin === 'SALES',
+      ),
+      /** NO es ingreso: aportes del dueño y préstamos que entraron. */
+      financingInflowCOP: sumWhere(
+        (r) => r.direction === 'IN' && r.origin === 'CAPITAL',
+      ),
+      /** Gastos del negocio y devoluciones a clientes. */
+      operatingOutflowCOP: sumWhere(
+        (r) => r.direction === 'OUT' && r.origin !== 'CAPITAL',
+      ),
+      /** Retiros del dueño y abonos a préstamos: no son gasto. */
+      ownerOutflowCOP: sumWhere(
+        (r) => r.direction === 'OUT' && r.origin === 'CAPITAL',
+      ),
+      /** Ventas cobradas por medio de pago (solo tienda lo registra). */
+      salesByMethod: [...salesByMethod.entries()]
+        .map(([method, amountCOP]) => ({ method, amountCOP }))
+        .sort((a, b) => b.amountCOP - a.amountCOP),
+      netFlowCOP: inflowCOP - outflowCOP,
+      /**
+       * De qué está hecha la apertura: todo lo acumulado antes del período,
+       * separado igual que las tarjetas. Es lo que explica el número.
+       */
+      openingBreakdown: {
+        salesCOP: before
+          .filter((r) => r.direction === 'IN' && r.origin === 'SALES')
+          .reduce((a, r) => a + r.amountCOP, 0),
+        financingCOP: before
+          .filter((r) => r.direction === 'IN' && r.origin === 'CAPITAL')
+          .reduce((a, r) => a + r.amountCOP, 0),
+        operatingOutCOP: before
+          .filter((r) => r.direction === 'OUT' && r.origin !== 'CAPITAL')
+          .reduce((a, r) => a + r.amountCOP, 0),
+        ownerOutCOP: before
+          .filter((r) => r.direction === 'OUT' && r.origin === 'CAPITAL')
+          .reduce((a, r) => a + r.amountCOP, 0),
+      },
+      /** Cada aporte o préstamo que entró en el período, con su nota. */
+      financingItems: during
+        .filter((r) => r.direction === 'IN' && r.origin === 'CAPITAL')
+        .sort((a, b) => a.at.getTime() - b.at.getTime())
+        .map((r) => ({
+          date: calendarDayCO(r.at),
+          category: r.category,
+          amountCOP: r.amountCOP,
+          note: r.label ?? null,
+          fundingSource: r.method ?? null,
+        })),
+      /** Cada retiro o abono del período (no son gasto). */
+      ownerOutItems: during
+        .filter((r) => r.direction === 'OUT' && r.origin === 'CAPITAL')
+        .sort((a, b) => a.at.getTime() - b.at.getTime())
+        .map((r) => ({
+          date: calendarDayCO(r.at),
+          category: r.category,
+          amountCOP: r.amountCOP,
+          note: r.label ?? null,
+        })),
+      closingBalanceCOP: openingBalanceCOP + inflowCOP - outflowCOP,
+      inflowsByCategory: group('IN'),
+      outflowsByCategory: group('OUT'),
+      days,
+      firstMovementAt: firstMovementAt ? firstMovementAt.toISOString() : null,
+      /**
+       * false = el negocio no ha registrado ningún aporte ni retiro. El saldo
+       * es "lo que dejaron las ventas menos lo que se pagó", no el de la cuenta.
+       */
+      hasCapitalTracking: capitalCount > 0,
+    };
+  }
+
+  /**
+   * Cada movimiento de plata del negocio en un rango (`from` null = desde el
+   * principio). Una fila por cobro, devolución liquidada, gasto o movimiento de
+   * capital.
+   *
+   * Se piden filas y no agregados porque la serie diaria necesita la fecha de
+   * cada una; el volumen es el de los abonos y gastos de una sede, que es chico.
+   *
+   * Pública porque la pestaña Inversión hace la cascada sobre estas mismas
+   * filas: si cada una armara las suyas, la caja de las dos pantallas no
+   * cuadraría.
+   */
+  async cashMovements(
+    ctx: TenantContext,
+    vertical: FinanceVertical,
+    from: Date | null,
+    to: Date,
+  ): Promise<CashMovement[]> {
+    const includeRestaurant =
+      vertical === 'restaurant' || vertical === 'unknown';
+    const includeBarber = vertical === 'barber' || vertical === 'unknown';
+    const includeRetail = vertical === 'retail' || vertical === 'unknown';
+    // `to` es exclusivo cuando calcula la apertura (hasta el inicio del
+    // período) e inclusivo dentro del período, igual que el dashboard.
+    const window = from ? { gte: from, lte: to } : { lt: to };
+
+    const [splits, appointments, payments, returns, expenses, capital] =
+      await Promise.all([
+        includeRestaurant
+          ? this.prisma.paymentSplit.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                order: { branchId: ctx.branchId },
+                paidAt: window,
+              },
+              select: { paidAt: true, totalCOP: true },
+            })
+          : Promise.resolve([]),
+        includeBarber
+          ? this.prisma.barberAppointment.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                status: { in: COMPLETED_STATUS_VARIANTS },
+                scheduledAt: window,
+              },
+              select: {
+                scheduledAt: true,
+                priceCOP: true,
+                service: { select: { priceCOP: true } },
+              },
+            })
+          : Promise.resolve([]),
+        includeRetail
+          ? this.prisma.retailSalePayment.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                voidedAt: null,
+                settledAt: window,
+                sale: { status: { not: 'VOIDED' } },
+              },
+              select: { settledAt: true, amountCOP: true, method: true },
+            })
+          : Promise.resolve([]),
+        includeRetail
+          ? this.prisma.retailSaleReturn.findMany({
+              where: {
+                tenantId: ctx.tenantId,
+                branchId: ctx.branchId,
+                voidedAt: null,
+                returnedAt: window,
+                settlement: { in: ['REFUNDED', 'CHARGED'] },
+              },
+              select: { returnedAt: true, balanceCOP: true, settlement: true },
+            })
+          : Promise.resolve([]),
+        this.prisma.expense.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            incurredAt: window,
+          },
+          select: {
+            id: true,
+            incurredAt: true,
+            amountCOP: true,
+            category: true,
+            concept: true,
+          },
+        }),
+        this.prisma.capitalMovement.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            deletedAt: null,
+            // La mercancía con la que se arrancó es capital, pero no plata.
+            inKind: false,
+            occurredAt: window,
+          },
+          select: {
+            id: true,
+            occurredAt: true,
+            amountCOP: true,
+            kind: true,
+            paidFromBusiness: true,
+            fundingSource: true,
+            fundingNote: true,
+            note: true,
+          },
+        }),
+      ]);
+
+    const rows: CashMovement[] = [];
+    for (const split of splits) {
+      rows.push({
+        at: split.paidAt,
+        direction: 'IN',
+        category: 'SALES',
+        origin: 'SALES',
+        amountCOP: split.totalCOP,
+      });
+    }
+    for (const appt of appointments) {
+      rows.push({
+        at: appt.scheduledAt,
+        direction: 'IN',
+        category: 'SALES',
+        origin: 'SALES',
+        amountCOP: appt.priceCOP ?? appt.service?.priceCOP ?? 0,
+      });
+    }
+    for (const payment of payments) {
+      if (!payment.settledAt) continue;
+      rows.push({
+        at: payment.settledAt,
+        direction: 'IN',
+        category: 'SALES',
+        origin: 'SALES',
+        amountCOP: payment.amountCOP,
+        method: payment.method,
+      });
+    }
+    for (const ret of returns) {
+      const amount = Math.abs(ret.balanceCOP);
+      if (amount === 0) continue;
+      rows.push(
+        ret.settlement === 'REFUNDED'
+          ? {
+              at: ret.returnedAt,
+              direction: 'OUT',
+              category: 'SALES_REFUND',
+              origin: 'SALES',
+              amountCOP: amount,
+            }
+          : {
+              at: ret.returnedAt,
+              direction: 'IN',
+              category: 'RETURN_CHARGE',
+              origin: 'SALES',
+              amountCOP: amount,
+            },
+      );
+    }
+    for (const expense of expenses) {
+      rows.push({
+        at: expense.incurredAt,
+        direction: 'OUT',
+        category: expense.category,
+        origin: 'EXPENSE',
+        amountCOP: expense.amountCOP,
+        refId: expense.id,
+        label: expense.concept,
+      });
+    }
+    for (const movement of capital) {
+      // Un abono pagado del bolsillo del dueño baja la deuda, no la caja.
+      if (
+        movement.kind === 'LOAN_REPAYMENT' &&
+        movement.paidFromBusiness === false
+      ) {
+        continue;
+      }
+      const cash = CAPITAL_CASH[movement.kind];
+      rows.push({
+        at: movement.occurredAt,
+        direction: cash.direction,
+        category: cash.category,
+        origin: 'CAPITAL',
+        amountCOP: movement.amountCOP,
+        refId: movement.id,
+        label: movement.fundingNote ?? movement.note ?? undefined,
+        method: movement.fundingSource ?? undefined,
+      });
+    }
+    return rows.filter((row) => row.amountCOP > 0);
+  }
+
   /** Gasto agrupado por categoría en un rango. Espeja `expenses()`. */
   private async expenseBreakdown(ctx: TenantContext, from: Date, to: Date) {
     const rows = await this.prisma.expense.groupBy({
@@ -767,6 +1225,9 @@ export class FinanceService {
     });
 
     const byCategory = new Map<string, number>();
+    // Fijo / variable / ocasional: con esto se arma la reserva de operación y
+    // se ve qué parte del gasto no depende de vender.
+    const byNature = { FIXED: 0, VARIABLE: 0, OCCASIONAL: 0 };
     let total = 0;
     for (const e of rows) {
       total += e.amountCOP;
@@ -774,6 +1235,7 @@ export class FinanceService {
         e.category,
         (byCategory.get(e.category) ?? 0) + e.amountCOP,
       );
+      byNature[resolveNature(e.category, e.nature)] += e.amountCOP;
     }
 
     return {
@@ -782,6 +1244,7 @@ export class FinanceService {
         category,
         amountCOP: amount,
       })),
+      byNature,
       expenses: rows.map((e) => this.toExpenseDto(e)),
       period: range.label,
       dateFrom: range.from.toISOString(),
@@ -1052,6 +1515,11 @@ export class FinanceService {
     return agg._sum.amountCOP ?? 0;
   }
 
+  /** La vertical del negocio, para quien arma cálculos sobre `cashMovements`. */
+  tenantVertical(ctx: TenantContext): Promise<FinanceVertical> {
+    return this.resolveTenantVertical(ctx);
+  }
+
   private async resolveTenantVertical(
     ctx: TenantContext,
   ): Promise<FinanceVertical> {
@@ -1103,6 +1571,8 @@ export class FinanceService {
         isRecurring: dto.isRecurring ?? false,
         dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
         note: dto.note ?? null,
+        nature: dto.nature ?? null,
+        discountCOP: dto.discountCOP || null,
       },
     });
     return this.toExpenseDto(expense);
@@ -1127,6 +1597,9 @@ export class FinanceService {
               : null
             : undefined,
         note: dto.note,
+        nature: dto.nature,
+        discountCOP:
+          dto.discountCOP !== undefined ? dto.discountCOP || null : undefined,
       },
     });
     return this.toExpenseDto(expense);
@@ -1305,28 +1778,8 @@ export class FinanceService {
     return err;
   }
 
-  private toExpenseDto(e: {
-    id: string;
-    category: string;
-    concept: string;
-    amountCOP: number;
-    incurredAt: Date;
-    frequency: ExpenseFrequency;
-    isRecurring: boolean;
-    dueDate: Date | null;
-    note: string | null;
-  }) {
-    return {
-      id: e.id,
-      category: e.category,
-      concept: e.concept,
-      amountCOP: e.amountCOP,
-      incurredAt: e.incurredAt.getTime(),
-      frequency: e.frequency,
-      isRecurring: e.isRecurring,
-      dueDate: e.dueDate ? e.dueDate.getTime() : null,
-      note: e.note,
-    };
+  private toExpenseDto(e: ExpenseRow) {
+    return toExpenseDto(e);
   }
 
   private toPayrollDto(r: {

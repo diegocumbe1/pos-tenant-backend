@@ -24,7 +24,10 @@ import {
   LinkPurchaseExpenseDto,
   CloseRetailPurchaseItemDto,
   ReceiveRetailPurchaseItemDto,
+  GiftPurchaseOverageDto,
   ResolveRetailPurchaseVarianceDto,
+  SetPurchaseDiscountDto,
+  SkipPurchaseExpenseDto,
   UpdateRetailPurchaseItemDto,
 } from './dto/retail-purchases.dto';
 
@@ -107,6 +110,45 @@ export class RetailPurchasesController {
     @Param('expenseId') expenseId: string,
   ) {
     return this.purchases.unlinkExpense(ctx, id, expenseId);
+  }
+
+  /** Descuento del proveedor en el pedido. Baja el saldo sin ser gasto. */
+  @Post(':id/discount')
+  @RequirePermissions('retail:inventory:write')
+  setDiscount(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: SetPurchaseDiscountDto,
+  ) {
+    return this.purchases.setDiscount(ctx, id, dto);
+  }
+
+  /** Lo que llegó de más fue regalo: anula la deuda del sobrante. */
+  @Post(':id/overage-gift')
+  @RequirePermissions('retail:inventory:write')
+  giftOverage(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: GiftPurchaseOverageDto,
+  ) {
+    return this.purchases.giftOverage(ctx, id, dto.note);
+  }
+
+  /** "Este pedido no generó gasto": apaga la alerta sin inventar un gasto. */
+  @Post(':id/expense-skip')
+  @RequirePermissions('retail:inventory:write')
+  skipExpense(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: SkipPurchaseExpenseDto,
+  ) {
+    return this.purchases.setExpenseSkipped(ctx, id, true, dto.note);
+  }
+
+  @Delete(':id/expense-skip')
+  @RequirePermissions('retail:inventory:write')
+  unskipExpense(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.purchases.setExpenseSkipped(ctx, id, false);
   }
 
   @Post(':id/ordered')

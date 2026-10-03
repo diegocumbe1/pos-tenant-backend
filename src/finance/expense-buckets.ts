@@ -25,6 +25,9 @@ const BUCKET_BY_CATEGORY: Record<string, ExpenseBucket> = {
   // así que no va al bucket de insumos aunque se llame parecido al de arriba.
   SALES_SHIPPING: 'other',
   PAYROLL: 'payroll',
+  // Sueldo del dueño: es nómina, y por eso entra a costos fijos y al punto de
+  // equilibrio. Un negocio que solo "gana" porque el dueño no se paga, no gana.
+  OWNER_SALARY: 'payroll',
   RENT: 'rent',
   UTILITIES: 'utilities',
   PLATFORM: 'other',

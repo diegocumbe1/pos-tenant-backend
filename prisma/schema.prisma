@@ -34,51 +34,53 @@ model Tenant {
   updatedAt            DateTime              @updatedAt
   deletedAt            DateTime?
 
-  users                User[]
-  branches             Branch[]
-  alexaSkills          AlexaSkill[]
-  products             Product[]
-  categories           ProductCategory[]
-  ingredients          Ingredient[]
-  stockMovements       StockMovement[]
-  menuPublicConfig     MenuPublicConfig?
-  areas                Area[]
-  tables               RestaurantTable[]
-  orders               Order[]
-  kitchenTickets       KitchenTicket[]
-  paymentSplits        PaymentSplit[]
-  reservations         Reservation[]
-  expenses             Expense[]
-  payrolls             Payroll[]
-  financeGoals         FinanceGoal[]
-  roles                Role[]
-  barberSettings       BarberSettings[]
-  barberServices       BarberService[]
+  users                   User[]
+  branches                Branch[]
+  alexaSkills             AlexaSkill[]
+  products                Product[]
+  categories              ProductCategory[]
+  ingredients             Ingredient[]
+  stockMovements          StockMovement[]
+  menuPublicConfig        MenuPublicConfig?
+  areas                   Area[]
+  tables                  RestaurantTable[]
+  orders                  Order[]
+  kitchenTickets          KitchenTicket[]
+  paymentSplits           PaymentSplit[]
+  reservations            Reservation[]
+  expenses                Expense[]
+  expenseTemplates        ExpenseTemplate[]
+  capitalMovements        CapitalMovement[]
+  payrolls                Payroll[]
+  financeGoals            FinanceGoal[]
+  roles                   Role[]
+  barberSettings          BarberSettings[]
+  barberServices          BarberService[]
   barberServiceCategories BarberServiceCategory[]
-  barberStaff          BarberStaff[]
-  barberCustomers      BarberCustomer[]
-  barberAppointments   BarberAppointment[]
-  retailCategories     RetailCategory[]
-  retailProducts       RetailProduct[]
-  retailStockMovements RetailStockMovement[]
-  retailStockLocations RetailStockLocation[]
-  retailCustomers      RetailCustomer[]
-  retailSales          RetailSale[]
-  retailPurchaseItems  RetailPurchaseItem[]
-  publicSites          PublicSite[]
-  orderEvents          OrderEvent[]
-  orderClaims          OrderClaim[]
-  printers             Printer[]
-  printJobs            PrintJob[]
-  receiptShares        ReceiptShare[]
-  cashSessions         CashSession[]
-  notificationEvents   NotificationEvent[]
-  notificationPrefs    NotificationPreference[]
-  webPushSubscriptions WebPushSubscription[]
-  platformMessages     PlatformMessage[]
-  whatsappTemplates    WhatsappTemplate[]
-  qrCodes              QrCode[]
-  assistantConversations AssistantConversation[]
+  barberStaff             BarberStaff[]
+  barberCustomers         BarberCustomer[]
+  barberAppointments      BarberAppointment[]
+  retailCategories        RetailCategory[]
+  retailProducts          RetailProduct[]
+  retailStockMovements    RetailStockMovement[]
+  retailStockLocations    RetailStockLocation[]
+  retailCustomers         RetailCustomer[]
+  retailSales             RetailSale[]
+  retailPurchaseItems     RetailPurchaseItem[]
+  publicSites             PublicSite[]
+  orderEvents             OrderEvent[]
+  orderClaims             OrderClaim[]
+  printers                Printer[]
+  printJobs               PrintJob[]
+  receiptShares           ReceiptShare[]
+  cashSessions            CashSession[]
+  notificationEvents      NotificationEvent[]
+  notificationPrefs       NotificationPreference[]
+  webPushSubscriptions    WebPushSubscription[]
+  platformMessages        PlatformMessage[]
+  whatsappTemplates       WhatsappTemplate[]
+  qrCodes                 QrCode[]
+  assistantConversations  AssistantConversation[]
 
   @@index([plan])
   @@index([verticalId])
@@ -145,38 +147,40 @@ model Branch {
   paymentInfo Json?
   createdAt   DateTime @default(now())
 
-  products             Product[]
-  categories           ProductCategory[]
-  ingredients          Ingredient[]
-  stockMovements       StockMovement[]
-  areas                Area[]
-  tables               RestaurantTable[]
-  orders               Order[]
-  reservations         Reservation[]
-  expenses             Expense[]
-  payrolls             Payroll[]
-  financeGoals         FinanceGoal[]
-  userBranches         UserBranch[]
-  barberSettings       BarberSettings?
-  barberServices       BarberService[]
+  products                Product[]
+  categories              ProductCategory[]
+  ingredients             Ingredient[]
+  stockMovements          StockMovement[]
+  areas                   Area[]
+  tables                  RestaurantTable[]
+  orders                  Order[]
+  reservations            Reservation[]
+  expenses                Expense[]
+  expenseTemplates        ExpenseTemplate[]
+  capitalMovements        CapitalMovement[]
+  payrolls                Payroll[]
+  financeGoals            FinanceGoal[]
+  userBranches            UserBranch[]
+  barberSettings          BarberSettings?
+  barberServices          BarberService[]
   barberServiceCategories BarberServiceCategory[]
-  barberStaff          BarberStaff[]
-  barberCustomers      BarberCustomer[]
-  barberAppointments   BarberAppointment[]
-  retailCategories     RetailCategory[]
-  retailProducts       RetailProduct[]
-  retailStockMovements RetailStockMovement[]
-  retailStockLocations RetailStockLocation[]
-  retailCustomers      RetailCustomer[]
-  retailSales          RetailSale[]
-  retailPurchaseItems  RetailPurchaseItem[]
-  publicSites          PublicSite[]
-  printers             Printer[]
-  printJobs            PrintJob[]
-  cashSessions         CashSession[]
-  notificationEvents   NotificationEvent[]
-  webPushSubscriptions WebPushSubscription[]
-  qrCodes              QrCode[]
+  barberStaff             BarberStaff[]
+  barberCustomers         BarberCustomer[]
+  barberAppointments      BarberAppointment[]
+  retailCategories        RetailCategory[]
+  retailProducts          RetailProduct[]
+  retailStockMovements    RetailStockMovement[]
+  retailStockLocations    RetailStockLocation[]
+  retailCustomers         RetailCustomer[]
+  retailSales             RetailSale[]
+  retailPurchaseItems     RetailPurchaseItem[]
+  publicSites             PublicSite[]
+  printers                Printer[]
+  printJobs               PrintJob[]
+  cashSessions            CashSession[]
+  notificationEvents      NotificationEvent[]
+  webPushSubscriptions    WebPushSubscription[]
+  qrCodes                 QrCode[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -662,11 +666,11 @@ enum BarberAppointmentEventKind {
 // ─── Users & RBAC ────────────────────────────────────────────────────────────
 
 model User {
-  id              String    @id // mapea a auth.users.id de Supabase (UUID)
+  id              String       @id // mapea a auth.users.id de Supabase (UUID)
   tenantId        String? // NULL solo para ROOT
-  tenant          Tenant?   @relation(fields: [tenantId], references: [id])
+  tenant          Tenant?      @relation(fields: [tenantId], references: [id])
   alexaSkills     AlexaSkill[]
-  email           String    @unique
+  email           String       @unique
   name            String
   /// Celular con el que esta persona le escribe a Lynko (WhatsApp).
   ///
@@ -675,19 +679,19 @@ model User {
   /// es justamente el caso multi-negocio que el agente resuelve preguntando.
   phone           String?
   roleId          String
-  role            Role      @relation(fields: [roleId], references: [id])
+  role            Role         @relation(fields: [roleId], references: [id])
   // Identidad de plataforma (super-admin de Lynko). NO es un rol de tenant.
-  isPlatformAdmin Boolean   @default(false)
-  isActive        Boolean   @default(true)
+  isPlatformAdmin Boolean      @default(false)
+  isActive        Boolean      @default(true)
   invitedAt       DateTime?
   passwordSetAt   DateTime?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime     @default(now())
 
-  orders               Order[]                  @relation("waiters")
-  userBranches         UserBranch[]
-  notificationEvents   NotificationEvent[]
-  notificationPrefs    NotificationPreference[]
-  webPushSubscriptions WebPushSubscription[]
+  orders                 Order[]                  @relation("waiters")
+  userBranches           UserBranch[]
+  notificationEvents     NotificationEvent[]
+  notificationPrefs      NotificationPreference[]
+  webPushSubscriptions   WebPushSubscription[]
   assistantConversations AssistantConversation[]
 
   @@index([tenantId])
@@ -1247,14 +1251,196 @@ model Expense {
   // recalcularlos, y colgar el ajuste del giro de la misma venta.
   sourceType  String?
   sourceId    String?
-  createdAt   DateTime         @default(now())
 
+  // Descuento recibido sobre el valor normal. `amountCOP` es SIEMPRE lo que se
+  // pagó (puede ser 0 con un descuento del 100%); esto solo deja ver el ahorro.
+  // NULL = sin descuento. Nunca entra a los totales de gasto.
+  discountCOP Int?
+
+  // Fijo / variable / ocasional. NULL = el de su categoría por defecto
+  // (`expense-nature.ts`): así los gastos viejos no necesitan backfill y un
+  // cambio de criterio por categoría no obliga a reescribir el histórico.
+  nature ExpenseNature?
+
+  // Si salió de un gasto recurrente: la plantilla y QUÉ ocurrencia pagó
+  // (día calendario Colombia, 'YYYY-MM-DD'). El par es único: pagar dos veces el
+  // arriendo de octubre es el error que esto evita.
+  templateId         String?
+  template           ExpenseTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  templateOccurrence String?
+
+  /// Aportes del dueño vinculados a este gasto.
+  capitalAllocations CapitalAllocation[]
+
+  /// Cuánto de este gasto DECLARÓ el dueño que pagó con plata de las ventas
+  /// (reinversión). NULL = no lo ha dicho: Lynko supone que todo vino de afuera
+  /// (inversión), nunca de ventas — que hubiera plata de ventas ese día no
+  /// significa que se haya usado para esto.
+  fundedFromSalesCOP Int?
+
+  createdAt DateTime @default(now())
+
+  @@unique([templateId, templateOccurrence])
   @@index([tenantId])
   @@index([tenantId, branchId, incurredAt])
   @@index([branchId, incurredAt])
   @@index([category])
   @@index([tenantId, sourceType, sourceId])
   @@map("expenses")
+}
+
+enum ExpenseNature {
+  FIXED // se paga igual haya ventas o no: arriendo, Lynko, sueldos
+  VARIABLE // sube y baja con las ventas: insumos, fletes, comisiones
+  OCCASIONAL // sin patrón: una reparación, un trámite
+}
+
+/**
+ * Un gasto recurrente: el CONTRATO, no el pago.
+ * "Arriendo $800.000, mensual, desde el 5 de octubre". Cada mes aparece como
+ * ocurrencia por pagar; al pagarla se crea el `Expense` real con su monto y su
+ * fecha. Si ese mes costó distinto, cambia el gasto, no la plantilla.
+ * LAS OCURRENCIAS NO SE GUARDAN. Se calculan al consultar a partir de
+ * `anchorDay` y `frequency`: no hay scheduler, y no hace falta uno. Solo se
+ * guarda lo que ya pasó: el gasto pagado (`Expense.templateOccurrence`) o la
+ * ocurrencia omitida (`skippedOccurrences`).
+ */
+/// Qué tipo de movimiento de capital es. El signo lo da el tipo.
+enum CapitalMovementKind {
+  INITIAL_CONTRIBUTION // con lo que arrancó el negocio
+  CONTRIBUTION // plata que el dueño metió después
+  PROFIT_WITHDRAWAL // el dueño saca ganancias (no es gasto)
+  CAPITAL_RETURN // el dueño recupera parte de lo que puso (no es gasto)
+  LOAN_IN // préstamo A NOMBRE DEL NEGOCIO: entra plata, pero es deuda
+  LOAN_REPAYMENT // abono a capital de ese préstamo (los intereses son gasto)
+  OWNER_WITHDRAWAL // "saqué plata del negocio": Lynko decide si fue ganancia o capital
+}
+
+/// De dónde sacó el dueño la plata que puso. Opcional: es para él.
+enum FundingSource {
+  SAVINGS
+  FAMILY_LOAN
+  BANK_LOAN
+  PARTNER
+  OTHER
+}
+
+enum InterestPeriod {
+  MONTHLY
+  ANNUAL
+}
+
+/**
+ * Plata del dueño que entra o sale del negocio: NO es venta ni gasto.
+ * Es lo que le faltaba a Lynko para responder "¿cuánto invertí, cuánto ya
+ * recuperé y cuánto puedo sacar?". Un aporte no baja la utilidad (no es gasto)
+ * y un retiro de ganancias tampoco; los dos sí mueven la caja.
+ * Ver docs/PLAN_INVERSION_RETORNO_Y_FLUJO_REAL.md §9.
+ */
+model CapitalMovement {
+  id         String              @id @default(cuid())
+  tenantId   String
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId   String
+  branch     Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  kind       CapitalMovementKind
+  /// Siempre positivo; el signo lo da `kind`.
+  amountCOP  Int
+  /// Aporte en mercancía (el inventario con el que arrancó): es capital, pero
+  /// no entra a la caja.
+  inKind     Boolean             @default(false)
+  occurredAt DateTime
+
+  fundingSource   FundingSource?
+  /// "Préstamo de mi mamá, sin interés, se le devuelve en diciembre".
+  fundingNote     String?
+  /// Tasa en puntos básicos (1,8% = 180) para no arrastrar decimales.
+  interestRateBps Int?
+  interestPeriod  InterestPeriod?
+
+  /// En qué se usó la plata que salió: 'PERSONAL' | 'OTHER_BUSINESS' |
+  /// 'PERSONAL_DEBT' | 'EMERGENCY' | 'OTHER'. Solo para retiros.
+  purpose String?
+
+  /// 'MANUAL' | 'SUGGESTION_CONFIRMED' (lo propuso Lynko por un faltante de caja).
+  source    String    @default("MANUAL")
+  note      String?
+  userId    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  allocations CapitalAllocation[]
+
+  /// Solo abonos (LOAN_REPAYMENT): QUÉ préstamo salda. Puede ser un préstamo
+  /// del negocio (LOAN_IN) o un aporte que el dueño puso con plata prestada a
+  /// su nombre (préstamo familiar/de banco). Sin esto un abono no se podía
+  /// atribuir y nunca se sabía cuánto faltaba de cada préstamo.
+  repaysMovementId String?
+  repaysMovement   CapitalMovement?  @relation("LoanRepayments", fields: [repaysMovementId], references: [id], onDelete: SetNull)
+  repayments       CapitalMovement[] @relation("LoanRepayments")
+  /// De dónde salió el abono: true = de la caja del negocio (baja la caja);
+  /// false = del bolsillo del dueño (solo baja la deuda). NULL = caja del
+  /// negocio, que es como contaban los abonos registrados antes.
+  paidFromBusiness Boolean?
+
+  @@index([tenantId, branchId, deletedAt, occurredAt])
+  @@index([repaysMovementId])
+  @@map("capital_movements")
+}
+
+/**
+ * A qué gasto corresponde un aporte (o un préstamo): todo o una parte.
+ * "Puse 379.000 para el pedido de Mercadolibre del 25/09". Sin esto, la
+ * cascada repartía el aporte por fecha y el dueño no podía decir para qué fue.
+ * Con esto, ese gasto se cubre primero con lo que el dueño dijo que puso para
+ * él, y lo demás sigue la cascada normal.
+ */
+model CapitalAllocation {
+  id                String          @id @default(cuid())
+  tenantId          String
+  capitalMovementId String
+  capitalMovement   CapitalMovement @relation(fields: [capitalMovementId], references: [id], onDelete: Cascade)
+  expenseId         String
+  expense           Expense         @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  amountCOP         Int
+  createdAt         DateTime        @default(now())
+
+  @@unique([capitalMovementId, expenseId])
+  @@index([expenseId])
+  @@map("capital_allocations")
+}
+
+model ExpenseTemplate {
+  id                 String           @id @default(cuid())
+  tenantId           String
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId           String
+  branch             Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  category           String
+  concept            String
+  amountCOP          Int
+  nature             ExpenseNature?
+  frequency          ExpenseFrequency
+  /// Primera ocurrencia, día calendario Colombia 'YYYY-MM-DD'. Define el día
+  /// del mes (o de la semana) en que se repite.
+  anchorDay          String
+  /// Última fecha en que aplica (inclusive). NULL = sin fin.
+  endsOn             String?
+  note               String?
+  isActive           Boolean          @default(true)
+  /// Ocurrencias que no se pagaron a propósito ("ese mes no hubo").
+  skippedOccurrences String[]         @default([])
+  /// Quién la sembró, si no fue a mano: 'PLATFORM_SUBSCRIPTION'.
+  sourceType         String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  deletedAt          DateTime?
+
+  expenses Expense[]
+
+  @@index([tenantId, branchId, isActive, deletedAt])
+  @@map("expense_templates")
 }
 
 model Payroll {
@@ -2121,14 +2307,14 @@ model PlatformMessagingSettings {
 // las tres privadas de golpe y, si eso obliga a un redeploy, el cobro queda
 // caído mientras tanto. Ver docs/PLAN_PASARELA_WOMPI.md.
 model PlatformGatewaySettings {
-  id          String  @id @default("singleton")
-  provider    String  @default("wompi")
-  enabled     Boolean @default(false)
+  id              String   @id @default("singleton")
+  provider        String   @default("wompi")
+  enabled         Boolean  @default(false)
   /// 'test' (sandbox.wompi.co) | 'prod' (production.wompi.co). Las llaves de un
   /// ambiente solo sirven con la URL de ese ambiente.
-  environment String  @default("test")
+  environment     String   @default("test")
   /// Única llave que puede salir al navegador: se usa para armar el checkout.
-  publicKey   String?
+  publicKey       String?
   // Secretos: NUNCA se devuelven por la API. El GET expone solo `has*` y los
   // últimos 4 caracteres, igual que `PlatformMessagingSettings.resendApiKey`.
   privateKey      String?
@@ -2143,10 +2329,10 @@ model PlatformGatewaySettings {
   // Tarifa de la pasarela, para calcular la comisión de cada cobro. Wompi NO la
   // manda en la transacción, así que se configura aquí y se recalcula si la
   // suben. Default: 2,65% + $700 + IVA 19%.
-  feePercentBps Int      @default(265)
-  feeFixedCOP   Int      @default(700)
-  feeTaxBps     Int      @default(1900)
-  updatedAt     DateTime @updatedAt
+  feePercentBps   Int      @default(265)
+  feeFixedCOP     Int      @default(700)
+  feeTaxBps       Int      @default(1900)
+  updatedAt       DateTime @updatedAt
 
   @@map("platform_gateway_settings")
 }
@@ -2158,24 +2344,24 @@ model PlatformGatewaySettings {
 /// Las retenciones (fuente, ICA, IVA) NO son costo: son anticipo de impuestos.
 /// Van aquí porque bajan el depósito, pero se separan del costo en el cálculo.
 model PlatformGatewayFee {
-  id            String   @id @default(cuid())
+  id             String   @id @default(cuid())
   /// CARD_PRESENT | CARD_ONLINE | PSE | NEQUI | BREB | CASH
-  method        String
-  percentBps    Int      @default(0)
-  fixedCOP      Int      @default(0)
+  method         String
+  percentBps     Int      @default(0)
+  fixedCOP       Int      @default(0)
   /// IVA sobre la comisión.
-  taxBps        Int      @default(1900)
+  taxBps         Int      @default(1900)
   /// Solo tarjeta: las practica el banco adquirente al liquidar.
-  retefuenteBps Int      @default(0)
-  reteIcaBps    Int      @default(0)
+  retefuenteBps  Int      @default(0)
+  reteIcaBps     Int      @default(0)
   /// Sobre el IVA de la venta, no sobre el total.
-  reteIvaBps    Int      @default(0)
+  reteIvaBps     Int      @default(0)
   /// Días hábiles hasta que el dinero está disponible.
-  settlementDays Int     @default(1)
-  effectiveFrom DateTime
-  note          String?
-  createdBy     String?
-  createdAt     DateTime @default(now())
+  settlementDays Int      @default(1)
+  effectiveFrom  DateTime
+  note           String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
 
   @@index([method, effectiveFrom])
   @@map("platform_gateway_fees")
@@ -2201,13 +2387,13 @@ model SubscriptionCharge {
 
   /// Invariante heredado de SubscriptionPayment: listAmount - discountAmount = amount
   listAmount     Int?
-  discountAmount Int    @default(0)
+  discountAmount Int     @default(0)
   discountReason String?
   amount         Int
-  currency       String @default("COP")
+  currency       String  @default("COP")
 
   /// pending | paid | failed | expired | canceled
-  status      String  @default("pending")
+  status       String  @default("pending")
   statusDetail String?
 
   provider          String  @default("wompi")
@@ -2219,14 +2405,14 @@ model SubscriptionCharge {
   paymentMethodType String?
 
   /// Comisión + su IVA: el COSTO real del cobro. Se congela al conciliar.
-  gatewayFee Int  @default(0)
+  gatewayFee           Int       @default(0)
   /// Retenciones practicadas (fuente + ICA + IVA). NO son costo: se recuperan
   /// en la declaración. Se guardan aparte para no inflar el gasto.
-  withheld   Int  @default(0)
+  withheld             Int       @default(0)
   /// Lo que efectivamente llega al banco: amount - gatewayFee - withheld.
-  netSettled Int?
+  netSettled           Int?
   /// Medio con el que se pagó, en el vocabulario de tarifas (CARD_ONLINE, …).
-  feeMethod  String?
+  feeMethod            String?
   /// Cuándo se espera el abono, según los días hábiles de la tarifa.
   expectedSettlementAt DateTime?
 
@@ -2547,15 +2733,15 @@ model RetailProduct {
  * inventarse un reparto.
  */
 model RetailProductVariant {
-  id            String        @id @default(cuid())
-  tenantId      String
-  branchId      String
-  productId     String
-  product       RetailProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  tenantId       String
+  branchId       String
+  productId      String
+  product        RetailProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
   // DEPRECADO — lo reemplaza `optionValueIds`. Se conserva un despliegue para que
   // un rollback no pierda nada; se elimina en una migración posterior. Nullable
   // porque una combinación de varias dimensiones no tiene UN valor único.
-  optionValueId String?
+  optionValueId  String?
   // Los valores que componen esta combinación, en el orden de
   // `RetailProduct.stockOptionIds`. Un elemento = una dimensión (lo de siempre);
   // dos o más = matriz (talla × color × medida…).
@@ -2569,12 +2755,12 @@ model RetailProductVariant {
   combinationKey String
   // Copia de la etiqueta ("Arrurú") para que el kardex y el histórico de ventas
   // sigan siendo legibles aunque después se renombre o se borre la opción.
-  label         String
-  sku           String?
-  stock         Int           @default(0)
-  minStock      Int           @default(0)
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  label          String
+  sku            String?
+  stock          Int           @default(0)
+  minStock       Int           @default(0)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   movements             RetailStockMovement[]
   saleItems             RetailSaleItem[]
@@ -2857,17 +3043,17 @@ model FinancingProviderTerm {
   /// giro que ve el dueño en el POS y en la bandeja.
   settlementDays Int
   /// Compra mínima financiable. 0 = sin mínimo.
-  minAmountCOP   Int               @default(0)
+  minAmountCOP   Int      @default(0)
   /// Si la comisión del proveedor llega con IVA (solo afecta la nota del gasto;
   /// aquí no se modela nada fiscal).
-  feeHasVat      Boolean           @default(true)
+  feeHasVat      Boolean  @default(true)
   /// Desde cuándo rige. LO ELIGE EL ADMIN: "cambiaron los términos" (desde hoy)
   /// o "estaba mal digitado" (retroactivo).
   effectiveFrom  DateTime
   /// Por qué cambió: 'renegociación', 'corrección de digitación'.
   reason         String?
   createdBy      String?
-  createdAt      DateTime          @default(now())
+  createdAt      DateTime @default(now())
 
   @@index([providerId, effectiveFrom])
   @@map("financing_provider_terms")
@@ -2897,7 +3083,7 @@ model FinancingSettlement {
   reference   String?
   note        String?
   createdBy   String?
-  createdAt   DateTime          @default(now())
+  createdAt   DateTime @default(now())
 
   payments RetailSalePayment[]
 
@@ -2936,51 +3122,51 @@ enum RetailDeliveryStatus {
 }
 
 model RetailSale {
-  id             String               @id @default(cuid())
-  tenantId       String
-  tenant         Tenant               @relation(fields: [tenantId], references: [id])
-  branchId       String
-  branch         Branch               @relation(fields: [branchId], references: [id])
+  id                    String               @id @default(cuid())
+  tenantId              String
+  tenant                Tenant               @relation(fields: [tenantId], references: [id])
+  branchId              String
+  branch                Branch               @relation(fields: [branchId], references: [id])
   // Consecutivo legible por tienda (RS-000001) para el recibo.
-  code           String
-  customerId     String?
-  customer       RetailCustomer?      @relation(fields: [customerId], references: [id])
+  code                  String
+  customerId            String?
+  customer              RetailCustomer?      @relation(fields: [customerId], references: [id])
   // Vendedor y caja abierta en el momento del cobro (sin FK: CashSession es transversal).
-  userId         String?
-  cashSessionId  String?
-  status         RetailSaleStatus     @default(COMPLETED)
+  userId                String?
+  cashSessionId         String?
+  status                RetailSaleStatus     @default(COMPLETED)
   // Lista de precios con la que se cobró. Default RETAIL para que las ventas
   // que ya existen queden clasificadas como normales, que es lo que fueron.
-  saleType       RetailSaleType       @default(RETAIL)
+  saleType              RetailSaleType       @default(RETAIL)
   // Default DELIVERED: todo lo vendido hasta ahora se entregó en el mostrador,
   // que es lo que efectivamente pasó.
-  deliveryStatus RetailDeliveryStatus @default(DELIVERED)
+  deliveryStatus        RetailDeliveryStatus @default(DELIVERED)
   // Default PAID: todo lo vendido hasta ahora se cobró en el mostrador.
   // NO SE ESCRIBE A MANO cuando hay abonos: lo deriva `syncSalePayment` de la
   // suma de los abonos vigentes, para que estado y plata no se contradigan.
-  paymentStatus  RetailPaymentStatus  @default(PAID)
+  paymentStatus         RetailPaymentStatus  @default(PAID)
   // Cuánto de esta venta ya entró, sumando los abonos no anulados. Se guarda
   // aunque sea derivable: la bandeja de cobros lista cientos de ventas y
   // recalcular el saldo de cada una a punta de agregados la vuelve lenta.
-  paidCOP        Int                  @default(0)
+  paidCOP               Int                  @default(0)
   // Cuándo se completó el pago. NULL mientras quede saldo.
-  paidAt         DateTime?
+  paidAt                DateTime?
   // Cuándo se marcó entregada. NULL mientras siga pendiente.
-  deliveredAt    DateTime?
+  deliveredAt           DateTime?
   // Nota de la entrega: dirección, a quién se le deja, cuándo pasa a recoger.
-  deliveryNote   String?
-  subtotalCOP    Int
-  discountCOP    Int                  @default(0)
+  deliveryNote          String?
+  subtotalCOP           Int
+  discountCOP           Int                  @default(0)
   // Flete que se le traslada al cliente. Lo pone el envío, no el mostrador: el
   // costo de la guía no se sabe al vender. VA DENTRO DE `totalCOP` porque es
   // plata que el cliente debe igual que la mercancía — si viviera solo en el
   // envío, la bandeja de cobros y finanzas (que suman `totalCOP`) no lo verían
   // nunca y el flete se perdería. `totalCOP = subtotalCOP - discountCOP + shippingCOP`.
-  shippingCOP    Int                  @default(0)
-  totalCOP       Int
+  shippingCOP           Int                  @default(0)
+  totalCOP              Int
   // Costo de la mercancía vendida, congelado al momento de la venta → margen real.
-  costCOP        Int                  @default(0)
-  paymentMethod  RetailPaymentMethod  @default(CASH)
+  costCOP               Int                  @default(0)
+  paymentMethod         RetailPaymentMethod  @default(CASH)
   // ─── Financiación (solo cuando paymentMethod = FINANCING) ─────────────────
   // Los términos van CONGELADOS, igual que `unitCostCOP` en el kardex: se
   // resuelven preguntándole a `FinancingProviderTerm` cuál regía el día de la
@@ -2988,7 +3174,7 @@ model RetailSale {
   // renegocia del 6,5% al 4%, esta venta sigue diciendo 6,5%, porque eso fue
   // lo que pasó.
   financingProviderId   String?
-  financingProvider     FinancingProvider? @relation(fields: [financingProviderId], references: [id])
+  financingProvider     FinancingProvider?   @relation(fields: [financingProviderId], references: [id])
   /// Nombre congelado. Va además de la FK a propósito: la FK sirve para cruzar
   /// y navegar, el nombre para que el reporte de marzo no cambie si el convenio
   /// se renombra o se borra.
@@ -3002,13 +3188,13 @@ model RetailSale {
   /// score, cuotas ni tasa (Ley 1581 — ver docs/PLAN_PAGOS_FINANCIACION_*).
   financingAuthCode     String?
   financingStatus       FinancingStatus?
-  receivedCOP    Int?
-  changeCOP      Int?
-  note           String?
-  soldAt         DateTime             @default(now())
-  voidedAt       DateTime?
-  voidedReason   String?
-  createdAt      DateTime             @default(now())
+  receivedCOP           Int?
+  changeCOP             Int?
+  note                  String?
+  soldAt                DateTime             @default(now())
+  voidedAt              DateTime?
+  voidedReason          String?
+  createdAt             DateTime             @default(now())
 
   items             RetailSaleItem[]
   deliveries        RetailSaleDelivery[]
@@ -3311,7 +3497,7 @@ model RetailSalePayment {
   // ingreso, así que es acá donde tiene que estar la comisión para poder
   // encadenar su gasto.
   financingProviderId   String?
-  financingProvider     FinancingProvider? @relation(fields: [financingProviderId], references: [id])
+  financingProvider     FinancingProvider?   @relation(fields: [financingProviderId], references: [id])
   financingProviderName String?
   financingFeeBps       Int?
   financingFeeCOP       Int?
@@ -3644,6 +3830,18 @@ model RetailPurchaseItem {
   expenseIds         String[] @default([])
   shippingExpenseIds String[] @default([])
 
+  // DESCUENTO DEL PROVEEDOR. Plata que ya no se le debe pero que tampoco salió
+  // de caja: no es gasto (no va a Finanzas) y no es giro (no es un pago). Antes
+  // solo quedaba escrito en la nota y el libro lo contaba como deuda. Es el
+  // descuento del PEDIDO, y se guarda en una sola de sus líneas: el frontend
+  // suma las hermanas. Cada cambio deja su movimiento DISCOUNT en el libro.
+  discountCOP Int @default(0)
+
+  // "Este pedido no generó gasto": un obsequio, una muestra, algo a $0. Quita la
+  // alerta de "pagado sin gasto en Finanzas" sin inventar un gasto de $0.
+  expenseSkippedAt DateTime?
+  expenseSkipNote  String?
+
   // Cada tanda que llegó. Una línea de 24 puede llegar en dos viajes de 12.
   receipts      RetailPurchaseReceipt[]
   ledgerEntries RetailSupplierLedgerEntry[]
@@ -3706,6 +3904,7 @@ enum RetailSupplierLedgerKind {
   OVERAGE // llegó de más y me lo quedo: se lo debo
   CREDIT_NOTE // nota crédito del proveedor
   ADJUSTMENT // corrección a mano, con motivo
+  DISCOUNT // descuento pactado en un pedido: baja lo que le debo sin ser un giro
 }
 
 /**
@@ -3945,25 +4144,25 @@ model CatalogServicePrice {
 /// cambio es de permisos y de pantalla: los campos ya son por fila.
 /// Ver docs/ALEXA_SELF_SERVICE_PLAN.md §2.
 model AlexaSkill {
-  id             String    @id @default(cuid())
+  id            String  @id @default(cuid())
   /// amzn1.ask.skill.… — llega en cada petición.
-  applicationId  String    @unique
-  label          String
-  tenantId       String?
-  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
+  applicationId String  @unique
+  label         String
+  tenantId      String?
+  tenant        Tenant? @relation(fields: [tenantId], references: [id])
 
   /// Usuario cuyos permisos se usan al responder.
-  actingUserId   String
-  actingUser     User      @relation(fields: [actingUserId], references: [id])
+  actingUserId String
+  actingUser   User   @relation(fields: [actingUserId], references: [id])
 
   /// Hash scrypt de la frase de activación. Nunca la frase.
   activationHash String?
-  ttlDays        Int       @default(7)
+  ttlDays        Int     @default(7)
 
   /// Se fija en la primera activación y después se exige. Null = aún sin usar.
-  alexaUserId    String?
+  alexaUserId   String?
   /// Opcional: si está, solo ese Echo puede consultar.
-  alexaDeviceId  String?
+  alexaDeviceId String?
 
   expiresAt       DateTime?
   attempts        Int       @default(0)
@@ -3979,12 +4178,12 @@ model AlexaSkill {
 
 // Persistent voice authorization; never stores activation phrases or Alexa tokens.
 model AlexaAuthorization {
-  id              String   @id
+  id              String    @id
   configDigest    String
   expiresAt       DateTime?
-  attempts        Int      @default(0)
-  windowStartedAt DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  attempts        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@map("alexa_authorizations")
 }
@@ -3994,11 +4193,13 @@ enum AssistantChannel {
   ALEXA
   WHATSAPP
 }
+
 enum AssistantConfidence {
   HIGH
   MEDIUM
   LOW
 }
+
 enum AssistantOutcome {
   ANSWERED
   NO_DATA
@@ -4008,22 +4209,24 @@ enum AssistantOutcome {
   DENIED_PLAN
   ERROR
 }
+
 /// Append-only. resolvedTo != null denotes a resolution signal, not another query.
 model AssistantQueryLog {
-  id String @id @default(cuid())
-  tenantId String
-  branchId String?
-  role String
-  channel AssistantChannel
-  vertical String
-  intentId String
-  outcome AssistantOutcome
+  id         String              @id @default(cuid())
+  tenantId   String
+  branchId   String?
+  role       String
+  channel    AssistantChannel
+  vertical   String
+  intentId   String
+  outcome    AssistantOutcome
   confidence AssistantConfidence
-  level String
-  scope String?
+  level      String
+  scope      String?
   resolvedTo String?
-  latencyMs Int?
-  at DateTime @default(now())
+  latencyMs  Int?
+  at         DateTime            @default(now())
+
   @@index([tenantId, at])
   @@index([tenantId, intentId, at])
   @@index([intentId, outcome])
@@ -4062,15 +4265,15 @@ model AssistantConversation {
   tenantId String?
   tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
-  lastIntent String?
+  lastIntent  String?
   /// Parámetros normalizados de la última consulta (`{ "period": "yesterday" }`),
   /// para resolver seguimientos como "¿y ayer?". Nunca frases del usuario.
-  lastSlots Json?
+  lastSlots   Json?
   /// El menú numerado que se ofreció, para poder mapear un "2" al negocio o a
   /// la opción correcta sin volver a preguntar.
   lastOptions Json?
 
-  mode AssistantConversationMode @default(HYBRID)
+  mode               AssistantConversationMode @default(HYBRID)
   /// Mientras esté en el futuro, el agente no responde: alguien del equipo
   /// tomó el chat. Lo fija un mensaje saliente escrito a mano.
   humanTakeoverUntil DateTime?

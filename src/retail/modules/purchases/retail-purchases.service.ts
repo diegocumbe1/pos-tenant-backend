@@ -22,6 +22,7 @@ import {
   LinkPurchaseExpenseDto,
   ReceiveRetailPurchaseItemDto,
   ResolveRetailPurchaseVarianceDto,
+  SetPurchaseDiscountDto,
   UpdateRetailPurchaseItemDto,
 } from './dto/retail-purchases.dto';
 
@@ -862,6 +863,119 @@ export class RetailPurchasesService {
     });
   }
 
+  /**
+   * "El proveedor lo obsequió": lo que llegó de más no se le va a pagar.
+   *
+   * Al recibir, las unidades de más que se marcaron como pagables entraron al
+   * libro como OVERAGE (deuda). Si después el proveedor dice que son regalo, esa
+   * deuda nunca existió: se contra-asienta con un OVERAGE negativo por lo que
+   * quede abierto de esta línea. Contra-asentar y no borrar, porque el libro es
+   * un histórico. Es idempotente: si ya no queda saldo de sobrante, no escribe.
+   *
+   * No toca el kardex: las unidades ya entraron y se pudieron haber vendido;
+   * revalorizar el costo hacia atrás movería utilidades de días ya cerrados.
+   */
+  async giftOverage(ctx: TenantContext, id: string, note?: string) {
+    const current = await this.assertOwnItem(ctx, id);
+    const overage = (current.receivedQuantity ?? 0) - current.quantity;
+    if (current.receivedQuantity === null || overage <= 0) {
+      throw new BadRequestException(
+        'Esta línea no tiene unidades de más que se puedan marcar como obsequio',
+      );
+    }
+
+    const item = await this.prisma.$transaction(async (tx) => {
+      const open = await tx.retailSupplierLedgerEntry.aggregate({
+        where: { purchaseItemId: id, kind: 'OVERAGE' },
+        _sum: { amountCOP: true },
+      });
+      const owed = open._sum.amountCOP ?? 0;
+      const detail = note?.trim();
+      if (owed > 0) {
+        await this.writeLedgerEntry(tx, ctx, {
+          supplierId: current.supplierId,
+          kind: 'OVERAGE',
+          // Negativo: anula la deuda que se anotó al recibir.
+          amountCOP: -owed,
+          purchaseItemId: id,
+          note: `Obsequio del proveedor: ${overage} de más de "${current.name}" sin cobro${detail ? ` · ${detail}` : ''}`,
+        });
+      }
+      return tx.retailPurchaseItem.update({
+        where: { id },
+        data: {
+          varianceResolution: 'ACCEPTED',
+          varianceNote: `Obsequio del proveedor: ${overage} unidades de más sin costo${detail ? ` · ${detail}` : ''}`,
+        },
+        include: PURCHASE_INCLUDE,
+      });
+    }, this.txOptions);
+    return this.toDto(item);
+  }
+
+  /**
+   * Fija el descuento que dio el proveedor en este pedido.
+   *
+   * NO ES GASTO NI GIRO. Un descuento es plata que ya no se le debe y que
+   * tampoco salió de caja, así que no va a Finanzas; pero sí baja el saldo con
+   * el proveedor. Antes quedaba solo en la nota y el libro lo seguía contando
+   * como deuda.
+   *
+   * Valor absoluto: se escribe en el libro solo la diferencia con el anterior,
+   * así corregirlo deja el rastro de la corrección en vez de reescribir historia.
+   */
+  async setDiscount(
+    ctx: TenantContext,
+    id: string,
+    dto: SetPurchaseDiscountDto,
+  ) {
+    const current = await this.assertOwnItem(ctx, id);
+    const delta = dto.amountCOP - current.discountCOP;
+    const note = dto.note?.trim();
+
+    const item = await this.prisma.$transaction(async (tx) => {
+      await this.writeLedgerEntry(tx, ctx, {
+        supplierId: current.supplierId,
+        kind: 'DISCOUNT',
+        // Negativo: el descuento baja lo que se le debe.
+        amountCOP: -delta,
+        purchaseItemId: id,
+        note:
+          delta > 0
+            ? `Descuento del proveedor${note ? `: ${note}` : ''}`
+            : `Se corrigió el descuento a ${dto.amountCOP}${note ? `: ${note}` : ''}`,
+      });
+      return tx.retailPurchaseItem.update({
+        where: { id },
+        data: { discountCOP: dto.amountCOP },
+        include: PURCHASE_INCLUDE,
+      });
+    }, this.txOptions);
+    return this.toDto(item);
+  }
+
+  /**
+   * Marca (o desmarca) que el pedido no generó gasto. No toca el libro ni
+   * Finanzas: solo apaga la alerta de "pagado sin gasto", que para un obsequio
+   * o una línea a $0 nunca se iba a poder resolver registrando algo.
+   */
+  async setExpenseSkipped(
+    ctx: TenantContext,
+    id: string,
+    skipped: boolean,
+    note?: string,
+  ) {
+    await this.assertOwnItem(ctx, id);
+    const item = await this.prisma.retailPurchaseItem.update({
+      where: { id },
+      data: skipped
+        ? { expenseSkippedAt: new Date(), expenseSkipNote: note?.trim() || null }
+        : { expenseSkippedAt: null, expenseSkipNote: null },
+      include: PURCHASE_INCLUDE,
+    });
+    return this.toDto(item);
+  }
+
   /** Ya no se va a pedir. Queda en la lista como registro, no se borra. */
   async cancel(ctx: TenantContext, id: string) {
     const current = await this.assertOwnItem(ctx, id);
@@ -993,6 +1107,11 @@ export class RetailPurchasesService {
       // nunca "costó cero".
       expenseIds: item.expenseIds,
       shippingExpenseIds: item.shippingExpenseIds,
+      /** Descuento del proveedor guardado en esta línea (el del pedido entero). */
+      discountCOP: item.discountCOP,
+      /** Marcado como "no generó gasto": no debe pedir registrar uno. */
+      expenseSkippedAt: item.expenseSkippedAt,
+      expenseSkipNote: item.expenseSkipNote,
       /** La ficha del proveedor. `supplier` sigue siendo el nombre escrito. */
       supplierId: item.supplierId,
       supplierName: item.supplierRef?.name ?? item.supplier,
