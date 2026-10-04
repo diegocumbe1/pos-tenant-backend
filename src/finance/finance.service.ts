@@ -1308,9 +1308,52 @@ export class FinanceService {
   async goals(ctx: TenantContext, query: PeriodQueryDto) {
     const { periodMonth } = this.resolvePayrollMonth(query);
     const vertical = await this.resolveTenantVertical(ctx);
-    const goals = await this.prisma.financeGoal.findMany({
+    let goals = await this.prisma.financeGoal.findMany({
       where: { tenantId: ctx.tenantId, branchId: ctx.branchId, periodMonth },
     });
+
+    // LA META CONTINÚA. Si este mes no tiene meta mensual, se usa la del último
+    // mes que la tuvo (aplicada a ESTE mes), marcada como heredada para que el
+    // dueño la confirme o la cambie. Solo del mes actual en adelante: un mes
+    // pasado sin meta se deja como fue — inventarle una meta reescribe la
+    // historia.
+    let inheritedFrom: string | null = null;
+    const inheritedIds = new Set<string>();
+    const hasMonthly = goals.some((g) => g.periodType === 'MONTHLY');
+    if (!hasMonthly && periodMonth >= calendarMonthCO(new Date())) {
+      const previous = await this.prisma.financeGoal.findFirst({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          periodType: 'MONTHLY',
+          periodMonth: { lt: periodMonth },
+        },
+        orderBy: { periodMonth: 'desc' },
+        select: { periodMonth: true },
+      });
+      if (previous) {
+        inheritedFrom = previous.periodMonth;
+        const carried = await this.prisma.financeGoal.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            periodType: 'MONTHLY',
+            periodMonth: previous.periodMonth,
+          },
+        });
+        for (const g of carried) inheritedIds.add(g.id);
+        // Se recalculan sobre el rango de ESTE mes, no el del mes de origen.
+        goals = [
+          ...goals,
+          ...carried.map((g) => ({
+            ...g,
+            periodMonth,
+            periodStart: null,
+            periodEnd: null,
+          })),
+        ];
+      }
+    }
 
     // Horarios del negocio → días operativos (barber). Restaurante/sin datos = todos.
     const settings =
@@ -1375,11 +1418,62 @@ export class FinanceService {
           operatingDaysElapsed: elapsed,
           operatingDaysTotal: total,
           paceStatus,
+          /** Meta tomada del último mes que la tuvo (no está guardada para este mes). */
+          inheritedFrom: inheritedIds.has(g.id) ? inheritedFrom : null,
         };
       }),
     );
 
-    return { periodMonth, goals: enriched };
+    return { periodMonth, inheritedFrom, goals: enriched };
+  }
+
+  /**
+   * Histórico de metas: cada meta guardada de los últimos meses con lo que se
+   * logró. Sin pacing (ya pasó): meta, real, % y si se cumplió.
+   */
+  async goalsHistory(ctx: TenantContext, months = 12) {
+    const vertical = await this.resolveTenantVertical(ctx);
+    const current = calendarMonthCO(new Date());
+    const [cy, cm] = current.split('-').map(Number);
+    const from = new Date(Date.UTC(cy, cm - 1 - (Math.min(months, 36) - 1), 1));
+    const fromMonth = `${from.getUTCFullYear()}-${String(from.getUTCMonth() + 1).padStart(2, '0')}`;
+    const goals = await this.prisma.financeGoal.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        periodMonth: { gte: fromMonth, lte: current },
+      },
+      orderBy: [{ periodMonth: 'desc' }, { periodStart: 'desc' }],
+    });
+    const rows = await Promise.all(
+      goals.map(async (g) => {
+        const { from: start, to: end } = this.goalRange(g, g.periodMonth);
+        const revenue = await this.revenueInRange(ctx, start, end, vertical);
+        const actualCOP =
+          g.metric === 'revenue'
+            ? revenue
+            : revenue - (await this.expensesInRange(ctx, start, end));
+        const progressPct =
+          g.targetCOP > 0
+            ? Math.round((actualCOP / g.targetCOP) * 1000) / 10
+            : 0;
+        return {
+          id: g.id,
+          periodMonth: g.periodMonth,
+          periodType: g.periodType,
+          metric: g.metric,
+          periodStart: start.getTime(),
+          periodEnd: end.getTime(),
+          targetCOP: g.targetCOP,
+          actualCOP,
+          progressPct,
+          /** El período ya terminó (se puede juzgar si se cumplió). */
+          closed: end.getTime() <= Date.now(),
+          achieved: actualCOP >= g.targetCOP,
+        };
+      }),
+    );
+    return { fromMonth, toMonth: current, goals: rows };
   }
 
   // Rango [from, to) de una meta: usa el rango explícito o deriva del mes ancla.

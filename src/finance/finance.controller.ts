@@ -248,6 +248,22 @@ export class FinanceController {
     return this.financeService.payroll(ctx, query);
   }
 
+  @Get('goals/history')
+  @ApiOperation({
+    summary:
+      'Histórico de metas guardadas de los últimos meses, con lo logrado',
+  })
+  goalsHistory(
+    @CurrentTenant() ctx: TenantContext,
+    @Query('months') months?: string,
+  ) {
+    const n = Number(months);
+    return this.financeService.goalsHistory(
+      ctx,
+      Number.isFinite(n) && n > 0 ? n : 12,
+    );
+  }
+
   @Get('goals')
   goals(@CurrentTenant() ctx: TenantContext, @Query() query: PeriodQueryDto) {
     return this.financeService.goals(ctx, query);
