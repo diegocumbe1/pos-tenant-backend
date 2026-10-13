@@ -72,6 +72,8 @@ export class RetailCustomersService {
           phone: dto.phone?.replace(/\s/g, '') || null,
           email: dto.email,
           documentId: dto.documentId,
+          address: dto.address?.trim() || null,
+          city: dto.city?.trim() || null,
           notes: dto.notes,
         },
       });
@@ -99,6 +101,8 @@ export class RetailCustomersService {
           phone: patchText(dto.phone, (value) => value.replace(/\s/g, '')),
           email: patchText(dto.email),
           documentId: patchText(dto.documentId),
+          address: patchText(dto.address),
+          city: patchText(dto.city),
           notes: patchText(dto.notes),
         },
       });

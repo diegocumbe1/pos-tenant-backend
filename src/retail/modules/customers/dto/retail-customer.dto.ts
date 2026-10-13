@@ -32,6 +32,18 @@ export class CreateRetailCustomerDto {
   @MaxLength(40)
   documentId?: string;
 
+  @ApiPropertyOptional({ example: 'Calle 10 # 5-23' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  address?: string;
+
+  @ApiPropertyOptional({ example: 'Garzón, Huila' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  city?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

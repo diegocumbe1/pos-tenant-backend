@@ -2945,6 +2945,10 @@ model RetailCustomer {
   phone          String?
   email          String?
   documentId     String?
+  // Dirección y ciudad: las pide la cuenta de cobro cuando el cliente es una
+  // empresa. Opcionales — una venta de mostrador nunca las necesita.
+  address        String?
+  city           String?
   notes          String?
   // Agregados denormalizados para no recalcular el histórico en cada listado.
   totalSpentCOP  Int       @default(0)

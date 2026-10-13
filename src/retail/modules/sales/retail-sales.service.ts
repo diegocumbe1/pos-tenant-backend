@@ -120,7 +120,20 @@ function splitStockKey(key: string): {
  */
 const SALE_INCLUDE = {
   items: true,
-  customer: { select: { id: true, name: true, phone: true } },
+  // Documento, correo y dirección viajan para la cuenta de cobro: una empresa
+  // exige su NIT y su dirección en el soporte, y sin esto habría que pedir la
+  // ficha del cliente aparte.
+  customer: {
+    select: {
+      id: true,
+      name: true,
+      phone: true,
+      email: true,
+      documentId: true,
+      address: true,
+      city: true,
+    },
+  },
   shipments: {
     where: { shipment: { status: { in: ['DRAFT', 'SENT'] as const } } },
     orderBy: { addedAt: 'desc' as const },
@@ -3545,6 +3558,10 @@ export class RetailSalesService {
       customerId: sale.customerId,
       customerName: sale.customer?.name ?? null,
       customerPhone: sale.customer?.phone ?? null,
+      customerEmail: sale.customer?.email ?? null,
+      customerDocumentId: sale.customer?.documentId ?? null,
+      customerAddress: sale.customer?.address ?? null,
+      customerCity: sale.customer?.city ?? null,
       // Paquete abierto en el que va, si está en alguno. Con esto la bandeja
       // muestra el vínculo en la tarjeta de la venta y no obliga a ir a buscar
       // el envío para saber si ya quedó agrupada.
