@@ -24,12 +24,30 @@ import { SupabaseService } from '../supabase/supabase.service';
  * Cada instancia está ligada a un (tenantId, branchId) → conoce su clientId.
  */
 /**
+ * Carpeta de los zips en el bucket. Fuera de producción va a otra carpeta.
+ *
+ * El backend local usa el MISMO bucket que producción y su base es una réplica
+ * con los mismos tenantId/branchId, así que el clientId de un negocio es igual
+ * en los dos lados. Sin esto, emparejar en local un negocio que también está
+ * conectado en prod pisaba su respaldo, y "Desvincular" en local lo borraba:
+ * el siguiente deploy ya no tenía qué restaurar.
+ *
+ * Producción fija NODE_ENV=production en el Dockerfile. Para forzar una carpeta
+ * concreta, `WA_SESSION_STORAGE_PREFIX`.
+ */
+const WA_SESSION_STORAGE_PREFIX =
+  process.env.WA_SESSION_STORAGE_PREFIX?.trim() ||
+  (process.env.NODE_ENV === 'production'
+    ? 'whatsapp-sessions'
+    : 'whatsapp-sessions-dev');
+
+/**
  * Ruta del zip en el bucket privado. Fuente única: el manager también borra
  * este objeto al desvincular, y si cada lado armara la ruta por su cuenta un
  * cambio de convención dejaría zips huérfanos ocupando espacio.
  */
 export const waSessionObjectPath = (clientId: string): string =>
-  `whatsapp-sessions/${clientId}.zip`;
+  `${WA_SESSION_STORAGE_PREFIX}/${clientId}.zip`;
 
 export class StorageRemoteAuthStore {
   private readonly logger = new Logger(StorageRemoteAuthStore.name);

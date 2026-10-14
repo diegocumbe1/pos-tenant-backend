@@ -3,10 +3,13 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
+import { calendarDayCO, formatDateTimeCO } from '../../../common/date.util';
 import {
   CreatePublicAppointmentDto,
   PublicAvailabilityQueryDto,
@@ -25,7 +28,12 @@ const SLOT_STEP_MIN = 30;
 
 @Injectable()
 export class BarberPublicService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(BarberPublicService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationDispatcherService,
+  ) {}
 
   async getProfile(slug: string) {
     const settings = await this.loadPublishedSettings(slug);
@@ -271,6 +279,32 @@ export class BarberPublicService {
       },
       include: { service: true, staff: true },
     });
+
+    // Aviso al equipo por push, no por WhatsApp: la reserva entra pendiente y
+    // alguien tiene que aprobarla. Tocar la notificación abre la agenda en ese
+    // día con la cita seleccionada. Best-effort: nunca tumba la reserva.
+    void this.notifications
+      .dispatch({
+        tenantId: settings.tenantId,
+        branchId,
+        vertical: 'barber',
+        type: 'barber.appointment.requested',
+        title: 'Nueva reserva por aprobar',
+        body: [
+          customer.name,
+          appointment.service.name,
+          formatDateTimeCO(appointment.scheduledAt),
+          appointment.staff?.name,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        url: `/barber/appointments?date=${calendarDayCO(appointment.scheduledAt)}&apt=${appointment.id}`,
+        payload: { appointmentId: appointment.id },
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Appointment notification dispatch failed: ${message}`);
+      });
 
     return {
       id: appointment.id,

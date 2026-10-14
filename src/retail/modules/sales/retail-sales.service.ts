@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
   Prisma,
   RetailDeliveryStatus,
@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import {
   costingCostCOP,
   weightedAverageCost,
@@ -175,9 +176,12 @@ type SaleWithItems = Prisma.RetailSaleGetPayload<{
 
 @Injectable()
 export class RetailSalesService {
+  private readonly logger = new Logger(RetailSalesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantHelper: RetailTenantHelper,
+    private readonly notifications: NotificationDispatcherService,
   ) {}
 
   async listSales(
@@ -1149,7 +1153,43 @@ export class RetailSalesService {
       return created;
     }, this.txOptions);
 
-    return this.getSale(ctx, sale.id);
+    const result = await this.getSale(ctx, sale.id);
+    this.notifySaleCreated(ctx, result);
+    return result;
+  }
+
+  /**
+   * Push al dueño y a los administradores cuando alguien del equipo registra
+   * una venta. Quien la hizo no se avisa a sí mismo. Tocarla abre la venta en
+   * el histórico (`?sale=RS-…`). Best-effort: nunca tumba la venta.
+   */
+  private notifySaleCreated(
+    ctx: TenantContext,
+    sale: { id: string; code: string; totalCOP: number; customerName: string | null; paymentStatus: string },
+  ) {
+    const pending = sale.paymentStatus !== 'PAID';
+    void this.notifications
+      .dispatch({
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        vertical: 'retail',
+        type: 'retail.sale.created',
+        title: `Nueva venta ${sale.code} · ${formatCOP(sale.totalCOP)}`,
+        body: [
+          ctx.name ? `Registrada por ${ctx.name}` : null,
+          sale.customerName,
+          pending ? 'Pendiente de pago' : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        url: `/retail/finance/sales?sale=${encodeURIComponent(sale.code)}`,
+        payload: { saleId: sale.id },
+        excludeUserId: ctx.userId,
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Sale notification dispatch failed: ${message}`);
+      });
   }
 
   /**
