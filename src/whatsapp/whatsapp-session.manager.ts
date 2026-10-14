@@ -143,22 +143,32 @@ export class WhatsAppSessionManager
 
   private async restoreSavedSessions() {
     try {
-      const saved = await this.prisma.whatsappSession.findMany({
+      const all = await this.prisma.whatsappSession.findMany({
         where: { storagePath: { not: null } },
         select: { tenantId: true, branchId: true },
         orderBy: { updatedAt: 'desc' },
-        take: this.maxActiveSessions,
       });
       // La sesión de la PLATAFORMA (el número de Lynko) va primero: ordenar solo
       // por `updatedAt` hacía que las sesiones de tenants ocuparan los cupos y
       // el backoffice se quedara sin poder emparejar, con un 409 al conectar.
-      saved.sort((a, b) =>
-        a.tenantId === PLATFORM_SESSION_TENANT_ID
-          ? -1
-          : b.tenantId === PLATFORM_SESSION_TENANT_ID
-            ? 1
-            : 0,
-      );
+      //
+      // Se ordena ANTES de recortar a los cupos. Recortando primero en la base,
+      // la de plataforma quedaba fuera en cuanto había N sesiones de tenants
+      // más recientes, y el orden de después ya no la podía rescatar.
+      const saved = all
+        .sort((a, b) =>
+          a.tenantId === PLATFORM_SESSION_TENANT_ID
+            ? -1
+            : b.tenantId === PLATFORM_SESSION_TENANT_ID
+              ? 1
+              : 0,
+        )
+        .slice(0, this.maxActiveSessions);
+      if (all.length > saved.length) {
+        this.logger.warn(
+          `Hay ${all.length} sesiones guardadas y solo ${this.maxActiveSessions} cupos (WA_MAX_ACTIVE_SESSIONS): ${all.length - saved.length} no se restauran`,
+        );
+      }
       if (saved.length > 0 && this.restoreDelayMs > 0) {
         this.logger.log(
           `Esperando ${this.restoreDelayMs}ms antes de restaurar sesiones de WhatsApp (deja morir al contenedor anterior)`,
@@ -169,7 +179,7 @@ export class WhatsAppSessionManager
         this.logger.log(
           `Restaurando sesión WhatsApp guardada: ${s.tenantId}/${s.branchId}`,
         );
-        await this.pair(s.tenantId, s.branchId).catch((err) =>
+        await this.pair(s.tenantId, s.branchId, { restoring: true }).catch((err) =>
           this.logger.warn(
             `No se pudo restaurar ${s.tenantId}/${s.branchId}: ${(err as Error).message}`,
           ),
@@ -294,7 +304,16 @@ export class WhatsAppSessionManager
     return this.sessions.get(sessionKey(tenantId, branchId))?.client;
   }
 
-  async pair(tenantId: string, branchId: string): Promise<{ status: SessionStatus }> {
+  /**
+   * `restoring`: la llamada viene del arranque, no de una persona frente a la
+   * pantalla. Si en ese caso WhatsApp pide QR, el respaldo ya no sirve y nadie
+   * lo va a escanear; ver el handler de `qr`.
+   */
+  async pair(
+    tenantId: string,
+    branchId: string,
+    options: { restoring?: boolean } = {},
+  ): Promise<{ status: SessionStatus }> {
     const key = sessionKey(tenantId, branchId);
     const existing = this.sessions.get(key);
     if (
@@ -383,6 +402,9 @@ export class WhatsAppSessionManager
 
     const state: SessionState = { client, status: 'initializing' };
     this.sessions.set(key, state);
+    this.logger.log(
+      `[wa-lifecycle] init ${key} (${options.restoring ? 'restore' : 'pair'})`,
+    );
     this.emit(tenantId, branchId, state);
 
     state.initializeTimeout = setTimeout(() => {
@@ -400,10 +422,30 @@ export class WhatsAppSessionManager
     });
 
     client.on('change_state', (status) => {
-      this.logger.debug(`WhatsApp state changed ${key}: ${status}`);
+      // CONFLICT, UNPAIRED, etc. llegan aquí antes que `disconnected`; en log
+      // normal porque son justo los estados que explican una reconexión.
+      this.logger.log(`[wa-lifecycle] change_state ${key}: ${status}`);
     });
 
     client.on('qr', async (qr) => {
+      // En un restore nadie está mirando la pantalla: un QR ahí significa que
+      // el respaldo fue rechazado. Dejarlo vivo ocupaba un cupo y un Chromium
+      // (~400 MB) indefinidamente —el timeout de pareo solo cubre
+      // `initializing`— y con WA_MAX_ACTIVE_SESSIONS=1 bloqueaba cualquier
+      // emparejamiento. Se cierra y se avisa; el respaldo NO se borra (puede
+      // ser un rechazo transitorio) y la UI pedirá emparejar de nuevo.
+      if (options.restoring && state.status === 'initializing') {
+        this.clearInitializeTimeout(state);
+        this.logger.warn(
+          `[wa-lifecycle] restore_needs_qr ${key}: el respaldo no se aceptó; se cierra el cliente sin mostrar QR`,
+        );
+        state.status = 'error';
+        state.lastError =
+          'La sesión guardada ya no es válida. Vuelve a emparejar escaneando el QR.';
+        this.emit(tenantId, branchId, state);
+        void this.destroyClient(key, state, { remove: true });
+        return;
+      }
       try {
         this.clearInitializeTimeout(state);
         state.qrDataUrl = await QRCode.toDataURL(qr);
@@ -429,6 +471,9 @@ export class WhatsAppSessionManager
       this.clearTimeouts(state);
       state.status = 'ready';
       state.phoneNumber = client.info?.wid?.user;
+      this.logger.log(
+        `[wa-lifecycle] ready ${key} (${options.restoring ? 'restore' : 'pair'})`,
+      );
       this.emit(tenantId, branchId, state);
       // Guarda el número (best-effort). Va como upsert y no como update porque
       // en el PRIMER emparejamiento la fila todavía no existe: la crea el store
@@ -464,6 +509,7 @@ export class WhatsAppSessionManager
     });
 
     client.on('auth_failure', (msg) => {
+      this.logger.warn(`[wa-lifecycle] auth_failure ${key}: ${msg}`);
       this.clearTimeouts(state);
       state.status = 'error';
       state.lastError = msg;
@@ -471,6 +517,9 @@ export class WhatsAppSessionManager
     });
 
     client.on('disconnected', (reason) => {
+      // Línea fija y buscable: es la métrica para saber si la sesión es estable
+      // (cuántas desconexiones por día y por qué motivo).
+      this.logger.warn(`[wa-lifecycle] disconnected ${key}: ${String(reason)}`);
       this.clearTimeouts(state);
       state.status = 'disconnected';
       state.lastError = String(reason);

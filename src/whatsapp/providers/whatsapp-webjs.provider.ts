@@ -1,4 +1,4 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { IMessagingProvider } from './messaging-provider.interface';
 import { WhatsAppSessionManager } from '../whatsapp-session.manager';
 
@@ -13,6 +13,8 @@ const normalizePhone = (raw: string): string => {
 
 @Injectable()
 export class WhatsAppWebJsProvider implements IMessagingProvider {
+  private readonly logger = new Logger(WhatsAppWebJsProvider.name);
+
   constructor(private readonly sessions: WhatsAppSessionManager) {}
 
   async isReady(tenantId: string, branchId: string): Promise<boolean> {
@@ -46,6 +48,10 @@ export class WhatsAppWebJsProvider implements IMessagingProvider {
     // whatsapp-web.js a veces resuelve `undefined` aunque el mensaje SÍ se envió
     // (falla al construir el Message de respuesta). No debe romper el envío.
     const message = await client.sendMessage(numberId._serialized, body);
+    // Una línea fija por envío para poder contar volumen por tenant en los logs.
+    this.logger.log(
+      `[wa-send] ${tenantId}/${branchId} → …${phone.slice(-4)} (${body.length} chars)`,
+    );
     return { id: message?.id?._serialized ?? 'sent' };
   }
 }
