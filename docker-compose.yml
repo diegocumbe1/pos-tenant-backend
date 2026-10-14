@@ -5,9 +5,9 @@
 # producción — y ese comando, ante un drift, ofrece resetear la base.
 #
 # Flujo:
-#   1. docker compose up -d
-#   2. scripts/db-replica.sh          → vuelca prod y la restaura aquí
-#   3. el backend usa .env.local      → DATABASE_URL apunta a este contenedor
+#   1. scripts/db-replica.sh          → levanta esto si hace falta, vuelca prod
+#                                       y la restaura aquí
+#   2. el backend usa .env.local      → DATABASE_URL apunta a este contenedor
 #
 # A partir de ahí: `prisma migrate dev` SOLO contra este contenedor.
 # A producción se va únicamente con `prisma migrate deploy`.
@@ -18,7 +18,9 @@ services:
   db:
     image: postgres:17
     container_name: lynko-db-local
-    restart: unless-stopped
+    # Sin reinicio automático: el ciclo de vida lo maneja scripts/dev.sh
+    # (arranca con el backend y se detiene al salir con Ctrl+C).
+    restart: "no"
     environment:
       POSTGRES_USER: lynko
       POSTGRES_PASSWORD: lynko
