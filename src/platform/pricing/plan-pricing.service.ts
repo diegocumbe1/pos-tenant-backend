@@ -93,6 +93,25 @@ export class PlanPricingService {
   }
 
   /**
+   * Precio de lista de un vertical+plan en USD y en COP (con la tasa de la
+   * misma fecha). Es la ÚNICA fuente para precio de suscripción: el
+   * `Plan.priceCOP` legacy es uno solo para todos los verticales y no refleja
+   * lo que se configura en /admin/pricing. `null` si no hay tarifa cargada.
+   */
+  async getListPriceAt(
+    verticalCode: string,
+    planCode: string,
+    at: Date = new Date(),
+  ): Promise<{ priceUSD: number; priceCOP: number } | null> {
+    const [priceUSD, rate] = await Promise.all([
+      this.getPlanPriceAt(verticalCode, planCode, at),
+      this.getRateAt(at),
+    ]);
+    if (priceUSD == null) return null;
+    return { priceUSD, priceCOP: usdToCop(priceUSD, rate) };
+  }
+
+  /**
    * Matriz completa vigente a una fecha: cada vertical con sus tres planes en
    * USD y su equivalente en COP con la tasa de esa misma fecha.
    */

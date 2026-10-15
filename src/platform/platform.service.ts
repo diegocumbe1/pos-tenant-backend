@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, Subscription } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   addCalendarDaysCO,
@@ -875,7 +875,7 @@ export class PlatformService {
     // suscripción" aunque ya hubieran pagado. La creamos aquí (derivada del
     // último pago si existe) para que la vista sea consistente con Pagos.
     const created = await this.prisma.$transaction((tx) =>
-      this.ensureSubscription(tx, tenantId, tenant.plan),
+      this.ensureSubscription(tx, tenantId, tenant.plan, tenant.vertical?.code),
     );
     return this.toSubscriptionDto(created);
   }
@@ -891,12 +891,31 @@ export class PlatformService {
     });
     const before = existing ? this.toSubscriptionDto(existing) : null;
 
+    // Cambio de plan sin precios explícitos: el precio de lista pasa a ser la
+    // tarifa del vertical para el plan nuevo. Antes solo se cambiaba el código y
+    // el precio viejo (p. ej. el 199.000 legacy) seguía vigente. El pactado se
+    // mueve con la lista salvo que hubiera un descuento: ese lo decidió alguien
+    // y se respeta; el admin lo ajusta a mano si ya no aplica.
+    const repriced = await this.repriceForPlanChange(
+      tenant.vertical?.code,
+      existing?.plan ?? tenant.plan,
+      existing,
+      dto,
+    );
+
     const updated = await this.prisma.$transaction(async (tx) => {
-      const sub = await this.ensureSubscription(tx, tenantId, tenant.plan);
+      const sub = await this.ensureSubscription(
+        tx,
+        tenantId,
+        tenant.plan,
+        tenant.vertical?.code,
+      );
       // El precio vigente (priceCOP/priceUSD) es siempre el pactado: si llega
       // agreedPrice manda ese; si no, el alias legacy priceCOP.
-      const agreedCOP = dto.agreedPriceCOP ?? dto.priceCOP;
-      const agreedUSD = dto.agreedPriceUSD ?? dto.priceUSD;
+      const agreedCOP =
+        dto.agreedPriceCOP ?? dto.priceCOP ?? repriced?.agreedPriceCOP;
+      const agreedUSD =
+        dto.agreedPriceUSD ?? dto.priceUSD ?? repriced?.agreedPriceUSD;
       const s = await tx.subscription.update({
         where: { tenantId },
         data: {
@@ -920,8 +939,8 @@ export class PlatformService {
             : undefined,
           priceCOP: agreedCOP,
           priceUSD: agreedUSD,
-          listPriceCOP: dto.listPriceCOP,
-          listPriceUSD: dto.listPriceUSD,
+          listPriceCOP: dto.listPriceCOP ?? repriced?.listPriceCOP,
+          listPriceUSD: dto.listPriceUSD ?? repriced?.listPriceUSD,
           agreedPriceCOP: agreedCOP,
           agreedPriceUSD: agreedUSD,
           discountReason: dto.discountReason,
@@ -968,7 +987,12 @@ export class PlatformService {
       : null;
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      await this.ensureSubscription(tx, tenantId, tenant.plan);
+      await this.ensureSubscription(
+        tx,
+        tenantId,
+        tenant.plan,
+        tenant.vertical?.code,
+      );
       const s = await tx.subscription.update({
         where: { tenantId },
         data: {
@@ -1048,6 +1072,7 @@ export class PlatformService {
         tx,
         tenantId,
         tenant.plan,
+        tenant.vertical?.code,
       );
 
       // Snapshot comercial: precio de lista al momento del cobro y cuánto se
@@ -2484,6 +2509,57 @@ export class PlatformService {
   }
 
   /**
+   * Precios a aplicar cuando `updateSubscription` cambia el plan y el DTO no
+   * trae ningún precio. `null` = no tocar precios (no cambió el plan, el admin
+   * mandó precios propios, o el vertical no tiene tarifa cargada).
+   */
+  private async repriceForPlanChange(
+    verticalCode: string | undefined,
+    currentPlan: string,
+    existing: Subscription | null,
+    dto: UpdateSubscriptionDto,
+  ): Promise<{
+    listPriceCOP: number;
+    listPriceUSD: number;
+    agreedPriceCOP?: number;
+    agreedPriceUSD?: number;
+  } | null> {
+    if (!dto.plan || dto.plan === currentPlan || !verticalCode) return null;
+    const hasExplicitPrice = [
+      dto.listPriceCOP,
+      dto.listPriceUSD,
+      dto.agreedPriceCOP,
+      dto.agreedPriceUSD,
+      dto.priceCOP,
+      dto.priceUSD,
+    ].some((v) => v !== undefined);
+    if (hasExplicitPrice) return null;
+
+    const list = await this.pricing.getListPriceAt(verticalCode, dto.plan);
+    if (!list) return null;
+
+    // Descuento vigente = pactado por debajo de la lista. Las suscripciones
+    // legacy sin lista (precio heredado de `Plan.priceCOP`) no cuentan como
+    // descuento: ese número nunca lo decidió nadie.
+    const hadDiscount =
+      existing != null &&
+      ((existing.listPriceCOP != null &&
+        existing.agreedPriceCOP != null &&
+        existing.agreedPriceCOP < existing.listPriceCOP) ||
+        (existing.listPriceUSD != null &&
+          existing.agreedPriceUSD != null &&
+          existing.agreedPriceUSD < existing.listPriceUSD));
+
+    return {
+      listPriceCOP: list.priceCOP,
+      listPriceUSD: list.priceUSD,
+      ...(hadDiscount
+        ? {}
+        : { agreedPriceCOP: list.priceCOP, agreedPriceUSD: list.priceUSD }),
+    };
+  }
+
+  /**
    * Garantiza que el tenant tenga una suscripción; la crea (manual) si no existe.
    * Permite que el backoffice gestione la suscripción de cualquier tenant
    * (incluidos los creados por signup que nunca tuvieron una).
@@ -2496,6 +2572,7 @@ export class PlatformService {
     tx: Prisma.TransactionClient,
     tenantId: string,
     plan: string,
+    verticalCode?: string,
   ) {
     const existing = await tx.subscription.findUnique({ where: { tenantId } });
     if (existing) return existing;
@@ -2509,22 +2586,39 @@ export class PlatformService {
     const fallbackEnd = new Date(now);
     fallbackEnd.setMonth(fallbackEnd.getMonth() + 1);
 
+    // Precio de lista del vertical para el plan resultante. Camino raro (solo
+    // tenants sin suscripción), así que la consulta extra no pesa.
+    const effectivePlan = lastPayment?.plan ?? plan;
+    const list = verticalCode
+      ? await this.pricing.getListPriceAt(verticalCode, effectivePlan, now)
+      : null;
+    const paidCOP =
+      lastPayment && lastPayment.currency === 'COP'
+        ? lastPayment.amount
+        : undefined;
+    const paidUSD =
+      lastPayment && lastPayment.currency === 'USD'
+        ? lastPayment.amount
+        : undefined;
+    // Con pago previo, lo pactado es lo que efectivamente pagó; sin pago, la
+    // lista. Si el último pago fue en una moneda, la otra no se inventa.
+    const agreedCOP = lastPayment ? paidCOP : list?.priceCOP;
+    const agreedUSD = lastPayment ? paidUSD : list?.priceUSD;
+
     return tx.subscription.create({
       data: {
         tenantId,
-        plan: lastPayment?.plan ?? plan,
+        plan: effectivePlan,
         status: lastPayment ? 'ACTIVE' : 'TRIALING',
         billingCycle: lastPayment?.billingCycle ?? 'monthly',
         currentPeriodStart: lastPayment?.periodStart ?? now,
         currentPeriodEnd: lastPayment?.periodEnd ?? fallbackEnd,
-        priceCOP:
-          lastPayment && lastPayment.currency === 'COP'
-            ? lastPayment.amount
-            : undefined,
-        priceUSD:
-          lastPayment && lastPayment.currency === 'USD'
-            ? lastPayment.amount
-            : undefined,
+        priceCOP: agreedCOP,
+        priceUSD: agreedUSD,
+        listPriceCOP: list?.priceCOP,
+        listPriceUSD: list?.priceUSD,
+        agreedPriceCOP: agreedCOP,
+        agreedPriceUSD: agreedUSD,
         provider: 'manual',
       },
     });

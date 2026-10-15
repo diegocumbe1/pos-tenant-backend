@@ -10,6 +10,7 @@ import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { performance } from 'perf_hooks';
 import { AdminService } from '../../admin/admin.service';
+import { PlanPricingService } from '../../platform/pricing/plan-pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseService } from '../../supabase/supabase.service';
 import {
@@ -106,6 +107,7 @@ export class AuthService {
     private readonly supabase: SupabaseService,
     private readonly permissionsCache: PermissionsCacheService,
     private readonly adminService: AdminService,
+    private readonly planPricing: PlanPricingService,
   ) {}
 
   async inviteUser(dto: InviteUserDto) {
@@ -211,6 +213,17 @@ export class AuthService {
     const branchName = dto.branchName?.trim() || 'Sucursal Principal';
     const menuSlug = await this.nextAvailableMenuSlug(slugify(businessName));
 
+    // Precio de lista del vertical (lo que se configura en /admin/pricing).
+    // Antes se copiaba `Plan.priceCOP`, que es uno solo para todos los
+    // verticales: un retail Premium nacía en 199.000 en vez de su tarifa.
+    // Solo si el vertical no tiene tarifa cargada se cae al legacy.
+    const listPrice = await this.planPricing.getListPriceAt(
+      vertical.code,
+      selectedPlan.code,
+    );
+    const priceCOP = listPrice?.priceCOP ?? (selectedPlan.priceCOP || undefined);
+    const priceUSD = listPrice?.priceUSD;
+
     const tenant = await this.prisma.$transaction(async (tx) => {
       const createdTenant = await tx.tenant.create({
         data: {
@@ -240,7 +253,12 @@ export class AuthService {
           currentPeriodStart: new Date(),
           currentPeriodEnd: periodEnd,
           trialEndsAt: periodEnd,
-          priceCOP: selectedPlan.priceCOP || undefined,
+          priceCOP,
+          priceUSD,
+          listPriceCOP: priceCOP,
+          listPriceUSD: priceUSD,
+          agreedPriceCOP: priceCOP,
+          agreedPriceUSD: priceUSD,
           provider: 'manual',
         },
       });

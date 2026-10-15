@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
 import { AdminModule } from '../admin/admin.module';
+import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
 import { AuthController } from './auth.controller';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PasswordSetGuard } from './guards/password-set.guard';
@@ -22,6 +23,9 @@ import { PermissionsCacheService } from './services/permissions-cache.service';
     PermissionsGuard,
     PasswordSetGuard,
     PermissionsCacheService,
+    // Provisto aquí y no importando PlatformModule: Platform → Alexa →
+    // Assistant → Auth cerraría un ciclo. Es stateless (solo Prisma).
+    PlanPricingService,
   ],
   exports: [
     JwtAuthGuard,
