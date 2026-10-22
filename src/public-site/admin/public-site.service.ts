@@ -16,6 +16,7 @@ import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { slugify } from '../../barber/shared/barber-slug';
+import { resolveBusinessHours } from '../../barber/shared/business-hours';
 import { resolvePublicBookingCopy } from '../../barber/shared/public-booking-copy';
 import { VerticalSiteStrategy } from '../../public-site/strategies/vertical-site-strategy';
 import { VerticalSiteStrategyResolver } from '../../public-site/strategies/vertical-site-strategy.resolver';
@@ -590,7 +591,9 @@ export class PublicSiteService {
       },
     });
     return {
-      businessHours: settings?.businessHours ?? {},
+      // Mismo default que ve el admin: con {} la reserva pública no ofrecía
+      // ningún horario aunque la agenda sí mostrara turnos.
+      businessHours: resolveBusinessHours(settings?.businessHours ?? null),
       bookingMode:
         settings?.bookingMode === 'resources' ? 'resources' : 'services',
       publicCopy: resolvePublicBookingCopy(

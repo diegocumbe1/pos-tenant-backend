@@ -8,45 +8,16 @@ import {
   slugify,
 } from '../../shared/barber-slug';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import {
+  resolveBusinessHours,
+  sanitizeBusinessHours,
+} from '../../shared/business-hours';
 import { resolvePublicBookingCopy } from '../../shared/public-booking-copy';
 import {
   BarberGalleryItemDto,
   BarberStatDto,
   UpdateBarberSettingsDto,
 } from './dto/barber-settings.dto';
-
-const DAY_OF_WEEK_ORDER = [
-  'monday',
-  'tuesday',
-  'wednesday',
-  'thursday',
-  'friday',
-  'saturday',
-  'sunday',
-] as const;
-
-type DayOfWeek = (typeof DAY_OF_WEEK_ORDER)[number];
-type TimeRange = { start: string; end: string };
-type BusinessHours = Record<DayOfWeek, TimeRange[]>;
-
-const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-// Horario por defecto cuando el negocio aún no configuró nada (L–V 8–12/14–18,
-// Sáb 8–12, Dom cerrado). Coincide con el default del frontend.
-const DEFAULT_BUSINESS_HOURS: BusinessHours = {
-  monday: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
-  tuesday: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
-  wednesday: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
-  thursday: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
-  friday: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
-  saturday: [{ start: '08:00', end: '12:00' }],
-  sunday: [],
-};
-
-const hhmmToMinutes = (hhmm: string): number => {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + m;
-};
 
 type SettingsWithRelations = Prisma.BarberSettingsGetPayload<{
   include: {
@@ -115,7 +86,7 @@ export class BarberSettingsService {
                   ...dto.booking.publicCopy,
                 } as Prisma.InputJsonValue),
           businessHours: dto.booking?.businessHours
-            ? (this.sanitizeBusinessHours(
+            ? (sanitizeBusinessHours(
                 dto.booking.businessHours,
               ) as unknown as Prisma.InputJsonValue)
             : undefined,
@@ -229,7 +200,7 @@ export class BarberSettingsService {
           settings.bookingMode,
           settings.publicBookingCopy,
         ),
-        businessHours: this.resolveBusinessHours(settings.businessHours),
+        businessHours: resolveBusinessHours(settings.businessHours),
         onlineBookingEnabled: settings.onlineBookingEnabled,
         publicProfilePublished: settings.publicProfilePublished,
       },
@@ -276,42 +247,6 @@ export class BarberSettingsService {
       createdAt: settings.createdAt,
       updatedAt: settings.updatedAt,
     };
-  }
-
-  // Normaliza el input del cliente: garantiza los 7 días, descarta rangos
-  // inválidos (formato HH:MM y fin > inicio) y ordena por hora de inicio.
-  private sanitizeBusinessHours(raw: Record<string, unknown>): BusinessHours {
-    return DAY_OF_WEEK_ORDER.reduce((acc, day) => {
-      const ranges = Array.isArray(raw?.[day]) ? (raw[day] as unknown[]) : [];
-      acc[day] = ranges
-        .filter(
-          (r): r is TimeRange =>
-            !!r &&
-            typeof r === 'object' &&
-            typeof (r as TimeRange).start === 'string' &&
-            typeof (r as TimeRange).end === 'string' &&
-            HHMM.test((r as TimeRange).start) &&
-            HHMM.test((r as TimeRange).end) &&
-            hhmmToMinutes((r as TimeRange).end) >
-              hhmmToMinutes((r as TimeRange).start),
-        )
-        .map((r) => ({ start: r.start, end: r.end }))
-        .sort((a, b) => hhmmToMinutes(a.start) - hhmmToMinutes(b.start));
-      return acc;
-    }, {} as BusinessHours);
-  }
-
-  // Lo que persistimos puede ser {} (default de columna). En ese caso devolvemos
-  // el horario por defecto para que la UI no muestre todo cerrado.
-  private resolveBusinessHours(raw: Prisma.JsonValue): BusinessHours {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return DEFAULT_BUSINESS_HOURS;
-    }
-    const hasAnyDay = DAY_OF_WEEK_ORDER.some((day) =>
-      Array.isArray((raw as Record<string, unknown>)[day]),
-    );
-    if (!hasAnyDay) return DEFAULT_BUSINESS_HOURS;
-    return this.sanitizeBusinessHours(raw as Record<string, unknown>);
   }
 
   private toPublicCopyRecord(raw: Prisma.JsonValue): Record<string, unknown> {
