@@ -39,8 +39,13 @@ export class TenantAdminController {
 
   // ─── Tenant (datos del negocio) ──────────────────────────────────────────────
 
+  // El nombre del negocio es de cualquier vertical, igual que la sede de abajo.
   @Patch()
-  @RequirePermissions('restaurant:settings:write')
+  @RequireAnyPermission(
+    'restaurant:settings:write',
+    'barber:settings:write',
+    'retail:settings:write',
+  )
   updateTenant(
     @CurrentTenant() ctx: TenantContext,
     @Body() dto: UpdateTenantDto,

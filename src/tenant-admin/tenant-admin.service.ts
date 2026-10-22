@@ -44,6 +44,7 @@ export class TenantAdminService {
         tenantId,
         name: dto.name,
         address: dto.address,
+        city: dto.city,
         phone: dto.phone,
       },
     });
@@ -74,7 +75,13 @@ export class TenantAdminService {
         : undefined;
     return this.prisma.branch.update({
       where: { id: branchId },
-      data: { name: dto.name, address: dto.address, phone: dto.phone, paymentInfo },
+      data: {
+        name: dto.name,
+        address: dto.address,
+        city: dto.city,
+        phone: dto.phone,
+        paymentInfo,
+      },
     });
   }
 

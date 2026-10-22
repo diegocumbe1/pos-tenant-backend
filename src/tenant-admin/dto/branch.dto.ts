@@ -106,6 +106,11 @@ export class CreateBranchDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  city?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(40)
   phone?: string;
 }
@@ -120,6 +125,11 @@ export class UpdateBranchDto {
   @IsString()
   @MaxLength(200)
   address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  city?: string;
 
   @IsOptional()
   @IsString()
