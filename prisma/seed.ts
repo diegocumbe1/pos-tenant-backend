@@ -304,6 +304,12 @@ const PERMISSIONS: Array<{
     description: 'Registrar entradas, ajustes y pérdidas de stock',
   },
   {
+    code: 'retail:inventory:expiry',
+    resource: 'retail-inventory',
+    action: 'expiry',
+    description: 'Ver y gestionar vencimientos de la tienda',
+  },
+  {
     code: 'retail:sales:read',
     resource: 'retail-sales',
     action: 'read',
@@ -448,9 +454,13 @@ const SYSTEM_ROLES: Array<{
       'restaurant:cash:read',
       'restaurant:cash:manage',
       ...BARBER_PERMS,
-      // Retail: todo menos borrar catálogo y anular ventas (queda en el dueño).
+      // Retail: todo menos borrar catálogo, anular ventas y ver vencimientos
+      // (quedan en el dueño).
       ...RETAIL_PERMS.filter(
-        (c) => c !== 'retail:catalog:delete' && c !== 'retail:sales:void',
+        (c) =>
+          c !== 'retail:catalog:delete' &&
+          c !== 'retail:sales:void' &&
+          c !== 'retail:inventory:expiry',
       ),
       'admin:users:invite',
     ],

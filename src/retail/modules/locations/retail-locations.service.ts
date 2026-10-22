@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
+import { normalizeAllyTiers } from '../../shared/retail-ally-tiers';
 import {
   applyBalanceDelta,
   ensureDefaultLocation,
@@ -73,6 +74,32 @@ export class RetailLocationsService {
     });
     const byLocation = new Map(totals.map((row) => [row.locationId, row]));
 
+    // Última revista cerrada y revista abierta, por bodega, en dos consultas.
+    const [lastCounts, drafts] = await Promise.all([
+      this.prisma.retailStockCount.groupBy({
+        by: ['locationId'],
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          status: 'CLOSED',
+        },
+        _max: { closedAt: true },
+      }),
+      this.prisma.retailStockCount.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          status: 'DRAFT',
+        },
+        select: { id: true, locationId: true },
+      }),
+    ]);
+    const lastCountBy = new Map(
+      lastCounts.map((row) => [row.locationId, row._max.closedAt]),
+    );
+    const draftBy = new Map(drafts.map((row) => [row.locationId, row.id]));
+    const now = Date.now();
+
     return locations.map((location) => ({
       id: location.id,
       name: location.name,
@@ -87,6 +114,22 @@ export class RetailLocationsService {
       sortOrder: location.sortOrder,
       totalUnits: byLocation.get(location.id)?._sum.qty ?? 0,
       productCount: byLocation.get(location.id)?._count._all ?? 0,
+      kind: location.kind,
+      countEveryDays: location.countEveryDays,
+      // null = usa las de la tienda.
+      allyTiers:
+        location.allyTiers === null
+          ? null
+          : normalizeAllyTiers(location.allyTiers),
+      customerId: location.customerId,
+      lastCountAt: lastCountBy.get(location.id) ?? null,
+      // Atrasada: tiene frecuencia y ya pasó, contando desde la última revista
+      // o, si nunca se hizo, desde que se creó la bodega.
+      countOverdue:
+        location.countEveryDays !== null &&
+        now - (lastCountBy.get(location.id) ?? location.createdAt).getTime() >
+          location.countEveryDays * 86_400_000,
+      draftCountId: draftBy.get(location.id) ?? null,
       createdAt: location.createdAt,
     }));
   }
@@ -126,6 +169,16 @@ export class RetailLocationsService {
           note: dto.note?.trim() || null,
           isDefault: false,
           sortOrder: count,
+          kind: dto.kind ?? 'EXHIBITION',
+          countEveryDays: dto.countEveryDays ?? null,
+          // Escala propia solo si es aliado y la mandaron; si no, usa la de la tienda.
+          ...(dto.kind === 'ALLY' && dto.allyTiers
+            ? {
+                allyTiers: normalizeAllyTiers(
+                  dto.allyTiers,
+                ) as Prisma.InputJsonValue,
+              }
+            : {}),
         },
       });
 
@@ -179,6 +232,20 @@ export class RetailLocationsService {
         ...(dto.note !== undefined ? { note: dto.note.trim() || null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
+        ...(dto.countEveryDays !== undefined
+          ? { countEveryDays: dto.countEveryDays }
+          : {}),
+        ...(dto.allyTiers !== undefined
+          ? {
+              allyTiers:
+                dto.allyTiers === null
+                  ? Prisma.DbNull
+                  : (normalizeAllyTiers(
+                      dto.allyTiers,
+                    ) as Prisma.InputJsonValue),
+            }
+          : {}),
       },
     });
   }
@@ -573,7 +640,9 @@ export class RetailLocationsService {
       select: { stock: true },
     });
 
-    await applyBalanceDelta(
+    // Las fechas de vencimiento viajan con la mercancía: lo que sale del
+    // origen (del lote que vence antes) entra al destino con esas mismas fechas.
+    const lotTakes = await applyBalanceDelta(
       tx,
       ctx,
       {
@@ -592,6 +661,7 @@ export class RetailLocationsService {
         variantId: args.variantId,
       },
       args.quantity,
+      { kind: 'carry', takes: lotTakes },
     );
 
     const base = {
@@ -624,8 +694,13 @@ export class RetailLocationsService {
     });
   }
 
-  /** Deja el saldo de un sitio en el número contado, moviendo la diferencia contra la principal. */
-  private async applyCount(
+  /**
+   * Deja el saldo de un sitio en el número contado, moviendo la diferencia contra la principal.
+   *
+   * Público porque la revista de una bodega de exhibición cierra igual que el
+   * conteo de siempre (ver `RetailStockCountsService`).
+   */
+  async applyCount(
     tx: Tx,
     ctx: TenantContext,
     args: {

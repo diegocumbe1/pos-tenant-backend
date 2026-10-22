@@ -4,9 +4,12 @@ import {
   IsEnum,
   IsInt,
   IsISO8601,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -46,6 +49,21 @@ export class CreateRetailSupplierDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  @ApiPropertyOptional({
+    example: 30,
+    nullable: true,
+    description:
+      '% que el proveedor descuenta sobre el precio al público (distribuidor ' +
+      'autorizado). null = el proveedor no trabaja así.',
+  })
+  // `@IsOptional` deja pasar null, que es como se apaga.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  // 100 sería mercancía regalada: no es un descuento de distribuidor.
+  @Max(95)
+  listDiscountPct?: number | null;
 }
 
 export class UpdateRetailSupplierDto extends PartialType(

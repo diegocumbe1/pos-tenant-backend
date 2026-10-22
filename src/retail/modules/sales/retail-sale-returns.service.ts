@@ -12,6 +12,7 @@ import {
   allocateOut,
   resolveLocation,
 } from '../../shared/retail-stock-locations';
+import { LotEntry, readAllocations } from '../../shared/retail-stock-lots';
 import { formatCOP } from '../../../common/date.util';
 import { CreateRetailSaleReturnDto } from './dto/retail-sale-return.dto';
 
@@ -42,6 +43,17 @@ type ReturnWithItems = Prisma.RetailSaleReturnGetPayload<{
  * actual le cambiaría el costo a posteriori a algo que ya había salido y el
  * valor del inventario dejaría de cuadrar con lo que se pagó.
  */
+/**
+ * Cómo vuelve a los lotes lo devuelto: a las fechas exactas de las que salió si
+ * la línea las guardó, o reconstruido si la venta es anterior a guardarlas.
+ */
+function lotsBackFor(value: unknown): LotEntry {
+  const allocations = readAllocations(value);
+  return allocations.length > 0
+    ? { kind: 'exact', allocations }
+    : { kind: 'restore' };
+}
+
 @Injectable()
 export class RetailSaleReturnsService {
   constructor(
@@ -293,6 +305,8 @@ export class RetailSaleReturnsService {
             variantId,
             quantity: line.quantity,
             locationId: item.locationId,
+            // Y a su lote de vencimiento: el exacto si la venta lo guardó.
+            lots: lotsBackFor(item.lotAllocations),
           });
         } else {
           bucket.productLevelQty += line.quantity;
@@ -334,6 +348,7 @@ export class RetailSaleReturnsService {
               productId,
               quantity: bucket.productLevelQty,
               locationId: bucket.locationId,
+              lots: { kind: 'restore' },
             })
           : await resolveLocation(tx, ctx, bucket.locationId);
 

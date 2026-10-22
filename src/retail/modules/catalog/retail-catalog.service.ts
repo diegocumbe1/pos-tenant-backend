@@ -9,11 +9,16 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RetailTenantHelper } from '../../shared/retail-tenant.helper';
 import { allocateIn } from '../../shared/retail-stock-locations';
+import { lotDay } from '../../shared/retail-stock-lots';
 import {
   readProductOptions,
   sanitizeProductOptions,
 } from '../../shared/retail-product-options';
-import { wholesaleTiersOf } from '../../shared/retail-pricing';
+import {
+  costFromListPrice,
+  effectiveListDiscountPct,
+  wholesaleTiersOf,
+} from '../../shared/retail-pricing';
 import {
   ProductVariantRow,
   resolveStockOptionIds,
@@ -23,6 +28,7 @@ import {
 import {
   CreateRetailCategoryDto,
   CreateRetailProductDto,
+  RecalculateListCostsDto,
   UpdateRetailCategoryDto,
   UpdateRetailProductDto,
 } from './dto/retail-catalog.dto';
@@ -159,14 +165,20 @@ export class RetailCatalogService {
         )
       : products;
 
-    const committed = await this.committedByProduct(
-      ctx,
-      visible.map((product) => product.id),
-    );
+    const [committed, expiry] = await Promise.all([
+      this.committedByProduct(
+        ctx,
+        visible.map((product) => product.id),
+      ),
+      this.nextExpiryByKey(
+        ctx,
+        visible.filter((product) => product.tracksExpiry).map((p) => p.id),
+      ),
+    ]);
     return visible.map((product) =>
       // `false` = sin filas de reparto. El resumen (`variantCount`, `assignedStock`,
       // `hasLowStockVariant`) sí viaja, que es lo único que un listado necesita.
-      this.toProductDto(product, committed.get(product.id) ?? 0, false),
+      this.toProductDto(product, committed.get(product.id) ?? 0, false, expiry),
     );
   }
 
@@ -198,8 +210,16 @@ export class RetailCatalogService {
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
 
-    const committed = await this.committedByProduct(ctx, [product.id]);
-    return this.toProductDto(product, committed.get(product.id) ?? 0);
+    const [committed, expiry] = await Promise.all([
+      this.committedByProduct(ctx, [product.id]),
+      this.nextExpiryByKey(ctx, product.tracksExpiry ? [product.id] : []),
+    ]);
+    return this.toProductDto(
+      product,
+      committed.get(product.id) ?? 0,
+      true,
+      expiry,
+    );
   }
 
   /** Búsqueda por código de barras para el escáner del POS. */
@@ -242,6 +262,14 @@ export class RetailCatalogService {
       options,
     );
 
+    const pricingMode = dto.pricingMode ?? 'COST_MARGIN';
+    const supplierId = dto.supplierId || null;
+    const supplierPct = await this.supplierListPct(ctx, supplierId);
+    const listPricing =
+      pricingMode === 'LIST_DISCOUNT'
+        ? this.listPricing(dto.priceCOP, dto.listDiscountPct, supplierPct)
+        : null;
+
     try {
       const product = await this.prisma.$transaction(async (tx) => {
         const created = await tx.retailProduct.create({
@@ -254,9 +282,13 @@ export class RetailCatalogService {
             barcode: dto.barcode?.trim() || null,
             brand: dto.brand?.trim() || null,
             description: dto.description,
-            costCOP: dto.costCOP ?? 0,
+            // En LIST_DISCOUNT el costo no se escribe: sale del precio.
+            costCOP: listPricing?.costCOP ?? dto.costCOP ?? 0,
             priceCOP: dto.priceCOP,
-            saleMarginPct: dto.saleMarginPct,
+            saleMarginPct: listPricing?.saleMarginPct ?? dto.saleMarginPct,
+            pricingMode,
+            supplierId,
+            listDiscountPct: dto.listDiscountPct ?? null,
             minPriceCOP: dto.minPriceCOP,
             minMarginPct: dto.minMarginPct,
             wholesalePrice6COP: dto.wholesalePrice6COP,
@@ -264,6 +296,8 @@ export class RetailCatalogService {
             emoji: dto.emoji,
             imageUrls,
             trackStock: dto.trackStock ?? true,
+            tracksExpiry: dto.tracksExpiry ?? false,
+            expiryAlertDays: dto.expiryAlertDays ?? null,
             stock: initialStock,
             minStock: dto.minStock ?? 0,
             isActive: dto.isActive ?? true,
@@ -311,6 +345,10 @@ export class RetailCatalogService {
           const locationId = await allocateIn(tx, ctx, {
             productId: created.id,
             quantity: initialStock,
+            lots:
+              created.tracksExpiry && dto.initialExpiresOn
+                ? { kind: 'dated', expiresOn: dto.initialExpiresOn }
+                : undefined,
           });
           await tx.retailStockMovement.create({
             data: {
@@ -337,7 +375,9 @@ export class RetailCatalogService {
             productId: created.id,
             priceCOP: created.priceCOP,
             costCOP: created.costCOP,
-            reason: 'Precio al crear el producto',
+            reason: listPricing
+              ? `Precio al crear el producto (lista −${listPricing.pct}%)`
+              : 'Precio al crear el producto',
             userId: ctx.userId,
           },
         });
@@ -386,8 +426,46 @@ export class RetailCatalogService {
         stockOptionIds: true,
         priceCOP: true,
         costCOP: true,
+        pricingMode: true,
+        supplierId: true,
+        listDiscountPct: true,
       },
     });
+
+    // El costo se recalcula desde el precio de lista solo cuando el guardado
+    // toca algo que lo determina. Así, si el % del proveedor cambió, un
+    // producto no se reescribe por editarle el nombre desde otra pantalla; el
+    // formulario de precios sí manda el precio y muestra el costo antes de
+    // guardar, así que ahí no hay sorpresa.
+    const nextMode = dto.pricingMode ?? current.pricingMode;
+    const nextSupplierId =
+      dto.supplierId !== undefined
+        ? dto.supplierId || null
+        : current.supplierId;
+    const nextListPct =
+      dto.listDiscountPct !== undefined
+        ? dto.listDiscountPct
+        : current.listDiscountPct;
+    // Por VALOR, no por presencia: el formulario manda el precio siempre, y
+    // comparar por presencia recalcularía el costo al cambiarle el nombre.
+    const touchesListPricing =
+      nextMode !== current.pricingMode ||
+      nextSupplierId !== current.supplierId ||
+      nextListPct !== current.listDiscountPct ||
+      (dto.priceCOP !== undefined && dto.priceCOP !== current.priceCOP);
+    const supplierPct =
+      dto.supplierId !== undefined ||
+      (nextMode === 'LIST_DISCOUNT' && touchesListPricing)
+        ? await this.supplierListPct(ctx, nextSupplierId)
+        : null;
+    const listPricing =
+      nextMode === 'LIST_DISCOUNT' && touchesListPricing
+        ? this.listPricing(
+            dto.priceCOP ?? current.priceCOP,
+            nextListPct,
+            supplierPct,
+          )
+        : null;
 
     // Las opciones se revalidan contra las fotos que quedarán guardadas, no
     // contra las que llegan: si el admin borró una foto que un color usaba, la
@@ -438,9 +516,13 @@ export class RetailCatalogService {
             brand:
               dto.brand === undefined ? undefined : dto.brand.trim() || null,
             description: dto.description,
-            costCOP: dto.costCOP,
+            costCOP: listPricing?.costCOP ?? dto.costCOP,
             priceCOP: dto.priceCOP,
-            saleMarginPct: dto.saleMarginPct,
+            saleMarginPct: listPricing?.saleMarginPct ?? dto.saleMarginPct,
+            pricingMode: dto.pricingMode,
+            supplierId:
+              dto.supplierId === undefined ? undefined : dto.supplierId || null,
+            listDiscountPct: dto.listDiscountPct,
             minPriceCOP: dto.minPriceCOP,
             minMarginPct: dto.minMarginPct,
             // null apaga el escalón, undefined lo deja como estaba: Prisma ya
@@ -450,6 +532,8 @@ export class RetailCatalogService {
             emoji: dto.emoji,
             imageUrls: dto.imageUrls,
             trackStock: dto.trackStock,
+            tracksExpiry: dto.tracksExpiry,
+            expiryAlertDays: dto.expiryAlertDays,
             minStock: dto.minStock,
             isActive: dto.isActive,
             isPublished: dto.isPublished,
@@ -469,7 +553,7 @@ export class RetailCatalogService {
         // el histórico de renglones idénticos y escondería los saltos reales,
         // que son los que explican por qué una venta dejó menos margen.
         const nextPrice = dto.priceCOP ?? current.priceCOP;
-        const nextCost = dto.costCOP ?? current.costCOP;
+        const nextCost = listPricing?.costCOP ?? dto.costCOP ?? current.costCOP;
         if (nextPrice !== current.priceCOP || nextCost !== current.costCOP) {
           await tx.retailProductPriceHistory.create({
             data: {
@@ -480,6 +564,9 @@ export class RetailCatalogService {
               prevPriceCOP: current.priceCOP,
               costCOP: nextCost,
               prevCostCOP: current.costCOP,
+              reason: listPricing
+                ? `Desde precio de lista −${listPricing.pct}%`
+                : undefined,
               userId: ctx.userId,
             },
           });
@@ -507,6 +594,86 @@ export class RetailCatalogService {
     } catch (error) {
       throw this.mapUniqueError(error, `El SKU "${dto.sku}" ya existe`);
     }
+  }
+
+  // ─── Precio de lista: recalcular por proveedor ──────────────────────────────
+
+  /**
+   * Qué productos cambiarían de costo si se aplica el % ACTUAL del proveedor.
+   *
+   * Existe porque cambiar el % de un proveedor no reescribe nada solo: el costo
+   * guardado es un hecho (con él se midió el margen de las ventas de hasta hoy)
+   * y moverlo en silencio escondería el salto. El admin ve la lista y decide.
+   * Solo entran los que toman el % del proveedor: un producto con % propio ya
+   * dijo que no sigue al proveedor.
+   */
+  async previewListCosts(ctx: TenantContext, supplierId: string) {
+    const supplier = await this.listSupplier(ctx, supplierId);
+    const products = await this.prisma.retailProduct.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        supplierId,
+        pricingMode: 'LIST_DISCOUNT',
+        listDiscountPct: null,
+        deletedAt: null,
+      },
+      select: { id: true, name: true, priceCOP: true, costCOP: true },
+      orderBy: { name: 'asc' },
+    });
+    const pct = supplier.listDiscountPct;
+    const changes =
+      pct === null
+        ? []
+        : products
+            .map((product) => ({
+              id: product.id,
+              name: product.name,
+              priceCOP: product.priceCOP,
+              costCOP: product.costCOP,
+              nextCostCOP: costFromListPrice(product.priceCOP, pct),
+            }))
+            .filter((row) => row.nextCostCOP !== row.costCOP);
+    return {
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      listDiscountPct: pct,
+      productCount: products.length,
+      changes,
+    };
+  }
+
+  /** Aplica la vista previa. Cada costo que cambia deja su fila de histórico. */
+  async recalculateListCosts(ctx: TenantContext, dto: RecalculateListCostsDto) {
+    const preview = await this.previewListCosts(ctx, dto.supplierId);
+    if (preview.listDiscountPct === null) {
+      throw new BadRequestException(
+        'Este proveedor no tiene % de distribuidor: no hay con qué recalcular',
+      );
+    }
+    const pct = preview.listDiscountPct;
+    await this.prisma.$transaction(async (tx) => {
+      for (const row of preview.changes) {
+        await tx.retailProduct.update({
+          where: { id: row.id },
+          data: { costCOP: row.nextCostCOP, saleMarginPct: pct },
+        });
+        await tx.retailProductPriceHistory.create({
+          data: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            productId: row.id,
+            priceCOP: row.priceCOP,
+            prevPriceCOP: row.priceCOP,
+            costCOP: row.nextCostCOP,
+            prevCostCOP: row.costCOP,
+            reason: `Recalculado con el ${pct}% de ${preview.supplierName}`,
+            userId: ctx.userId,
+          },
+        });
+      }
+    });
+    return { updated: preview.changes.length };
   }
 
   /** Soft-delete: el histórico de ventas debe seguir resolviendo el producto. */
@@ -566,6 +733,96 @@ export class RetailCatalogService {
     return byProduct;
   }
 
+  /**
+   * El % de distribuidor del proveedor, validando de paso que sea de esta
+   * tienda. Sin proveedor devuelve null. No filtra los archivados: un producto
+   * que ya apuntaba a un proveedor que se dejó de usar tiene que poder seguir
+   * guardándose.
+   */
+  private async supplierListPct(
+    ctx: TenantContext,
+    supplierId: string | null,
+  ): Promise<number | null> {
+    if (!supplierId) return null;
+    const supplier = await this.prisma.retailSupplier.findFirst({
+      where: { id: supplierId, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { listDiscountPct: true },
+    });
+    if (!supplier) throw new NotFoundException('Proveedor no encontrado');
+    return supplier.listDiscountPct;
+  }
+
+  private async listSupplier(ctx: TenantContext, supplierId: string) {
+    const supplier = await this.prisma.retailSupplier.findFirst({
+      where: {
+        id: supplierId,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
+      select: { id: true, name: true, listDiscountPct: true },
+    });
+    if (!supplier) throw new NotFoundException('Proveedor no encontrado');
+    return supplier;
+  }
+
+  /** Costo y % de un producto en modo LIST_DISCOUNT. */
+  private listPricing(
+    priceCOP: number,
+    productPct: number | null | undefined,
+    supplierPct: number | null,
+  ) {
+    const pct = effectiveListDiscountPct(productPct, supplierPct);
+    if (pct === null) {
+      throw new BadRequestException(
+        'Para calcular el costo desde el precio de lista falta el % de ' +
+          'descuento: ponlo en el producto o en el proveedor',
+      );
+    }
+    return {
+      pct,
+      costCOP: costFromListPrice(priceCOP, pct),
+      // El margen sobre el precio ES el descuento del distribuidor: de 285.000
+      // quedan 85.500, que son el 30%.
+      saleMarginPct: pct,
+    };
+  }
+
+  /**
+   * El vencimiento más cercano de lo que QUEDA, por producto y por aroma.
+   *
+   * Una sola agrupación para todo el listado, y solo sobre productos que
+   * vencen: el resto del catálogo no paga esta consulta. Llave
+   * `productId|variantId` (variante vacía = el producto entero), y además
+   * `productId|*` con el mínimo de todo el producto, que es lo que pinta la
+   * tarjeta del mostrador.
+   */
+  private async nextExpiryByKey(
+    ctx: TenantContext,
+    productIds: string[],
+  ): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    if (productIds.length === 0) return map;
+    const rows = await this.prisma.retailStockLot.groupBy({
+      by: ['productId', 'variantId'],
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        productId: { in: productIds },
+        qty: { gt: 0 },
+      },
+      _min: { expiresOn: true },
+    });
+    for (const row of rows) {
+      if (!row._min.expiresOn) continue;
+      const day = lotDay(row._min.expiresOn);
+      map.set(`${row.productId}|${row.variantId ?? ''}`, day);
+      const whole = map.get(`${row.productId}|*`);
+      if (!whole || day < whole) map.set(`${row.productId}|*`, day);
+    }
+    return map;
+  }
+
   private toProductDto(
     product: RetailProduct & {
       category?: { id: string; name: string; emoji: string | null } | null;
@@ -585,6 +842,8 @@ export class RetailCatalogService {
      * PARA REVERTIR: pasar `true` (o quitar el argumento) en `listProducts`. Nada más depende de esto.
      */
     includeVariants = true,
+    /** Vencimientos más cercanos (ver `nextExpiryByKey`). Sin él, no viajan. */
+    expiry?: Map<string, string>,
   ) {
     const margin = product.priceCOP - product.costCOP;
     return {
@@ -614,6 +873,12 @@ export class RetailCatalogService {
           ? Math.round((margin / product.priceCOP) * 1000) / 10
           : 0,
       saleMarginPct: product.saleMarginPct,
+      // Cómo se le pone precio. COST_MARGIN es lo de siempre; en LIST_DISCOUNT
+      // `costCOP` salió del precio y del % (el del producto, o si es null el
+      // del proveedor `supplierId`).
+      pricingMode: product.pricingMode,
+      supplierId: product.supplierId,
+      listDiscountPct: product.listDiscountPct,
       minPriceCOP: product.minPriceCOP,
       minMarginPct: product.minMarginPct,
       minMarginCOP:
@@ -633,6 +898,11 @@ export class RetailCatalogService {
       videoUrls: product.videoUrls,
       primaryImageUrl: product.imageUrls[0] ?? null,
       trackStock: product.trackStock,
+      tracksExpiry: product.tracksExpiry,
+      expiryAlertDays: product.expiryAlertDays,
+      // El lote con unidades que vence antes, de todo el producto. NULL = no
+      // vence, o vence pero no tiene nada fechado todavía.
+      nextExpiryOn: expiry?.get(`${product.id}|*`) ?? null,
       stock: product.stock,
       minStock: product.minStock,
       isLowStock:
@@ -666,6 +936,7 @@ export class RetailCatalogService {
             sku: variant.sku,
             stock: variant.stock,
             minStock: variant.minStock,
+            nextExpiryOn: expiry?.get(`${product.id}|${variant.id}`) ?? null,
             isLowStock:
               product.isActive &&
               product.trackStock &&

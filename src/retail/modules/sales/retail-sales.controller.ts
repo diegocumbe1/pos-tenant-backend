@@ -119,6 +119,7 @@ export class RetailSalesController {
       'Medio del ABONO, no el anotado al cerrar la venta: devuelve las ventas ' +
       'que recibieron al menos un pago por ese medio.',
   })
+  @ApiQuery({ name: 'locationId', required: false })
   @ApiQuery({
     name: 'search',
     required: false,
@@ -136,8 +137,10 @@ export class RetailSalesController {
     @Query('deliveryStatus') deliveryStatus?: RetailDeliveryStatus,
     @Query('paymentStatus') paymentStatus?: string,
     @Query('paymentMethod') paymentMethod?: string,
+    @Query('locationId') locationId?: string,
   ) {
     return this.sales.listSales(ctx, {
+      locationId: locationId || undefined,
       from,
       to,
       limit: limit ? Number(limit) : undefined,
@@ -167,6 +170,7 @@ export class RetailSalesController {
     @Query('to') to?: string,
     @Query('saleType') saleType?: RetailSaleType,
     @Query('paymentMethod') paymentMethod?: string,
+    @Query('locationId') locationId?: string,
   ) {
     return this.sales.getSummary(
       ctx,
@@ -174,6 +178,7 @@ export class RetailSalesController {
       to,
       parseSaleType(saleType),
       parsePaymentMethod(paymentMethod),
+      locationId || undefined,
     );
   }
 

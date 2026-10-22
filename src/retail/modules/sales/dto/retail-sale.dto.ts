@@ -14,11 +14,45 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+import { CALENDAR_DAY } from '../../../shared/retail-calendar-day';
+
+/**
+ * Qué unidades tomó el vendedor del estante, en productos que vencen.
+ *
+ * Opcional siempre. Sin esto la venta sale de la fecha que vence antes (FEFO);
+ * con esto sale de la que el vendedor tiene en la mano: "1 del 3 feb y 1 del
+ * 12 dic". Nunca bloquea: si a ese lote ya no le quedan, el resto sale por FEFO.
+ */
+export class SaleLotPickDto {
+  @ApiPropertyOptional({
+    example: 'lot_xxx',
+    description: 'Lote elegido. Vacío = unidades "sin fecha".',
+  })
+  @IsOptional()
+  @IsString()
+  lotId?: string;
+
+  @ApiProperty({ example: 1 })
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @ApiPropertyOptional({
+    example: '2026-12-12',
+    description:
+      'Solo para unidades "sin fecha": la fecha que trae el empaque. Queda ' +
+      'anotada en la venta y NO cambia el inventario.',
+  })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, { message: 'La fecha debe ser AAAA-MM-DD' })
+  expiresOn?: string;
+}
 
 export class CreateRetailSaleItemDto {
   @ApiProperty({ example: 'prod_xxx' })
@@ -68,6 +102,13 @@ export class CreateRetailSaleItemDto {
   @IsOptional()
   @IsString()
   locationId?: string;
+
+  @ApiPropertyOptional({ type: [SaleLotPickDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaleLotPickDto)
+  lotPicks?: SaleLotPickDto[];
 }
 
 export class CreateRetailSaleDto {
@@ -405,6 +446,18 @@ export class DeliverRetailSaleItemDto {
   @IsOptional()
   @IsString()
   variantId?: string;
+
+  @ApiPropertyOptional({
+    type: [SaleLotPickDto],
+    description:
+      'Fechas que se entregan. En una venta pendiente la mercancía sale al ' +
+      'entregar, así que la fecha se elige aquí.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaleLotPickDto)
+  lotPicks?: SaleLotPickDto[];
 }
 
 /**

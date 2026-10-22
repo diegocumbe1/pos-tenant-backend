@@ -27,6 +27,14 @@
 
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import {
+  consumeLots,
+  LotEntry,
+  LotTake,
+  receiveLots,
+} from './retail-stock-lots';
+
+export type { LotEntry, LotTake } from './retail-stock-lots';
 
 /** Cliente de Prisma dentro de una transacción. */
 type Tx = Prisma.TransactionClient;
@@ -115,14 +123,32 @@ export async function resolveLocation(
  * `pickLocationsForOut`; para cuando se llega aquí la decisión ya se tomó y el
  * total del producto ya se movió. Frenar en este punto dejaría el total movido
  * y el reparto sin mover, que es peor que un saldo negativo.
+ *
+ * LOTES. Aquí también se mueven las fechas de vencimiento, porque este es el
+ * único punto por el que pasan TODAS las entradas y salidas de una bodega. Una
+ * salida consume los lotes de la llave (FEFO) y los devuelve, para que la otra
+ * mitad de un traslado los lleve a destino; una entrada hace lo que diga
+ * `lots` (ver `retail-stock-lots.ts`). Sin `lots`, entra sin fecha.
  */
 export async function applyBalanceDelta(
   tx: Tx,
   scope: StockScope,
   key: BalanceKey,
   delta: number,
-): Promise<void> {
-  if (delta === 0) return;
+  lots?: LotEntry,
+): Promise<LotTake[]> {
+  if (delta === 0) return [];
+  const takes =
+    delta < 0 && lots?.kind !== 'undated'
+      ? await consumeLots(
+          tx,
+          scope,
+          key,
+          -delta,
+          lots?.kind === 'pick' ? lots.picks : undefined,
+        )
+      : [];
+  if (delta > 0 && lots) await receiveLots(tx, scope, key, delta, lots);
 
   // findFirst + update/create en vez de upsert: la unicidad de la fila del
   // producto entero la da un índice PARCIAL (`variantId IS NULL`), y un upsert
@@ -141,7 +167,7 @@ export async function applyBalanceDelta(
       where: { id: existing.id },
       data: { qty: { increment: delta } },
     });
-    return;
+    return takes;
   }
 
   await tx.retailStockBalance.create({
@@ -154,6 +180,7 @@ export async function applyBalanceDelta(
       qty: delta,
     },
   });
+  return takes;
 }
 
 /** Lo que hay de un producto (o de un aroma) en cada sitio, de mayor a menor. */
@@ -290,12 +317,20 @@ export async function allocateOut(
     variantId?: string | null;
     quantity: number;
     preferredLocationId?: string | null;
+    /** `pick` con lo que eligió el vendedor; sin esto, FEFO. */
+    lots?: LotEntry;
   },
-): Promise<{ allocations: OutAllocation[]; primaryLocationId: string | null }> {
+): Promise<{
+  allocations: OutAllocation[];
+  primaryLocationId: string | null;
+  /** Fechas de vencimiento que salieron, del que vencía antes al de después. */
+  lotTakes: LotTake[];
+}> {
   const allocations = await pickLocationsForOut(tx, scope, args);
+  const lotTakes: LotTake[] = [];
 
   for (const allocation of allocations) {
-    await applyBalanceDelta(
+    const takes = await applyBalanceDelta(
       tx,
       scope,
       {
@@ -304,7 +339,9 @@ export async function allocateOut(
         variantId: args.variantId ?? null,
       },
       -allocation.quantity,
+      args.lots,
     );
+    lotTakes.push(...takes);
   }
 
   const primary = allocations.reduce<OutAllocation | null>(
@@ -312,7 +349,11 @@ export async function allocateOut(
       !best || current.quantity > best.quantity ? current : best,
     null,
   );
-  return { allocations, primaryLocationId: primary?.locationId ?? null };
+  return {
+    allocations,
+    primaryLocationId: primary?.locationId ?? null,
+    lotTakes,
+  };
 }
 
 /**
@@ -327,6 +368,8 @@ export async function allocateIn(
     variantId?: string | null;
     quantity: number;
     locationId?: string | null;
+    /** Qué hacer con las fechas de vencimiento. Sin esto, entra sin fecha. */
+    lots?: LotEntry;
   },
 ): Promise<string> {
   const locationId = await resolveLocation(tx, scope, args.locationId);
@@ -340,6 +383,7 @@ export async function allocateIn(
         variantId: args.variantId ?? null,
       },
       args.quantity,
+      args.lots,
     );
   }
   return locationId;
@@ -358,6 +402,10 @@ export async function applySignedDelta(
     /** Firmado: positivo entra, negativo sale. */
     delta: number;
     locationId?: string | null;
+    /** Qué hacer con las fechas (ver `LotEntry`). Sin esto: FEFO al salir, sin fecha al entrar. */
+    lots?: LotEntry;
+    /** Al salir: las fechas que se consumieron, para que la venta las guarde. */
+    onLotTakes?: (takes: LotTake[]) => void;
   },
 ): Promise<string | null> {
   if (args.delta === 0) return null;
@@ -368,14 +416,17 @@ export async function applySignedDelta(
       variantId: args.variantId,
       quantity: args.delta,
       locationId: args.locationId,
+      lots: args.lots,
     });
   }
 
-  const { primaryLocationId } = await allocateOut(tx, scope, {
+  const { primaryLocationId, lotTakes } = await allocateOut(tx, scope, {
     productId: args.productId,
     variantId: args.variantId,
     quantity: -args.delta,
     preferredLocationId: args.locationId,
+    lots: args.lots,
   });
+  args.onLotTakes?.(lotTakes);
   return primaryLocationId;
 }

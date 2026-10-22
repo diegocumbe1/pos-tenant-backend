@@ -21,6 +21,13 @@ import {
   applySignedDelta,
 } from '../../shared/retail-stock-locations';
 import {
+  buildAllocations,
+  LotPick,
+  LotTake,
+  readAllocations,
+  splitAllocations,
+} from '../../shared/retail-stock-lots';
+import {
   CO_UTC_OFFSET,
   calendarDayCO,
   clockTimeCO,
@@ -120,7 +127,8 @@ function splitStockKey(key: string): {
  * del tiempo, pero abierto solo puede tener uno a la vez.
  */
 const SALE_INCLUDE = {
-  items: true,
+  // El nombre de la bodega de cada línea: Finanzas agrupa y filtra por bodega.
+  items: { include: { location: { select: { name: true } } } },
   // Documento, correo y dirección viajan para la cuenta de cobro: una empresa
   // exige su NIT y su dirección en el soporte, y sin esto habría que pedir la
   // ficha del cliente aparte.
@@ -211,6 +219,8 @@ export class RetailSalesService {
        */
       paymentMethod?: RetailPaymentMethod;
       search?: string;
+      /** Ventas con al menos una línea que salió de esa bodega. */
+      locationId?: string;
     } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
@@ -220,6 +230,7 @@ export class RetailSalesService {
         branchId: ctx.branchId,
         ...this.searchWhere(filters.search),
         ...(filters.saleType ? { saleType: filters.saleType } : {}),
+        ...locationWhere(filters.locationId),
         ...(filters.paymentMethod
           ? {
               payments: {
@@ -540,6 +551,8 @@ export class RetailSalesService {
     to?: string,
     saleType?: RetailSaleType,
     paymentMethod?: RetailPaymentMethod,
+    /** Solo lo de esa bodega: ventas con al menos una línea que salió de ahí. */
+    locationId?: string,
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
 
@@ -568,6 +581,7 @@ export class RetailSalesService {
         sale: {
           status: 'COMPLETED',
           ...(saleType ? { saleType } : {}),
+          ...locationWhere(locationId),
         },
       },
       include: {
@@ -607,6 +621,7 @@ export class RetailSalesService {
             status: 'COMPLETED',
             paymentStatus: { not: 'PAID' },
             ...(saleType ? { saleType } : {}),
+            ...locationWhere(locationId),
             ...this.soldAtRange(from, to),
           },
           select: { totalCOP: true, paidCOP: true },
@@ -643,6 +658,7 @@ export class RetailSalesService {
             // Una devolución anulada no resta del período: su mercancía volvió
             // a salir y su plata nunca se movió.
             voidedAt: null,
+            ...(locationId ? { sale: locationWhere(locationId) } : {}),
           },
           include: { items: true },
         });
@@ -859,6 +875,30 @@ export class RetailSalesService {
         );
       }
 
+      // Fechas que el vendedor dijo que tomó, por grupo, y las anotadas en
+      // unidades "sin fecha". Ver `SaleLotPickDto`.
+      const lotPicksByKey = new Map<string, LotPick[]>();
+      const notedByKey = new Map<
+        string,
+        Array<{ qty: number; expiresOn: string }>
+      >();
+      for (const item of dto.items) {
+        if (!item.lotPicks?.length) continue;
+        const key = stockKey(item.productId, item.variantId ?? null);
+        for (const pick of item.lotPicks) {
+          lotPicksByKey.set(key, [
+            ...(lotPicksByKey.get(key) ?? []),
+            { lotId: pick.lotId ?? null, qty: pick.qty },
+          ]);
+          if (!pick.lotId && pick.expiresOn) {
+            notedByKey.set(key, [
+              ...(notedByKey.get(key) ?? []),
+              { qty: pick.qty, expiresOn: pick.expiresOn },
+            ]);
+          }
+        }
+      }
+
       const productQty = new Map<string, number>();
       for (const [key, quantity] of requestedQty) {
         const { productId } = splitStockKey(key);
@@ -1042,6 +1082,7 @@ export class RetailSalesService {
       // Solo la venta entregada en el acto mueve inventario aquí. La pendiente
       // lo mueve entrega por entrega.
       if (!isPending) {
+        const takesByKey = new Map<string, LotTake[]>();
         const locationByKey = await this.applyStockDelta(
           tx,
           ctx,
@@ -1051,7 +1092,31 @@ export class RetailSalesService {
           -1,
           undefined,
           preferredLocationByKey,
+          undefined,
+          { picksByKey: lotPicksByKey, takesOut: takesByKey },
         );
+
+        // De qué fecha salió cada línea. Solo en productos que vencen: en los
+        // demás no hay nada que contar y la columna queda NULL.
+        const allocationsByItem = new Map<string, Prisma.InputJsonValue>();
+        for (const [key, quantity] of requestedQty) {
+          const { productId } = splitStockKey(key);
+          if (!byId.get(productId)?.tracksExpiry) continue;
+          const lines = created.items.filter(
+            (item) => stockKey(item.productId, item.variantId ?? null) === key,
+          );
+          const perLine = splitAllocations(
+            buildAllocations(
+              takesByKey.get(key) ?? [],
+              quantity,
+              notedByKey.get(key),
+            ),
+            lines.map((line) => line.quantity),
+          );
+          lines.forEach((line, index) =>
+            allocationsByItem.set(line.id, perLine[index]),
+          );
+        }
 
         // La línea guarda de qué bodega salió. Se estampa DESPUÉS y no al
         // crearla porque hasta que no se reparte el stock no se sabe: cuando en
@@ -1060,10 +1125,14 @@ export class RetailSalesService {
           const locationId = locationByKey.get(
             stockKey(item.productId, item.variantId ?? null),
           );
-          if (!locationId) continue;
+          const lotAllocations = allocationsByItem.get(item.id);
+          if (!locationId && !lotAllocations) continue;
           await tx.retailSaleItem.update({
             where: { id: item.id },
-            data: { locationId },
+            data: {
+              ...(locationId ? { locationId } : {}),
+              ...(lotAllocations ? { lotAllocations } : {}),
+            },
           });
         }
       }
@@ -1165,7 +1234,13 @@ export class RetailSalesService {
    */
   private notifySaleCreated(
     ctx: TenantContext,
-    sale: { id: string; code: string; totalCOP: number; customerName: string | null; paymentStatus: string },
+    sale: {
+      id: string;
+      code: string;
+      totalCOP: number;
+      customerName: string | null;
+      paymentStatus: string;
+    },
   ) {
     const pending = sale.paymentStatus !== 'PAID';
     void this.notifications
@@ -1348,7 +1423,7 @@ export class RetailSalesService {
       const item = itemById.get(line.saleItemId)!;
       const product = productById.get(item.productId)!;
 
-      await tx.retailSaleDelivery.create({
+      const delivery = await tx.retailSaleDelivery.create({
         data: {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
@@ -1387,12 +1462,39 @@ export class RetailSalesService {
 
       // La bodega que la línea ya traía manda —se eligió al vender—; si no
       // traía, sale de donde haya empezando por la principal.
-      const { primaryLocationId } = await allocateOut(tx, ctx, {
+      const { primaryLocationId, lotTakes } = await allocateOut(tx, ctx, {
         productId: product.id,
         variantId: line.variantId ?? null,
         quantity: line.quantity,
         preferredLocationId: item.locationId,
+        // Las fechas que se entregan. Sin elegir, sale lo que vence antes.
+        lots: line.lotPicks?.length
+          ? {
+              kind: 'pick',
+              picks: line.lotPicks.map((pick) => ({
+                lotId: pick.lotId ?? null,
+                qty: pick.qty,
+              })),
+            }
+          : undefined,
       });
+
+      // De qué fecha salió esta entrega, para que anularla la devuelva a su
+      // lote. Solo en productos que vencen.
+      if (product.tracksExpiry) {
+        await tx.retailSaleDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            lotAllocations: buildAllocations(
+              lotTakes,
+              line.quantity,
+              (line.lotPicks ?? [])
+                .filter((pick) => !pick.lotId && pick.expiresOn)
+                .map((pick) => ({ qty: pick.qty, expiresOn: pick.expiresOn! })),
+            ),
+          },
+        });
+      }
 
       // Una venta pendiente se despacha cuando llega la mercancía, que puede ser
       // días después: hasta ahora la línea no tenía bodega, y esta entrega es la
@@ -3082,6 +3184,35 @@ export class RetailSalesService {
         }
       }
 
+      // Las fechas exactas de las que salió, si la venta las guardó: en la
+      // entrega cuando fue pendiente, en la línea cuando salió al cobrar.
+      const exactByKey = new Map<
+        string,
+        Array<{ lotId: string | null; qty: number }>
+      >();
+      const addExact = (key: string, value: unknown) => {
+        const allocations = readAllocations(value);
+        if (allocations.length === 0) return;
+        exactByKey.set(key, [...(exactByKey.get(key) ?? []), ...allocations]);
+      };
+      for (const delivery of existing.deliveries) {
+        const item = existing.items.find(
+          (row) => row.id === delivery.saleItemId,
+        );
+        if (!item) continue;
+        addExact(
+          stockKey(item.productId, delivery.variantId),
+          delivery.lotAllocations,
+        );
+      }
+      for (const item of existing.items) {
+        const hasDeliveries = existing.deliveries.some(
+          (delivery) => delivery.saleItemId === item.id,
+        );
+        if (hasDeliveries) continue;
+        addExact(stockKey(item.productId, item.variantId), item.lotAllocations);
+      }
+
       await this.applyStockDelta(
         tx,
         ctx,
@@ -3091,6 +3222,8 @@ export class RetailSalesService {
         1,
         returnedCost,
         returnedLocation,
+        undefined,
+        { exactByKey },
       );
 
       if (existing.customerId) {
@@ -3189,6 +3322,17 @@ export class RetailSalesService {
      * exactamente lo que confunde al cuadrar el inventario a mano.
      */
     reasonLabel?: string,
+    /**
+     * Fechas de vencimiento. Al VENDER: lo que el vendedor eligió por grupo
+     * (sin esto, sale lo que vence antes). Al ANULAR: los lotes exactos de los
+     * que salió, guardados en la línea (sin esto, se reconstruyen).
+     */
+    lots?: {
+      picksByKey?: Map<string, LotPick[]>;
+      exactByKey?: Map<string, Array<{ lotId: string | null; qty: number }>>;
+      /** Salida: las fechas que se consumieron por grupo, para guardarlas. */
+      takesOut?: Map<string, LotTake[]>;
+    },
   ) {
     // Se acumula por producto para no pisar el `stock` con dos updates seguidos
     // que hayan leído el mismo valor de partida.
@@ -3262,6 +3406,21 @@ export class RetailSalesService {
         variantId,
         delta: quantity * direction,
         locationId: preferredLocationByKey?.get(key) ?? null,
+        // Al anular, la unidad vuelve al lote de vencimiento del que salió: el
+        // exacto si la venta lo guardó, reconstruido si es anterior al cambio.
+        lots:
+          direction === 1
+            ? lots?.exactByKey?.has(key)
+              ? { kind: 'exact', allocations: lots.exactByKey.get(key)! }
+              : { kind: 'restore' }
+            : lots?.picksByKey?.has(key)
+              ? { kind: 'pick', picks: lots.picksByKey.get(key)! }
+              : undefined,
+        onLotTakes: (takes) =>
+          lots?.takesOut?.set(key, [
+            ...(lots.takesOut.get(key) ?? []),
+            ...takes,
+          ]),
       });
       if (locationId) locationByKey.set(key, locationId);
 
@@ -3693,9 +3852,20 @@ export class RetailSalesService {
         unitCostCOP: item.unitCostCOP,
         discountCOP: item.discountCOP,
         totalCOP: item.totalCOP,
+        // De qué bodega salió. NULL = venta anterior a las bodegas, o pendiente
+        // que todavía no se entrega.
+        locationId: item.locationId,
+        locationName:
+          (item as { location?: { name: string } | null }).location?.name ??
+          null,
       })),
     };
   }
 
   private readonly txOptions = { timeout: 20_000 };
+}
+
+/** Ventas con al menos una línea que salió de esa bodega. Vacío = todas. */
+function locationWhere(locationId?: string): Prisma.RetailSaleWhereInput {
+  return locationId ? { items: { some: { locationId } } } : {};
 }

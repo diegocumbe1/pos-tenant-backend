@@ -1,10 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { RetailLocationKind } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsInt,
+  IsNumber,
+  Max,
   IsOptional,
   IsString,
   MaxLength,
@@ -27,6 +32,20 @@ export class RetailLocationCountItemDto {
   @IsInt()
   @Min(0)
   quantity!: number;
+}
+
+/** Una escala: si el total vendido SUPERA `aboveCOP`, el aliado se queda `pct`% de todo. */
+export class AllyTierDto {
+  @ApiProperty({ example: 50000 })
+  @IsInt()
+  @Min(0)
+  aboveCOP!: number;
+
+  @ApiProperty({ example: 12 })
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  pct!: number;
 }
 
 export class CreateRetailLocationDto {
@@ -76,6 +95,31 @@ export class CreateRetailLocationDto {
   @ValidateNested({ each: true })
   @Type(() => RetailLocationCountItemDto)
   initialCount?: RetailLocationCountItemDto[];
+
+  @ApiPropertyOptional({ enum: RetailLocationKind, default: 'EXHIBITION' })
+  @IsOptional()
+  @IsEnum(RetailLocationKind)
+  kind?: RetailLocationKind;
+
+  @ApiPropertyOptional({ example: 15, nullable: true })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  countEveryDays?: number | null;
+
+  @ApiPropertyOptional({
+    type: () => [AllyTierDto],
+    nullable: true,
+    description:
+      'Escalas propias del aliado. Omitir o null = las de la tienda.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => AllyTierDto)
+  allyTiers?: AllyTierDto[] | null;
 }
 
 export class UpdateRetailLocationDto {
@@ -113,6 +157,39 @@ export class UpdateRetailLocationDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    enum: RetailLocationKind,
+    description:
+      'EXHIBITION: exhibe (lo que falta en una revista vuelve a la principal). ' +
+      'ALLY: el tercero vende (lo que falta se liquida con su escala).',
+  })
+  @IsOptional()
+  @IsEnum(RetailLocationKind)
+  kind?: RetailLocationKind;
+
+  @ApiPropertyOptional({
+    example: 15,
+    nullable: true,
+    description: 'Cada cuántos días se pasa revista. null = sin frecuencia.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  countEveryDays?: number | null;
+
+  @ApiPropertyOptional({
+    type: [AllyTierDto],
+    nullable: true,
+    description: 'Escalas propias de este aliado. null = las de la tienda.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => AllyTierDto)
+  allyTiers?: AllyTierDto[] | null;
 
   @ApiPropertyOptional({ example: 1 })
   @IsOptional()

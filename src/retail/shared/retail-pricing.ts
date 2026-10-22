@@ -154,3 +154,28 @@ export function resolveProductUnitPriceCOP(
   }
   return product.priceCOP;
 }
+
+// ─── Precio de lista con descuento de distribuidor ───────────────────────────
+//
+// El camino inverso al de siempre. La marca fija el precio al público y el
+// proveedor le descuenta a la tienda un % sobre él: lo que se escribe es el
+// precio, y el costo sale. Ver docs/PLAN_RETAIL_AJUSTES_OCTUBRE_2026.md §3.
+
+/** Costo de reposición desde el precio de lista: 285.000 − 30% = 199.500. */
+export function costFromListPrice(
+  listPriceCOP: number,
+  discountPct: number,
+): number {
+  return Math.round(listPriceCOP * (1 - discountPct / 100));
+}
+
+/**
+ * El % que manda sobre un producto en modo LIST_DISCOUNT: el suyo si lo trae,
+ * si no el de su proveedor. NULL = no hay con qué calcular el costo.
+ */
+export function effectiveListDiscountPct(
+  productPct: number | null | undefined,
+  supplierPct: number | null | undefined,
+): number | null {
+  return productPct ?? supplierPct ?? null;
+}

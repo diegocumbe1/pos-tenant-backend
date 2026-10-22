@@ -1,9 +1,13 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import {
   IsEmail,
+  IsIn,
+  IsInt,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -49,6 +53,62 @@ export class CreateRetailCustomerDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  // Cumpleaños. Día y mes van juntos o no van; el año es opcional aparte. La
+  // regla cruzada (que el 31 de abril no exista) la valida el servicio, porque
+  // aquí cada campo se mira solo. `null` en un PATCH lo borra.
+  @ApiPropertyOptional({ example: 3, nullable: true, description: '1–12' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  birthMonth?: number | null;
+
+  @ApiPropertyOptional({ example: 15, nullable: true, description: '1–31' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  birthDay?: number | null;
+
+  @ApiPropertyOptional({ example: 1990, nullable: true })
+  @IsOptional()
+  @IsInt()
+  @Min(1900)
+  @Max(2100)
+  birthYear?: number | null;
+}
+
+/** Ventanas del filtro de cumpleaños, siempre en hora Colombia. */
+export const BIRTHDAY_WINDOWS = ['today', 'week', 'month'] as const;
+export type BirthdayWindow = (typeof BIRTHDAY_WINDOWS)[number];
+
+export class ListRetailCustomersQueryDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({
+    enum: BIRTHDAY_WINDOWS,
+    description:
+      'Solo clientes que cumplen años hoy, en los próximos 7 días o este mes.',
+  })
+  @IsOptional()
+  @IsIn(BIRTHDAY_WINDOWS)
+  birthdays?: BirthdayWindow;
+
+  @ApiPropertyOptional({
+    example: 12,
+    description:
+      'Solo clientes que cumplen años en ese mes (1–12). Si llega junto con ' +
+      '`birthdays`, manda este: es la elección más concreta.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  birthMonth?: number;
 }
 
 /**

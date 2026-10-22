@@ -21,6 +21,7 @@ import { RetailCatalogService } from './retail-catalog.service';
 import {
   CreateRetailCategoryDto,
   CreateRetailProductDto,
+  RecalculateListCostsDto,
   UpdateRetailCategoryDto,
   UpdateRetailProductDto,
 } from './dto/retail-catalog.dto';
@@ -91,6 +92,26 @@ export class RetailProductsController {
       search,
       lowStock: lowStock === 'true',
     });
+  }
+
+  /** Qué costos cambiarían al aplicar el % actual de un proveedor. */
+  @Get('list-costs/preview')
+  @RequirePermissions('retail:catalog:write')
+  @ApiQuery({ name: 'supplierId', required: true })
+  previewListCosts(
+    @CurrentTenant() ctx: TenantContext,
+    @Query('supplierId') supplierId: string,
+  ) {
+    return this.catalog.previewListCosts(ctx, supplierId);
+  }
+
+  @Post('list-costs/recalculate')
+  @RequirePermissions('retail:catalog:write')
+  recalculateListCosts(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: RecalculateListCostsDto,
+  ) {
+    return this.catalog.recalculateListCosts(ctx, dto);
   }
 
   @Get('barcode/:barcode')

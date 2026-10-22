@@ -255,7 +255,12 @@ export class AdminService {
           email,
           tenant,
           scope: 'user',
-          user: { id: user.id, email: user.email, name: user.name, role: user.role?.code },
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role?.code,
+          },
         };
       }
 
@@ -281,7 +286,12 @@ export class AdminService {
         email,
         tenant,
         scope: 'user',
-        user: { id: user.id, email: user.email, name: user.name, role: user.role?.code },
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role?.code,
+        },
         supabase: supabaseResult,
       };
     }
@@ -387,10 +397,7 @@ export class AdminService {
       `Tenant cleanup completed tenantId=${tenantId} email=${email} deleted=${JSON.stringify(deleted)}`,
     );
 
-    const supabaseResult = await this.deleteSupabaseUsers(
-      tenantUserIds,
-      email,
-    );
+    const supabaseResult = await this.deleteSupabaseUsers(tenantUserIds, email);
 
     return {
       mode: 'deleted',
@@ -435,9 +442,7 @@ export class AdminService {
       select: { id: true },
     });
     if (localConflict) {
-      throw new ConflictException(
-        `Email already in use locally: ${newEmail}`,
-      );
+      throw new ConflictException(`Email already in use locally: ${newEmail}`);
     }
 
     const supabaseConflictId = await this.findSupabaseUserIdByEmail(newEmail);
@@ -504,9 +509,7 @@ export class AdminService {
         this.logger.error(`Supabase listUsers failed: ${error.message}`);
         return null;
       }
-      const match = data.users.find(
-        (u) => u.email?.toLowerCase() === target,
-      );
+      const match = data.users.find((u) => u.email?.toLowerCase() === target);
       if (match) return match.id;
       if (data.users.length < perPage) return null;
     }
@@ -704,9 +707,13 @@ export class AdminService {
         perms: [
           ...restaurantPerms.filter((p) => !p.endsWith(':delete')),
           ...barberPerms,
-          // Retail: todo menos borrar catálogo y anular ventas (queda en el dueño).
+          // Retail: todo menos borrar catálogo, anular ventas y ver
+          // vencimientos (quedan en el dueño).
           ...retailPerms.filter(
-            (p) => p !== 'retail:catalog:delete' && p !== 'retail:sales:void',
+            (p) =>
+              p !== 'retail:catalog:delete' &&
+              p !== 'retail:sales:void' &&
+              p !== 'retail:inventory:expiry',
           ),
           'admin:users:invite',
         ],

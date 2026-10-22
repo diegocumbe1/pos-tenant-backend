@@ -8,11 +8,14 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
+  Max,
   MaxLength,
   Min,
   NotEquals,
   ValidateNested,
 } from 'class-validator';
+import { CALENDAR_DAY } from '../../../shared/retail-calendar-day';
 
 /** Tipos que puede registrar un humano. SALE lo genera solo el POS. */
 export const MANUAL_MOVEMENT_TYPES = [
@@ -84,6 +87,27 @@ export class CreateRetailStockMovementDto {
   @IsOptional()
   @IsString()
   locationId?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-12-12',
+    description:
+      'Fecha de vencimiento (día calendario) de lo que entra. Solo se usa en ' +
+      'entradas de productos que vencen; sin ella entra "sin fecha".',
+  })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, {
+    message: 'La fecha de vencimiento debe ser AAAA-MM-DD',
+  })
+  expiresOn?: string;
+
+  @ApiPropertyOptional({
+    example: 'L2409',
+    description: 'Lote impreso en el empaque',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotCode?: string;
 }
 
 export class VariantDistributionItemDto {
@@ -160,4 +184,106 @@ export class SetVariantDistributionDto {
   @IsOptional()
   @IsString()
   locationId?: string;
+}
+
+// ─── Vencimientos ────────────────────────────────────────────────────────────
+
+/**
+ * Ponerle fecha a unidades que ya están en la bodega "sin fecha".
+ *
+ * Es la manera de arrancar: el producto ya tenía 11 unidades cuando se le
+ * encendió "vence", y nadie va a sacarlas y volverlas a entrar para fecharlas.
+ * No mueve stock ni kardex: solo dice cuándo vencen unidades que ya estaban.
+ */
+export class CreateRetailStockLotDto {
+  @ApiProperty({ example: 'prod_xxx' })
+  @IsString()
+  productId!: string;
+
+  @ApiPropertyOptional({ example: 'var_xxx' })
+  @IsOptional()
+  @IsString()
+  variantId?: string;
+
+  @ApiPropertyOptional({ description: 'Sin bodega = la principal' })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-12-12',
+    description:
+      'Obligatoria al fechar. Opcional al asignar opción (`assignVariantId`): ' +
+      'la fecha nunca es obligatoria, y asignar solo el sabor es válido.',
+  })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, {
+    message: 'La fecha de vencimiento debe ser AAAA-MM-DD',
+  })
+  expiresOn?: string;
+
+  @ApiPropertyOptional({
+    example: 'var_chocolate',
+    description:
+      'Solo con unidades SIN opción (variantId vacío) de un producto que reparte ' +
+      'por opción: además de fecharlas, se le asignan a esta opción. Es el caso ' +
+      'de una compra que entró sin decir de qué sabor era.',
+  })
+  @IsOptional()
+  @IsString()
+  assignVariantId?: string;
+
+  @ApiProperty({
+    example: 6,
+    description: 'Cuántas de las "sin fecha" vencen ese día',
+  })
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @ApiPropertyOptional({ example: 'L2409' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotCode?: string;
+}
+
+/** Corregir la fecha o el código de un lote mal digitado. */
+export class UpdateRetailStockLotDto {
+  @ApiPropertyOptional({ example: '2026-12-12' })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, {
+    message: 'La fecha de vencimiento debe ser AAAA-MM-DD',
+  })
+  expiresOn?: string;
+
+  @ApiPropertyOptional({ example: 'L2409', nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotCode?: string | null;
+}
+
+export class UpdateRetailSettingsDto {
+  @ApiPropertyOptional({
+    example: 60,
+    description: 'Días de anticipación estándar para avisar que algo vence.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(730)
+  expiryAlertDays?: number;
+}
+
+/** Pasar unidades de un lote SIN opción a una opción, conservando su fecha. */
+export class AssignRetailStockLotDto {
+  @ApiProperty({ example: 'var_chocolate' })
+  @IsString()
+  variantId!: string;
+
+  @ApiProperty({ example: 2 })
+  @IsInt()
+  @Min(1)
+  qty!: number;
 }

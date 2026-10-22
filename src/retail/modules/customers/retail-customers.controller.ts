@@ -18,7 +18,9 @@ import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import {
+  BIRTHDAY_WINDOWS,
   CreateRetailCustomerDto,
+  ListRetailCustomersQueryDto,
   UpdateRetailCustomerDto,
 } from './dto/retail-customer.dto';
 import { RetailCustomersService } from './retail-customers.service';
@@ -35,8 +37,18 @@ export class RetailCustomersController {
   @Get()
   @RequirePermissions('retail:customers:read')
   @ApiQuery({ name: 'search', required: false })
-  list(@CurrentTenant() ctx: TenantContext, @Query('search') search?: string) {
-    return this.customers.listCustomers(ctx, search);
+  @ApiQuery({ name: 'birthdays', required: false, enum: BIRTHDAY_WINDOWS })
+  @ApiQuery({ name: 'birthMonth', required: false, type: Number })
+  list(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: ListRetailCustomersQueryDto,
+  ) {
+    return this.customers.listCustomers(
+      ctx,
+      query.search,
+      query.birthdays,
+      query.birthMonth,
+    );
   }
 
   @Get(':id/sales')

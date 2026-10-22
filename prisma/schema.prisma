@@ -141,6 +141,9 @@ model Branch {
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
   name        String
   address     String?
+  // Ciudad de la sede. Vive aquí y no en `barber_settings` porque es dato del
+  // negocio en cualquier vertical (retail la usa en la cuenta de cobro).
+  city        String?
   phone       String?
   // Datos de pago del negocio (cuenta bancaria, Nequi/Daviplata, QR) que salen
   // en el POS al cobrar y en el recibo. JSON con forma BranchPaymentInfo (FE).
@@ -2613,13 +2616,13 @@ model RetailCategory {
 }
 
 model RetailProduct {
-  id                  String         @id @default(cuid())
+  id                  String            @id @default(cuid())
   tenantId            String
-  tenant              Tenant         @relation(fields: [tenantId], references: [id])
+  tenant              Tenant            @relation(fields: [tenantId], references: [id])
   branchId            String
-  branch              Branch         @relation(fields: [branchId], references: [id])
+  branch              Branch            @relation(fields: [branchId], references: [id])
   categoryId          String
-  category            RetailCategory @relation(fields: [categoryId], references: [id])
+  category            RetailCategory    @relation(fields: [categoryId], references: [id])
   // Identificadores de retail: SKU interno y código de barras para el escáner.
   sku                 String?
   barcode             String?
@@ -2638,7 +2641,7 @@ model RetailProduct {
   // COSTO DE REPOSICIÓN: lo que cuesta traer otra. Manda en la calculadora de
   // precios, porque para decidir a cuánto vender importa lo que costará
   // reemplazarla, no lo que costó la que está en el estante.
-  costCOP             Int            @default(0)
+  costCOP             Int               @default(0)
   // COSTO PROMEDIO PONDERADO de lo que hay en bodega. Manda al medir la utilidad
   // y al valorar el inventario. Solo lo mueven las ENTRADAS: vender no cambia lo
   // que costó lo que queda. NULL = todavía sin calcular (productos anteriores al
@@ -2657,6 +2660,20 @@ model RetailProduct {
   // descuento se derivan (ver retail-pricing.ts), no se guardan.
   wholesalePrice6COP  Int?
   wholesalePrice12COP Int?
+  // Cómo se pone el precio. Opcional y por producto: el default es el flujo
+  // de siempre (costo → % → precio) y nada cambia para quien no lo use.
+  //   COST_MARGIN   → se escribe el costo y el % sugiere el precio.
+  //   LIST_DISCOUNT → la marca fija el precio al público y el proveedor le
+  //                   descuenta a la tienda un % sobre él. Se escribe el
+  //                   precio y el costo SALE: 285.000 − 30% = 199.500.
+  pricingMode         RetailPricingMode @default(COST_MARGIN)
+  // Proveedor habitual del producto. Hoy solo las compras se ligaban a uno;
+  // el modo LIST_DISCOUNT lo necesita para saber qué % aplica.
+  supplierId          String?
+  supplier            RetailSupplier?   @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  // % de descuento de distribuidor SOLO de este producto. NULL = usa el del
+  // proveedor (`RetailSupplier.listDiscountPct`), que es el caso normal.
+  listDiscountPct     Float?
   emoji               String?
   imageUrls           String[]
   // Videos del producto, aparte de las fotos y no mezclados con ellas: se
@@ -2665,9 +2682,15 @@ model RetailProduct {
   // extensión en cada pantalla que los pinte.
   videoUrls           String[]
   // trackStock=false para servicios (p.ej. "cambio de pantalla"): se venden sin descontar stock.
-  trackStock          Boolean        @default(true)
-  stock               Int            @default(0)
-  minStock            Int            @default(0)
+  trackStock          Boolean           @default(true)
+  // El producto vence (cremas, splash, comida). Opcional y apagado por defecto:
+  // un producto que no vence nunca toca `RetailStockLot` y no paga nada extra.
+  tracksExpiry        Boolean           @default(false)
+  // Con cuántos días de anticipación avisar. NULL = el estándar de la tienda
+  // (`RetailSettings.expiryAlertDays`).
+  expiryAlertDays     Int?
+  stock               Int               @default(0)
+  minStock            Int               @default(0)
   // Grupo de `options` cuyo valor lleva el conteo de existencias — el `id` del
   // grupo dentro del JSONB, no una FK. NULL = el stock es del producto entero,
   // que es el comportamiento de siempre.
@@ -2688,9 +2711,9 @@ model RetailProduct {
   // El ORDEN es el que eligió el admin y manda en la etiqueta ("Negro · 38").
   stockOptionIds      String[]
   // isActive = vendible en el POS. isPublished = visible en el sitio público.
-  isActive            Boolean        @default(true)
-  isPublished         Boolean        @default(true)
-  sortOrder           Int            @default(0)
+  isActive            Boolean           @default(true)
+  isPublished         Boolean           @default(true)
+  sortOrder           Int               @default(0)
   // Atributos libres del producto (modelo compatible, capacidad...).
   attributes          Json?
   // Opciones de presentación que el cliente elige al pedir: color, talla, etc.
@@ -2701,8 +2724,8 @@ model RetailProduct {
   // cuando `stockOptionId` lo señala, y entonces sus valores se materializan en
   // `RetailProductVariant`.
   options             Json?
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
   deletedAt           DateTime?
 
   movements             RetailStockMovement[]
@@ -2712,10 +2735,12 @@ model RetailProduct {
   retailSaleReturnItems RetailSaleReturnItem[]
   balances              RetailStockBalance[]
   priceHistory          RetailProductPriceHistory[]
+  lots                  RetailStockLot[]
 
   @@unique([tenantId, branchId, sku])
   @@index([tenantId, branchId, deletedAt])
   @@index([categoryId])
+  @@index([supplierId])
   @@index([tenantId, barcode])
   @@map("retail_products")
 }
@@ -2767,12 +2792,18 @@ model RetailProductVariant {
   deliveries            RetailSaleDelivery[]
   retailSaleReturnItems RetailSaleReturnItem[]
   balances              RetailStockBalance[]
+  lots                  RetailStockLot[]
 
   @@unique([productId, combinationKey])
   @@index([tenantId, branchId])
   // Para "todo lo talla 38": busca por un valor suelto dentro del array.
   @@index([optionValueIds], type: Gin)
   @@map("retail_product_variants")
+}
+
+enum RetailPricingMode {
+  COST_MARGIN // se escribe el costo, el % sugiere el precio (lo de siempre)
+  LIST_DISCOUNT // se escribe el precio de lista, el costo sale del % del proveedor
 }
 
 enum RetailStockMovementType {
@@ -2800,31 +2831,46 @@ enum RetailStockMovementType {
  * ninguna otra, nada cambia respecto a como funcionaba antes.
  */
 model RetailStockLocation {
-  id         String  @id @default(cuid())
-  tenantId   String
-  tenant     Tenant  @relation(fields: [tenantId], references: [id])
-  branchId   String
-  branch     Branch  @relation(fields: [branchId], references: [id])
-  name       String
+  id             String             @id @default(cuid())
+  tenantId       String
+  tenant         Tenant             @relation(fields: [tenantId], references: [id])
+  branchId       String
+  branch         Branch             @relation(fields: [branchId], references: [id])
+  name           String
   // A quién buscar en ese sitio. NULL = responde el sitio mismo, y la UI
   // muestra el nombre de la bodega: en la principal el responsable es el dueño
   // y obligar a escribirlo sería ruido.
-  holderName String?
-  phone      String?
+  holderName     String?
+  phone          String?
   // Texto libre. AQUÍ va la comisión el día que exista una: no se modela,
   // porque hoy no hay ninguna y modelarla obligaría a liquidarla.
-  note       String?
+  note           String?
   // La principal. Exactamente una por tienda: es el destino y el origen por
   // defecto de todo, y donde nace el stock que nadie repartió.
-  isDefault  Boolean @default(false)
+  isDefault      Boolean            @default(false)
   // Se desactiva, no se borra: su kardex tiene que sobrevivir.
-  isActive   Boolean @default(true)
-  sortOrder  Int     @default(0)
+  isActive       Boolean            @default(true)
+  sortOrder      Int                @default(0)
+  // EXHIBITION (default, lo de siempre): la mercancía se exhibe, no se vende
+  // allá; lo que falta en una revista volvió a la principal. ALLY: el tercero
+  // VENDE; lo que falta en una revista es lo que vendió, y se liquida con su
+  // descuento por escala. Ver docs/PLAN_RETAIL_AJUSTES_OCTUBRE_2026.md §4–5.
+  kind           RetailLocationKind @default(EXHIBITION)
+  // Cada cuánto se pasa revista. NULL = sin frecuencia: nunca sale "atrasada".
+  countEveryDays Int?
+  // Escalas propias de este aliado: [{ aboveCOP, pct }]. NULL = las de la
+  // tienda (`RetailSettings.allyTiers`).
+  allyTiers      Json?
+  // Ficha de cliente del aliado, para que su liquidación quede en Por cobrar
+  // con su nombre. Se crea sola en la primera liquidación.
+  customerId     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   balances      RetailStockBalance[]
+  lots          RetailStockLot[]
+  counts        RetailStockCount[]
   movementsFrom RetailStockMovement[] @relation("RetailMovementLocation")
   movementsTo   RetailStockMovement[] @relation("RetailMovementToLocation")
   saleItems     RetailSaleItem[]
@@ -2868,6 +2914,145 @@ model RetailStockBalance {
   @@index([tenantId, branchId, productId])
   @@index([locationId, productId])
   @@map("retail_stock_balances")
+}
+
+/**
+ * Unidades que vencen el mismo día, en un sitio, de un producto (o aroma).
+ * Ver docs/PLAN_RETAIL_AJUSTES_OCTUBRE_2026.md §1 (pos-system).
+ * REPARTEN, NO REEMPLAZAN. Igual que los saldos por bodega reparten el total,
+ * los lotes reparten el saldo de la bodega: dicen CUÁNDO vencen esas unidades.
+ * Lo que no tiene lote es "sin fecha", y se muestra así en vez de inventarle
+ * una. Las salidas consumen los lotes, así que su suma no supera el saldo.
+ * NUNCA BLOQUEAN. Una venta descuenta del lote que vence antes (FEFO); si no
+ * alcanza, el resto sale de "sin fecha". Un lote vencido se avisa en el
+ * mostrador, no se impide venderlo.
+ * La fila no se borra al quedar en 0: `receivedQty − qty` es lo consumido, y es
+ * lo que permite que una anulación devuelva la unidad a su lote.
+ */
+model RetailStockLot {
+  id          String                @id @default(cuid())
+  tenantId    String
+  branchId    String
+  productId   String
+  product     RetailProduct         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId   String?
+  variant     RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  locationId  String
+  location    RetailStockLocation   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  // Fecha calendario (Colombia), no instante: "vence el 12 de diciembre".
+  expiresOn   DateTime              @db.Date
+  // El lote impreso en el empaque, cuando importa (un retiro del fabricante).
+  lotCode     String?
+  // Unidades que quedan.
+  qty         Int
+  // Unidades que han entrado a este lote en total. Una venta no lo baja.
+  receivedQty Int
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  // La alerta de "por vencer" recorre por fecha toda la tienda.
+  @@index([tenantId, branchId, expiresOn])
+  // El consumo FEFO busca por la llave del saldo.
+  @@index([locationId, productId, variantId])
+  @@index([productId])
+  @@map("retail_stock_lots")
+}
+
+enum RetailLocationKind {
+  EXHIBITION // exhibe; lo que falta vuelve a la principal
+  ALLY // vende; lo que falta se liquida
+}
+
+enum RetailStockCountStatus {
+  DRAFT // abierta: se está contando
+  CLOSED // aplicada
+  CANCELLED // descartada sin aplicar
+}
+
+/**
+ * Una revista: el conteo físico de una bodega en una fecha.
+ * Se arma precargada con lo que el sistema espera que haya, y solo se tocan
+ * los renglones que no coinciden. Al cerrarla, la diferencia se aplica según
+ * el sitio: en la principal es un ajuste; en una exhibición, un traslado
+ * contra la principal (como el conteo de siempre); en un aliado, lo que falta
+ * es lo que vendió y se liquida como una venta pendiente de cobro.
+ * Ver docs/PLAN_RETAIL_AJUSTES_OCTUBRE_2026.md §4–5 (pos-system).
+ */
+model RetailStockCount {
+  id         String                 @id @default(cuid())
+  tenantId   String
+  branchId   String
+  locationId String
+  location   RetailStockLocation    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  status     RetailStockCountStatus @default(DRAFT)
+  note       String?
+  userId     String?
+  userName   String?
+  startedAt  DateTime               @default(now())
+  closedAt   DateTime?
+
+  // Resumen congelado al cerrar, para el historial sin recalcular nada.
+  expectedUnits    Int     @default(0)
+  countedUnits     Int     @default(0)
+  // Aliado: unidades que vendió entre esta revista y la anterior, su valor a
+  // precio de venta, el % de su escala, el descuento y lo que debe.
+  soldUnits        Int     @default(0)
+  soldValueCOP     Int     @default(0)
+  discountPct      Float?
+  discountCOP      Int     @default(0)
+  netCOP           Int     @default(0)
+  // La venta que liquida lo vendido por el aliado. NULL en exhibición y
+  // principal, o si no vendió nada.
+  settlementSaleId String?
+
+  lines RetailStockCountLine[]
+
+  @@index([tenantId, branchId, startedAt])
+  @@index([locationId, status, closedAt])
+  @@map("retail_stock_counts")
+}
+
+model RetailStockCountLine {
+  id           String           @id @default(cuid())
+  countId      String
+  count        RetailStockCount @relation(fields: [countId], references: [id], onDelete: Cascade)
+  productId    String
+  variantId    String?
+  // Nombre y opción congelados: el historial no puede depender de que el
+  // producto siga llamándose igual.
+  name         String
+  variantLabel String?
+  categoryName String?
+  // Lo que el sistema decía que había al abrir (y se refresca al cerrar).
+  expectedQty  Int
+  // Lo que se contó. NULL = no se tocó, y cuenta como "igual a lo esperado".
+  countedQty   Int?
+  unitPriceCOP Int
+  unitCostCOP  Int
+
+  @@index([countId])
+  @@map("retail_stock_count_lines")
+}
+
+/**
+ * Ajustes de retail por tienda. Una fila por sede; si no existe, valen los
+ * defaults de esta tabla: no hace falta crearla para que nada funcione.
+ */
+model RetailSettings {
+  id              String   @id @default(cuid())
+  tenantId        String
+  branchId        String
+  // Días de anticipación estándar para avisar que algo va a vencer.
+  expiryAlertDays Int      @default(60)
+  // Escalas estándar de descuento de los aliados: [{ aboveCOP, pct }], de
+  // menor a mayor. Se aplica la de la escala más alta cuyo piso el total
+  // SUPERA, a todo el monto. NULL o [] = sin descuento.
+  allyTiers       Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([tenantId, branchId])
+  @@map("retail_settings")
 }
 
 /**
@@ -2949,6 +3134,13 @@ model RetailCustomer {
   // empresa. Opcionales — una venta de mostrador nunca las necesita.
   address        String?
   city           String?
+  // Cumpleaños, opcional, para promociones. En TRES columnas y no un Date a
+  // propósito: mucha gente da "15 de marzo" sin el año, y "cumpleaños este
+  // mes" queda como un filtro simple por mes en vez de extraer partes de una
+  // fecha. Sin año no hay edad, y eso está bien.
+  birthMonth     Int?
+  birthDay       Int?
+  birthYear      Int?
   notes          String?
   // Agregados denormalizados para no recalcular el histórico en cada listado.
   totalSpentCOP  Int       @default(0)
@@ -3232,26 +3424,30 @@ model RetailSale {
  * Es lo que mueve el stock en una venta pendiente: al cobrar no sale nada.
  */
 model RetailSaleDelivery {
-  id          String                @id @default(cuid())
-  tenantId    String
-  branchId    String
-  saleId      String
-  sale        RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  saleItemId  String
-  saleItem    RetailSaleItem        @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  id             String                @id @default(cuid())
+  tenantId       String
+  branchId       String
+  saleId         String
+  sale           RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleItemId     String
+  saleItem       RetailSaleItem        @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
   // Valor entregado, en productos que reparten existencias por opción.
-  variantId   String?
-  variant     RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
-  quantity    Int
-  note        String?
-  userId      String?
-  deliveredAt DateTime              @default(now())
+  variantId      String?
+  variant        RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity       Int
+  note           String?
+  userId         String?
+  deliveredAt    DateTime              @default(now())
   // Paquete en el que salió, cuando la entrega se hizo despachando un envío.
   // NULL = se entregó en el mostrador, una venta a la vez. Es lo que permite
   // decir "este paquete llevó 4 de las 10 unidades" cuando una misma venta se
   // despacha en varios envíos.
-  shipmentId  String?
-  shipment    RetailShipment?       @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  shipmentId     String?
+  shipment       RetailShipment?       @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  // De qué fecha salió cada unidad de ESTA entrega (mismo formato que
+  // `RetailSaleItem.lotAllocations`). En una venta pendiente la mercancía sale
+  // al entregar, así que es aquí donde se elige la fecha.
+  lotAllocations Json?
 
   @@index([saleId])
   @@index([tenantId, branchId, deliveredAt])
@@ -3605,6 +3801,56 @@ enum RetailSaleEventKind {
   SHIPPING_CHARGED // el envío le cargó el flete a esta venta
   VOIDED // se anuló la venta entera
   NOTE // una anotación a mano, sin más consecuencia
+  COMMITMENT // compromiso de pago: se pactó, se cambió, se recordó, se cumplió o se canceló
+}
+
+enum RetailCommitmentStatus {
+  PENDING // vigente (si pasó la fecha con saldo, la pantalla lo muestra incumplido)
+  FULFILLED // el saldo de sus ventas llegó a 0
+  CANCELLED // se canceló o lo reemplazó otro compromiso
+}
+
+/**
+ * "Paga el viernes": la fecha en que un cliente (o un aliado) se compromete a
+ * pagar una o varias ventas por cobrar, con un recordatorio opcional por
+ * WhatsApp. Ver docs/PLAN_RETAIL_AJUSTES_OCTUBRE_2026.md §6 (pos-system).
+ * INCUMPLIDO NO SE GUARDA: se calcula (pasó `dueOn` y queda saldo). Así un
+ * pago tardío lo sigue cumpliendo sin que nadie tenga que reabrirlo.
+ * CUMPLIDO sí se guarda, la primera vez que se ve el saldo en 0.
+ * Sin jobs: el recordatorio se manda con un botón el día que toca, y queda
+ * `remindedAt` para no mandarlo dos veces.
+ */
+model RetailPaymentCommitment {
+  id               String                 @id @default(cuid())
+  tenantId         String
+  branchId         String
+  // De quién es la deuda. Todas las ventas del compromiso son de este cliente.
+  customerId       String?
+  saleIds          String[]
+  // Fecha calendario (Colombia) en que se compromete a pagar.
+  dueOn            DateTime               @db.Date
+  // Cuánto se compromete a pagar. NULL = el saldo completo de sus ventas.
+  amountCOP        Int?
+  note             String?
+  remindByWhatsapp Boolean                @default(true)
+  // Con cuántos días de anticipación recordar: 0 = el mismo día. Se elige en
+  // cada compromiso.
+  remindDaysBefore Int                    @default(1)
+  // Texto propio del recordatorio. NULL = el de siempre.
+  message          String?
+  status           RetailCommitmentStatus @default(PENDING)
+  remindedAt       DateTime?
+  fulfilledAt      DateTime?
+  cancelledAt      DateTime?
+  userId           String?
+  userName         String?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([tenantId, branchId, status, dueOn])
+  @@index([customerId])
+  @@index([saleIds], type: Gin)
+  @@map("retail_payment_commitments")
 }
 
 model RetailSaleReturn {
@@ -3684,35 +3930,41 @@ model RetailSaleReturnItem {
 }
 
 model RetailSaleItem {
-  id           String                @id @default(cuid())
-  saleId       String
-  sale         RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  productId    String
-  product      RetailProduct         @relation(fields: [productId], references: [id])
+  id             String                @id @default(cuid())
+  saleId         String
+  sale           RetailSale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId      String
+  product        RetailProduct         @relation(fields: [productId], references: [id])
   // Valor vendido cuando el producto reparte existencias por opción.
-  variantId    String?
-  variant      RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  variantId      String?
+  variant        RetailProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
   // Snapshot: el recibo no debe cambiar si luego renombran o reprecian el producto.
-  name         String
+  name           String
   // Etiqueta del valor ("Arrurú") congelada en la venta. Sobrevive a que se
   // borre la opción, que es justo cuando el histórico haría falta.
-  variantLabel String?
-  sku          String?
-  quantity     Int
+  variantLabel   String?
+  sku            String?
+  quantity       Int
   // Cuántas de `quantity` ya salieron físicamente. Igual a `quantity` en una
   // venta de mostrador normal; menor mientras haya entrega pendiente.
-  deliveredQty Int                   @default(0)
+  deliveredQty   Int                   @default(0)
   // Cuántas devolvió el cliente. Es el tope de lo que se puede devolver
   // después: sin esto se podrían devolver 6 de una venta de 6 tres veces.
-  returnedQty  Int                   @default(0)
-  unitPriceCOP Int
-  unitCostCOP  Int                   @default(0)
-  discountCOP  Int                   @default(0)
-  totalCOP     Int
+  returnedQty    Int                   @default(0)
+  unitPriceCOP   Int
+  unitCostCOP    Int                   @default(0)
+  discountCOP    Int                   @default(0)
+  totalCOP       Int
   // De qué bodega salió la mercancía de esta línea. NULL = venta anterior a las
   // bodegas, o producto que no controla stock.
-  locationId   String?
-  location     RetailStockLocation?  @relation(fields: [locationId], references: [id])
+  locationId     String?
+  location       RetailStockLocation?  @relation(fields: [locationId], references: [id])
+  // De qué fecha de vencimiento salió cada unidad: [{ lotId, expiresOn, qty,
+  // noted? }]. Lo elige el vendedor en el mostrador (por defecto, la que vence
+  // antes). Sirve para que anular o devolver la regrese a SU lote, y para que
+  // el histórico diga qué fecha se vendió. NULL = venta anterior al cambio, o
+  // producto que no vence. Ver `LotAllocation` en retail-stock-lots.ts.
+  lotAllocations Json?
 
   deliveries            RetailSaleDelivery[]
   retailSaleReturnItems RetailSaleReturnItem[]
@@ -3957,21 +4209,26 @@ model RetailSupplierLedgerEntry {
  * equipo y no servía para llevarle cuenta a nadie.
  */
 model RetailSupplier {
-  id          String    @id @default(cuid())
-  tenantId    String
-  branchId    String
-  name        String
-  contactName String?
-  phone       String?
-  email       String?
-  city        String?
-  note        String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
+  id              String    @id @default(cuid())
+  tenantId        String
+  branchId        String
+  name            String
+  contactName     String?
+  phone           String?
+  email           String?
+  city            String?
+  note            String?
+  // % que este proveedor le descuenta a la tienda sobre el precio al público
+  // (distribuidor autorizado). NULL = el proveedor no trabaja así. Lo usan los
+  // productos en modo LIST_DISCOUNT que no traen un % propio.
+  listDiscountPct Float?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
 
   purchases RetailPurchaseItem[]
   ledger    RetailSupplierLedgerEntry[]
+  products  RetailProduct[]
 
   // Un nombre por sede. Es lo que impide que "crea con arte" y "Crea con Arte"
   // acaben siendo dos cuentas distintas del mismo proveedor.

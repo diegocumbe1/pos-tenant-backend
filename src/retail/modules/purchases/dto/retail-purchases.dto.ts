@@ -7,10 +7,12 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+import { CALENDAR_DAY } from '../../../shared/retail-calendar-day';
 
 export class CreateRetailPurchaseItemDto {
   @ApiPropertyOptional({
@@ -180,6 +182,27 @@ export class ReceiveRetailPurchaseItemDto {
   @IsString()
   @MaxLength(300)
   varianceNote?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-12-12',
+    description:
+      'Fecha de vencimiento (día calendario) de lo que entra. Solo se usa en ' +
+      'entradas de productos que vencen; sin ella entra "sin fecha".',
+  })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, {
+    message: 'La fecha de vencimiento debe ser AAAA-MM-DD',
+  })
+  expiresOn?: string;
+
+  @ApiPropertyOptional({
+    example: 'L2409',
+    description: 'Lote impreso en el empaque',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotCode?: string;
 }
 
 /** Cierra la línea con lo que haya llegado: "no llega más". */

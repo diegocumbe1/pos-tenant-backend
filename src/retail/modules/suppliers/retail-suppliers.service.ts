@@ -297,6 +297,9 @@ export class RetailSuppliersService {
       ...(dto.email !== undefined ? { email: dto.email.trim() || null } : {}),
       ...(dto.city !== undefined ? { city: dto.city.trim() || null } : {}),
       ...(dto.note !== undefined ? { note: dto.note.trim() || null } : {}),
+      ...(dto.listDiscountPct !== undefined
+        ? { listDiscountPct: dto.listDiscountPct }
+        : {}),
     };
   }
 
@@ -335,6 +338,7 @@ export class RetailSuppliersService {
       email: supplier.email,
       city: supplier.city,
       note: supplier.note,
+      listDiscountPct: supplier.listDiscountPct,
       createdAt: supplier.createdAt,
       updatedAt: supplier.updatedAt,
     };

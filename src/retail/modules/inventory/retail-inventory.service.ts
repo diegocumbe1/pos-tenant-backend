@@ -372,6 +372,7 @@ export class RetailInventoryService {
           costCOP: true,
           avgCostCOP: true,
           stockOptionId: true,
+          tracksExpiry: true,
         },
       });
       if (!product.trackStock) {
@@ -422,6 +423,12 @@ export class RetailInventoryService {
         variantId: variant?.id ?? null,
         delta: dto.quantity,
         locationId: dto.locationId,
+        // La fecha solo cuenta en entradas de un producto que vence. En los
+        // demás se ignora en vez de rechazarse: no hay nada que corregir.
+        lots:
+          product.tracksExpiry && dto.expiresOn
+            ? { kind: 'dated', expiresOn: dto.expiresOn, lotCode: dto.lotCode }
+            : undefined,
       });
 
       const movement = await tx.retailStockMovement.create({
@@ -517,18 +524,23 @@ export class RetailInventoryService {
       // casa. Sin esto, los saldos por bodega dejarían de sumar el total.
       const locationId = await resolveLocation(tx, ctx, dto.locationId);
       for (const { variantId, delta } of deltas) {
-        await applyBalanceDelta(
+        // Primero el lado que BAJA y después el que sube, para que las fechas
+        // de vencimiento de lo que sale pasen al otro renglón: si las 6 sin
+        // repartir vencían en diciembre, las 6 de Arrurú también.
+        const aroma = { locationId, productId, variantId };
+        const unassigned = { locationId, productId, variantId: null };
+        const [from, to] =
+          delta > 0 ? [unassigned, aroma] : [aroma, unassigned];
+        const lotTakes = await applyBalanceDelta(
           tx,
           ctx,
-          { locationId, productId, variantId },
-          delta,
+          from,
+          -Math.abs(delta),
         );
-        await applyBalanceDelta(
-          tx,
-          ctx,
-          { locationId, productId, variantId: null },
-          -delta,
-        );
+        await applyBalanceDelta(tx, ctx, to, Math.abs(delta), {
+          kind: 'carry',
+          takes: lotTakes,
+        });
       }
 
       return tx.retailProductVariant.findMany({

@@ -465,6 +465,7 @@ export class RetailPurchasesService {
               trackStock: true,
               costCOP: true,
               avgCostCOP: true,
+              tracksExpiry: true,
             },
           })
         : null;
@@ -490,6 +491,15 @@ export class RetailPurchasesService {
         // Dónde se guarda lo que llegó. Sin bodega elegida entra a la principal:
         // la mercancía que llega sin decir dónde se guarda, se guarda en la casa.
         const locationId = await resolveLocation(tx, ctx, dto.locationId);
+        // Lo que llegó vence ese día, pagado o regalado: es la misma caja.
+        const receiptLots =
+          product.tracksExpiry && dto.expiresOn
+            ? {
+                kind: 'dated' as const,
+                expiresOn: dto.expiresOn,
+                lotCode: dto.lotCode,
+              }
+            : undefined;
 
         if (paidUnits > 0) {
           avgCost = weightedAverageCost({
@@ -504,6 +514,7 @@ export class RetailPurchasesService {
             ctx,
             { locationId, productId: product.id, variantId: null },
             paidUnits,
+            receiptLots,
           );
           const movement = await tx.retailStockMovement.create({
             data: {
@@ -538,6 +549,7 @@ export class RetailPurchasesService {
             ctx,
             { locationId, productId: product.id, variantId: null },
             freeUnits,
+            receiptLots,
           );
           const movement = await tx.retailStockMovement.create({
             data: {
@@ -969,7 +981,10 @@ export class RetailPurchasesService {
     const item = await this.prisma.retailPurchaseItem.update({
       where: { id },
       data: skipped
-        ? { expenseSkippedAt: new Date(), expenseSkipNote: note?.trim() || null }
+        ? {
+            expenseSkippedAt: new Date(),
+            expenseSkipNote: note?.trim() || null,
+          }
         : { expenseSkippedAt: null, expenseSkipNote: null },
       include: PURCHASE_INCLUDE,
     });

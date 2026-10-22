@@ -1,9 +1,11 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { RetailPricingMode } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsHexColor,
   IsIn,
   IsInt,
@@ -11,12 +13,14 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import { CALENDAR_DAY } from '../../../shared/retail-calendar-day';
 
 export class CreateRetailCategoryDto {
   @ApiProperty({ example: 'iPhone 17 Pro' })
@@ -231,6 +235,39 @@ export class CreateRetailProductDto {
   @Min(0)
   wholesalePrice12COP?: number | null;
 
+  @ApiPropertyOptional({
+    enum: RetailPricingMode,
+    description:
+      'COST_MARGIN (default): se escribe el costo y el % sugiere el precio. ' +
+      'LIST_DISCOUNT: se escribe el precio de lista y el costo lo calcula el ' +
+      'backend con el % de distribuidor (el del producto o el del proveedor); ' +
+      'el `costCOP` que llegue se ignora.',
+  })
+  @IsOptional()
+  @IsEnum(RetailPricingMode)
+  pricingMode?: RetailPricingMode;
+
+  @ApiPropertyOptional({
+    example: 'sup_xxx',
+    nullable: true,
+    description: 'Proveedor habitual. null lo quita.',
+  })
+  @IsOptional()
+  @IsString()
+  supplierId?: string | null;
+
+  @ApiPropertyOptional({
+    example: 30,
+    nullable: true,
+    description:
+      '% de distribuidor solo de este producto. null = usa el del proveedor.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(95)
+  listDiscountPct?: number | null;
+
   @ApiPropertyOptional({ example: '🛡️' })
   @IsOptional()
   @IsString()
@@ -255,6 +292,37 @@ export class CreateRetailProductDto {
   @IsInt()
   @Min(0)
   stock?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'El producto vence. Apagado por defecto: encenderlo es lo que hace que ' +
+      'las entradas pidan fecha y que aparezca en las alertas de vencimiento.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  tracksExpiry?: boolean;
+
+  @ApiPropertyOptional({
+    example: 90,
+    nullable: true,
+    description:
+      'Días de anticipación de la alerta. null = el estándar de la tienda.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(730)
+  expiryAlertDays?: number | null;
+
+  @ApiPropertyOptional({
+    example: '2026-12-12',
+    description: 'Vencimiento del stock inicial, si el producto vence.',
+  })
+  @IsOptional()
+  @Matches(CALENDAR_DAY, {
+    message: 'La fecha de vencimiento debe ser AAAA-MM-DD',
+  })
+  initialExpiresOn?: string;
 
   @ApiPropertyOptional({ example: 3, description: 'Alerta de stock bajo' })
   @IsOptional()
@@ -328,3 +396,10 @@ export class CreateRetailProductDto {
 export class UpdateRetailProductDto extends PartialType(
   CreateRetailProductDto,
 ) {}
+
+/** Recalcular el costo de los productos que toman el % de un proveedor. */
+export class RecalculateListCostsDto {
+  @ApiProperty({ example: 'sup_xxx' })
+  @IsString()
+  supplierId!: string;
+}
