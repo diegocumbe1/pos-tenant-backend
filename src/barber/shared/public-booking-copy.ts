@@ -12,10 +12,13 @@ export type PublicBookingCopy = {
   primaryCta: string;
   selectionPrompt: string;
   schedulePrompt: string;
+  /** Quien atiende: "especialista" / "entrenador" / "responsable". */
+  staffSingular: string;
+  staffPlural: string;
 };
 
 export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
-  'services' | 'resources',
+  'services' | 'resources' | 'fitness',
   PublicBookingCopy
 > = {
   services: {
@@ -25,6 +28,19 @@ export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
     primaryCta: 'Reserva tu cita',
     selectionPrompt: 'Elige tu servicio',
     schedulePrompt: 'Aparta tu horario',
+    staffSingular: 'especialista',
+    staffPlural: 'especialistas',
+  },
+  // Gimnasio: lo que se agenda por la web es una sesión con entrenador.
+  fitness: {
+    itemSingular: 'sesión',
+    itemPlural: 'sesiones',
+    bookingNoun: 'sesión',
+    primaryCta: 'Agenda tu sesión',
+    selectionPrompt: 'Elige tu sesión',
+    schedulePrompt: 'Aparta tu horario',
+    staffSingular: 'entrenador',
+    staffPlural: 'entrenadores',
   },
   resources: {
     itemSingular: 'espacio',
@@ -33,6 +49,8 @@ export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
     primaryCta: 'Reserva tu espacio',
     selectionPrompt: 'Elige tu espacio',
     schedulePrompt: 'Aparta tu horario',
+    staffSingular: 'responsable',
+    staffPlural: 'responsables',
   },
 };
 
@@ -42,8 +60,8 @@ export const resolvePublicBookingCopy = (
   raw: Prisma.JsonValue | null | undefined,
 ): PublicBookingCopy => {
   const defaults =
-    mode === 'resources'
-      ? DEFAULT_PUBLIC_BOOKING_COPY.resources
+    mode === 'resources' || mode === 'fitness'
+      ? DEFAULT_PUBLIC_BOOKING_COPY[mode]
       : DEFAULT_PUBLIC_BOOKING_COPY.services;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults;
 

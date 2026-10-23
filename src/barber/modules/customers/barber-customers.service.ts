@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -230,17 +230,19 @@ export class BarberCustomersService {
 
   async createCustomer(ctx: TenantContext, dto: CreateBarberCustomerDto) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
-    return this.prisma.barberCustomer.create({
-      data: {
-        tenantId: ctx.tenantId,
-        branchId: ctx.branchId,
-        name: dto.name,
-        phone: dto.phone,
-        email: dto.email,
-        notes: dto.notes,
-        tags: dto.tags ?? [],
-      },
-    });
+    return this.withPhoneConflict(() =>
+      this.prisma.barberCustomer.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          name: dto.name.trim(),
+          phone: dto.phone.trim(),
+          email: dto.email,
+          notes: dto.notes,
+          tags: dto.tags ?? [],
+        },
+      }),
+    );
   }
 
   async updateCustomer(
@@ -254,10 +256,37 @@ export class BarberCustomersService {
       id,
       'Customer',
     );
-    return this.prisma.barberCustomer.update({
-      where: { id },
-      data: dto,
-    });
+    return this.withPhoneConflict(() =>
+      this.prisma.barberCustomer.update({
+        where: { id },
+        data: {
+          ...dto,
+          name: dto.name?.trim(),
+          phone: dto.phone?.trim(),
+        },
+      }),
+    );
+  }
+
+  /**
+   * El teléfono es único por sede. Sin esto, repetir uno devolvía un 500 que la
+   * recepción no sabe leer; con esto dice exactamente qué pasó.
+   */
+  private async withPhoneConflict<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new ConflictException({
+          code: 'PHONE_TAKEN',
+          message: 'Ya hay otro cliente con ese teléfono en esta sede',
+        });
+      }
+      throw err;
+    }
   }
 
   // Borrado en cascada (control del OWNER): elimina el cliente y TODAS sus citas,

@@ -195,7 +195,10 @@ export class BarberSettingsService {
       booking: {
         slug: settings.bookingSlug,
         bookingMode:
-          settings.bookingMode === 'resources' ? 'resources' : 'services',
+          settings.bookingMode === 'resources' ||
+          settings.bookingMode === 'fitness'
+            ? settings.bookingMode
+            : 'services',
         publicCopy: resolvePublicBookingCopy(
           settings.bookingMode,
           settings.publicBookingCopy,

@@ -65,8 +65,10 @@ export class PublicBookingCopyDto {
 export class BookingSettingsDto {
   @IsOptional()
   @IsString()
-  @IsIn(['services', 'resources'])
-  bookingMode?: 'services' | 'resources';
+  // fitness = gimnasio / centro de acondicionamiento: agenda por especialista
+  // (entrenador) como `services`, con vocabulario y módulos propios.
+  @IsIn(['services', 'resources', 'fitness'])
+  bookingMode?: 'services' | 'resources' | 'fitness';
 
   @IsOptional()
   @IsBoolean()

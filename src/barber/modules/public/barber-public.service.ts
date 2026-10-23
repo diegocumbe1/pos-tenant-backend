@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { ensureRecurringHorizon } from '../../shared/recurring-horizon';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import { calendarDayCO, formatDateTimeCO } from '../../../common/date.util';
@@ -43,7 +44,9 @@ export class BarberPublicService {
   async listServices(branchId: string) {
     await this.assertBranchPublished(branchId);
     const services = await this.prisma.barberService.findMany({
-      where: { branchId, isActive: true },
+      // Solo lo que se agenda: un plan, un paquete o una clase grupal no se
+      // reservan como cita (la clase tiene cupo y su propio horario).
+      where: { branchId, isActive: true, kind: 'SERVICE' },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
     return services.map((service) => ({
@@ -81,6 +84,8 @@ export class BarberPublicService {
   // disponibilidad en el cliente respetando el horario del negocio. Sin auth.
   async getBusyRanges(branchId: string, query: PublicAvailabilityQueryDto) {
     await this.assertBranchPublished(branchId);
+    // Las reservas fijas tienen que bloquear la cancha también en la web.
+    await ensureRecurringHorizon(this.prisma, branchId);
 
     // Ventana amplia alrededor de la fecha para cubrir cualquier offset de zona
     // horaria; el cliente solo usa los rangos que solapan su día local.
@@ -114,6 +119,8 @@ export class BarberPublicService {
 
   async getAvailability(branchId: string, query: PublicAvailabilityQueryDto) {
     await this.assertBranchPublished(branchId);
+    // Las reservas fijas tienen que bloquear la cancha también en la web.
+    await ensureRecurringHorizon(this.prisma, branchId);
 
     // El especialista es opcional: sin él se calcula la disponibilidad del
     // recurso/espacio (servicio), que debe venir en la query.
@@ -178,6 +185,7 @@ export class BarberPublicService {
   }
 
   async createAppointment(branchId: string, dto: CreatePublicAppointmentDto) {
+    await ensureRecurringHorizon(this.prisma, branchId);
     const settings = await this.prisma.barberSettings.findUnique({
       where: { branchId },
       select: {
@@ -199,9 +207,20 @@ export class BarberPublicService {
 
     const service = await this.prisma.barberService.findUnique({
       where: { id: dto.serviceId },
-      select: { id: true, branchId: true, isActive: true, durationMin: true },
+      select: {
+        id: true,
+        branchId: true,
+        isActive: true,
+        durationMin: true,
+        kind: true,
+      },
     });
-    if (!service || service.branchId !== branchId || !service.isActive) {
+    if (
+      !service ||
+      service.branchId !== branchId ||
+      !service.isActive ||
+      service.kind !== 'SERVICE'
+    ) {
       throw new BadRequestException('Service is not available');
     }
 
@@ -261,7 +280,11 @@ export class BarberPublicService {
       });
     }
 
-    const customer = await this.upsertCustomer(branchId, settings.tenantId, dto);
+    const customer = await this.upsertCustomer(
+      branchId,
+      settings.tenantId,
+      dto,
+    );
 
     const appointment = await this.prisma.barberAppointment.create({
       data: {
@@ -303,7 +326,9 @@ export class BarberPublicService {
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`Appointment notification dispatch failed: ${message}`);
+        this.logger.warn(
+          `Appointment notification dispatch failed: ${message}`,
+        );
       });
 
     return {

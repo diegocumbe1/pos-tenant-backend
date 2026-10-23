@@ -65,8 +65,75 @@ type DashboardBarberAppointment = Prisma.BarberAppointmentGetPayload<{
     service: {
       select: { id: true; name: true; priceCOP: true; costCOP: true };
     };
+    _count: { select: { charges: true } };
   };
 }>;
+/**
+ * Un pago de barbería con su cobro. Igual que en tienda, ES LA UNIDAD DE
+ * INGRESO: entra el día en que se pagó. Ver `BarberCharge` en el schema.
+ */
+type DashboardBarberPayment = Prisma.BarberPaymentGetPayload<{
+  include: {
+    charge: {
+      select: {
+        id: true;
+        concept: true;
+        serviceId: true;
+        appointmentId: true;
+        service: { select: { name: true } };
+      };
+    };
+  };
+}>;
+
+/**
+ * Citas que cuentan como ingreso: completadas, SIN cobro registrado, que no
+ * son asistencia a clase ni las cubre un plan, en el día
+ * en que se PRESTÓ el servicio. Las que tienen cobro entran por sus pagos; si
+ * contaran también acá, el ingreso saldría doble.
+ *
+ * El día es `servedAt` (el que corrige el admin) y, para las citas viejas que
+ * no lo tienen, `scheduledAt`. Antes Finanzas contaba solo por `scheduledAt`
+ * mientras el CRM usaba `servedAt`, y un servicio corrido de día caía en dos
+ * períodos distintos según la pantalla.
+ */
+function barberServedWhere(
+  ctx: TenantContext,
+  window: Prisma.DateTimeFilter,
+): Prisma.BarberAppointmentWhereInput {
+  return {
+    tenantId: ctx.tenantId,
+    branchId: ctx.branchId,
+    status: { in: COMPLETED_STATUS_VARIANTS },
+    // Una asistencia a clase o una sesión cubierta por un plan/paquete no es
+    // una venta: su plata entró con el cobro del plan (o entra con el cobro
+    // suelto de la clase). Contarla aquí sería ingreso inventado.
+    classSessionId: null,
+    coveredByChargeId: null,
+    OR: [
+      { servedAt: window },
+      { servedAt: null, scheduledAt: window },
+    ],
+  };
+}
+
+/** Pagos de barbería que son ingreso: no anulados, de cobros no anulados. */
+function barberPaymentsWhere(
+  ctx: TenantContext,
+  window: Prisma.DateTimeFilter,
+): Prisma.BarberPaymentWhereInput {
+  return {
+    tenantId: ctx.tenantId,
+    branchId: ctx.branchId,
+    voidedAt: null,
+    paidAt: window,
+    charge: { voidedAt: null },
+  };
+}
+
+function servedDate(appt: { servedAt: Date | null; scheduledAt: Date }) {
+  return appt.servedAt ?? appt.scheduledAt;
+}
 /**
  * Una devolución con sus líneas: hace falta el detalle para poder sacar el costo
  * de lo que volvió y de lo que se llevó, que van en sentidos opuestos.
@@ -153,6 +220,7 @@ export class FinanceService {
       splits,
       expenses,
       barberAppointments,
+      barberPayments,
       retailPayments,
       retailReturns,
     ] = await Promise.all([
@@ -177,14 +245,12 @@ export class FinanceService {
         },
         _sum: { amountCOP: true },
       }),
+      // Todas las citas completadas del período: el costo y el ranking de
+      // servicios salen de ellas aunque el ingreso de las cobradas venga por
+      // sus pagos.
       includeBarber
         ? this.prisma.barberAppointment.findMany({
-            where: {
-              tenantId: ctx.tenantId,
-              branchId: ctx.branchId,
-              status: { in: COMPLETED_STATUS_VARIANTS },
-              scheduledAt: { gte: range.from, lte: range.to },
-            },
+            where: barberServedWhere(ctx, { gte: range.from, lte: range.to }),
             include: {
               service: {
                 select: {
@@ -194,9 +260,26 @@ export class FinanceService {
                   costCOP: true,
                 },
               },
+              _count: { select: { charges: true } },
             },
           })
         : Promise.resolve([] as DashboardBarberAppointment[]),
+      includeBarber
+        ? this.prisma.barberPayment.findMany({
+            where: barberPaymentsWhere(ctx, { gte: range.from, lte: range.to }),
+            include: {
+              charge: {
+                select: {
+                  id: true,
+                  concept: true,
+                  serviceId: true,
+                  appointmentId: true,
+                  service: { select: { name: true } },
+                },
+              },
+            },
+          })
+        : Promise.resolve([] as DashboardBarberPayment[]),
       // TIENDA: SE PIDEN LOS ABONOS, NO LAS VENTAS. El ingreso del período es
       // la plata que entró en el período. Los anulados no cuentan y los de una
       // venta anulada tampoco: esa plata volvió.
@@ -243,10 +326,21 @@ export class FinanceService {
     // El precio congelado en la cita manda sobre el del catálogo: reprecio o
     // renombrar un servicio no debe reescribir el histórico. Las citas
     // anteriores al congelado caen al precio actual, como antes.
-    const barberRevenue = barberAppointments.reduce(
-      (acc, a) => acc + (a.priceCOP ?? a.service?.priceCOP ?? 0),
+    //
+    // Barbería = citas completadas SIN cobro (como siempre) + pagos (base caja).
+    const barberUnchargedRevenue = barberAppointments
+      .filter((a) => a._count.charges === 0)
+      .reduce((acc, a) => acc + (a.priceCOP ?? a.service?.priceCOP ?? 0), 0);
+    const barberPaymentsRevenue = barberPayments.reduce(
+      (acc, p) => acc + p.amountCOP,
       0,
     );
+    // Lo cobrado sin cita (mensualidades, productos): no tiene costo cargado,
+    // pero tampoco es venta "sin costo conocido" — su costo es cero.
+    const barberStandalonePayments = barberPayments.filter(
+      (p) => !p.charge.appointmentId,
+    );
+    const barberRevenue = barberUnchargedRevenue + barberPaymentsRevenue;
 
     // VENTAS NETAS. Lo devuelto resta y lo que el cliente se llevó a cambio
     // suma, así que un cambio parejo da cero y un cambio por algo más caro suma
@@ -308,6 +402,10 @@ export class FinanceService {
 
     // ── Costo de lo vendido ────────────────────────────────────────────────
     const cogs = this.accumulateCogs(splits, barberAppointments, retail);
+    cogs.knownRevenueCOP += barberStandalonePayments.reduce(
+      (acc, p) => acc + p.amountCOP,
+      0,
+    );
     // El costo sigue al ingreso: el de lo devuelto sale del COGS y el de lo que
     // el cliente se llevó entra. Si no, una devolución bajaría el ingreso
     // dejando su costo adentro y la utilidad del período saldría hundida.
@@ -366,9 +464,14 @@ export class FinanceService {
     // "Órdenes" = tickets de restaurante + citas de barber + ventas de tienda
     // CERRADAS en el período. Una venta a medio abonar todavía no es una venta
     // cerrada, y contarla en los dos períodos en que recibió plata la duplicaría.
+    // Los cobros sueltos cuentan una vez por cobro, aunque tengan varios abonos.
+    const barberStandaloneCharges = new Set(
+      barberStandalonePayments.map((p) => p.charge.id),
+    );
     const ordersCount =
       new Set(splits.map((s) => s.orderId)).size +
       barberAppointments.length +
+      barberStandaloneCharges.size +
       retail.closedSales.length;
     const averageOrderValue =
       ordersCount > 0 ? Math.round(revenue / ordersCount) : 0;
@@ -404,6 +507,24 @@ export class FinanceService {
       entry.revenue += appt.priceCOP ?? appt.service.priceCOP;
       entry.quantity += 1;
       productMap.set(appt.service.id, entry);
+    }
+    // Cobros sin cita (la mensualidad): por lo que entró en el período. Sin
+    // servicio se agrupan por el concepto escrito.
+    const countedStandalone = new Set<string>();
+    for (const payment of barberStandalonePayments) {
+      const charge = payment.charge;
+      const key = charge.serviceId ?? `concept:${charge.concept.toLowerCase()}`;
+      const entry = productMap.get(key) ?? {
+        name: charge.service?.name ?? charge.concept,
+        revenue: 0,
+        quantity: 0,
+      };
+      entry.revenue += payment.amountCOP;
+      if (!countedStandalone.has(charge.id)) {
+        entry.quantity += 1;
+        countedStandalone.add(charge.id);
+      }
+      productMap.set(key, entry);
     }
     // Productos vendidos en tienda: el snapshot de la línea manda sobre el
     // catálogo. Se cuentan sobre las ventas CERRADAS en el período —no sobre los
@@ -504,12 +625,24 @@ export class FinanceService {
       bumpDay(split.paidAt, split.totalCOP, split.orderId, itemQty);
     }
     // Mismo criterio que el ingreso total: manda el precio congelado en la cita.
+    // Una cita cobrada suma su servicio ese día, pero su plata entra por los
+    // pagos, el día en que se pagó.
     for (const appt of barberAppointments) {
       bumpDay(
-        appt.scheduledAt,
-        appt.priceCOP ?? appt.service?.priceCOP ?? 0,
+        servedDate(appt),
+        appt._count.charges === 0
+          ? (appt.priceCOP ?? appt.service?.priceCOP ?? 0)
+          : 0,
         appt.id,
         1,
+      );
+    }
+    for (const payment of barberPayments) {
+      bumpDay(
+        payment.paidAt,
+        payment.amountCOP,
+        payment.charge.appointmentId ?? payment.charge.id,
+        0,
       );
     }
     // La serie diaria es de PLATA: cada abono pesa el día en que entró. Las
@@ -1022,8 +1155,15 @@ export class FinanceService {
     // período) e inclusivo dentro del período, igual que el dashboard.
     const window = from ? { gte: from, lte: to } : { lt: to };
 
-    const [splits, appointments, payments, returns, expenses, capital] =
-      await Promise.all([
+    const [
+      splits,
+      appointments,
+      barberPayments,
+      payments,
+      returns,
+      expenses,
+      capital,
+    ] = await Promise.all([
         includeRestaurant
           ? this.prisma.paymentSplit.findMany({
               where: {
@@ -1034,19 +1174,22 @@ export class FinanceService {
               select: { paidAt: true, totalCOP: true },
             })
           : Promise.resolve([]),
+        // Las citas cobradas entran por sus pagos, no aquí.
         includeBarber
           ? this.prisma.barberAppointment.findMany({
-              where: {
-                tenantId: ctx.tenantId,
-                branchId: ctx.branchId,
-                status: { in: COMPLETED_STATUS_VARIANTS },
-                scheduledAt: window,
-              },
+              where: { ...barberServedWhere(ctx, window), charges: { none: {} } },
               select: {
                 scheduledAt: true,
+                servedAt: true,
                 priceCOP: true,
                 service: { select: { priceCOP: true } },
               },
+            })
+          : Promise.resolve([]),
+        includeBarber
+          ? this.prisma.barberPayment.findMany({
+              where: barberPaymentsWhere(ctx, window),
+              select: { paidAt: true, amountCOP: true, method: true },
             })
           : Promise.resolve([]),
         includeRetail
@@ -1121,11 +1264,21 @@ export class FinanceService {
     }
     for (const appt of appointments) {
       rows.push({
-        at: appt.scheduledAt,
+        at: servedDate(appt),
         direction: 'IN',
         category: 'SALES',
         origin: 'SALES',
         amountCOP: appt.priceCOP ?? appt.service?.priceCOP ?? 0,
+      });
+    }
+    for (const payment of barberPayments) {
+      rows.push({
+        at: payment.paidAt,
+        direction: 'IN',
+        category: 'SALES',
+        origin: 'SALES',
+        amountCOP: payment.amountCOP,
+        method: payment.method,
       });
     }
     for (const payment of payments) {
@@ -1544,7 +1697,7 @@ export class FinanceService {
     const includeBarber = vertical === 'barber' || vertical === 'unknown';
     const includeRetail = vertical === 'retail' || vertical === 'unknown';
 
-    const [splitAgg, appts, retailAgg] = await Promise.all([
+    const [splitAgg, appts, barberPaymentsAgg, retailAgg] = await Promise.all([
       includeRestaurant
         ? this.prisma.paymentSplit.aggregate({
             where: {
@@ -1555,17 +1708,22 @@ export class FinanceService {
             _sum: { totalCOP: true },
           })
         : Promise.resolve({ _sum: { totalCOP: 0 } }),
+      // Mismo criterio que el dashboard: citas sin cobro + pagos.
       includeBarber
         ? this.prisma.barberAppointment.findMany({
             where: {
-              tenantId: ctx.tenantId,
-              branchId: ctx.branchId,
-              status: { in: COMPLETED_STATUS_VARIANTS },
-              scheduledAt: { gte: from, lt: to },
+              ...barberServedWhere(ctx, { gte: from, lt: to }),
+              charges: { none: {} },
             },
             include: { service: { select: { priceCOP: true } } },
           })
         : Promise.resolve([] as RevenueBarberAppointment[]),
+      includeBarber
+        ? this.prisma.barberPayment.aggregate({
+            where: barberPaymentsWhere(ctx, { gte: from, lt: to }),
+            _sum: { amountCOP: true },
+          })
+        : Promise.resolve({ _sum: { amountCOP: 0 } }),
       includeRetail
         ? this.prisma.retailSale.aggregate({
             where: {
@@ -1582,10 +1740,9 @@ export class FinanceService {
         : Promise.resolve({ _sum: { totalCOP: 0, shippingCOP: 0 } }),
     ]);
     // Mismo criterio que el dashboard: manda el precio congelado en la cita.
-    const barber = appts.reduce(
-      (a, x) => a + (x.priceCOP ?? x.service?.priceCOP ?? 0),
-      0,
-    );
+    const barber =
+      appts.reduce((a, x) => a + (x.priceCOP ?? x.service?.priceCOP ?? 0), 0) +
+      (barberPaymentsAgg._sum.amountCOP ?? 0);
     return (
       (splitAgg._sum.totalCOP ?? 0) +
       barber +

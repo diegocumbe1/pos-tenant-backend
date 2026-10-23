@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -13,6 +14,14 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
+export const BARBER_SERVICE_KINDS = [
+  'SERVICE',
+  'PLAN',
+  'PACKAGE',
+  'CLASS',
+] as const;
+export type BarberServiceKind = (typeof BARBER_SERVICE_KINDS)[number];
 
 // Bloque de reserva adicional (modo recursos). minutes = duración del bloque;
 // priceCOP opcional (null/omitido = se deriva de la tarifa por hora base).
@@ -102,6 +111,32 @@ export class CreateBarberServiceDto {
   @Max(3650)
   maintenanceAfterDays?: number | null;
 
+  // SERVICE | PLAN (mensualidad) | PACKAGE (N sesiones) | CLASS (clase con cupo).
+  @IsOptional()
+  @IsIn(BARBER_SERVICE_KINDS)
+  kind?: BarberServiceKind;
+
+  // PLAN/PACKAGE: días de vigencia. null = no vence.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  validityDays?: number | null;
+
+  // PACKAGE (o PLAN con ingresos limitados): sesiones incluidas. null = ilimitado.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  sessionsIncluded?: number | null;
+
+  // CLASS: cupo por clase.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  capacity?: number;
+
   @IsOptional()
   @IsUrl({ require_tld: false })
   primaryImageUrl?: string;
@@ -187,6 +222,32 @@ export class UpdateBarberServiceDto {
   @Min(1)
   @Max(3650)
   maintenanceAfterDays?: number | null;
+
+  // SERVICE | PLAN (mensualidad) | PACKAGE (N sesiones) | CLASS (clase con cupo).
+  @IsOptional()
+  @IsIn(BARBER_SERVICE_KINDS)
+  kind?: BarberServiceKind;
+
+  // PLAN/PACKAGE: días de vigencia. null = no vence.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  validityDays?: number | null;
+
+  // PACKAGE (o PLAN con ingresos limitados): sesiones incluidas. null = ilimitado.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  sessionsIncluded?: number | null;
+
+  // CLASS: cupo por clase.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  capacity?: number;
 
   @IsOptional()
   @IsUrl({ require_tld: false })

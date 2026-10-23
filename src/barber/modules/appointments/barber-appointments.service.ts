@@ -9,6 +9,7 @@ import {
   formatCOP,
 } from '../../../common/date.util';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import { ensureRecurringHorizon } from '../../shared/recurring-horizon';
 import {
   COMPLETED_STATUS_VARIANTS,
   isCompletedStatus,
@@ -31,6 +32,8 @@ export class BarberAppointmentsService {
 
   async listAppointments(ctx: TenantContext) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
+    // Completa hacia adelante las reservas fijas antes de pintar la agenda.
+    await ensureRecurringHorizon(this.prisma, ctx.branchId);
     return this.prisma.barberAppointment.findMany({
       where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
       include: { customer: true, service: true, staff: true },
@@ -102,6 +105,7 @@ export class BarberAppointmentsService {
         customerId: true,
         status: true,
         priceCOP: true,
+        costCOP: true,
         servedAt: true,
         scheduledAt: true,
       },
@@ -116,9 +120,15 @@ export class BarberAppointmentsService {
 
     // Al completar, se congelan precio y costo del servicio. Sin esto el ingreso
     // se lee del BarberService ACTUAL y reprecio o renombrar reescribe el
-    // histórico entero. Solo se congela la primera vez (priceCOP aún null).
+    // histórico entero. Solo la primera vez: todavía sin fecha de servicio.
+    //
+    // Una reserva fija trae su PRECIO PACTADO desde que se crea (precio de
+    // equipo): ese se conserva. Antes la condición era "priceCOP todavía null",
+    // y con el precio ya puesto la cita nunca guardaba su fecha de servicio.
     const completesNow =
-      isCompletedStatus(dto.status) && current.priceCOP === null;
+      isCompletedStatus(dto.status) &&
+      !isCompletedStatus(current.status) &&
+      (current.priceCOP === null || current.servedAt === null);
 
     // Cuándo se prestó el servicio. Por defecto es el día agendado, que es la
     // verdad en el caso normal; si lo registran después ("fue hace ocho días"),
@@ -145,8 +155,8 @@ export class BarberAppointmentsService {
           notes: dto.notes,
           ...(completesNow
             ? {
-                priceCOP: service.priceCOP,
-                costCOP: service.costCOP,
+                priceCOP: current.priceCOP ?? service.priceCOP,
+                costCOP: current.costCOP ?? service.costCOP,
                 servedAt,
               }
             : {}),
@@ -157,11 +167,11 @@ export class BarberAppointmentsService {
       if (completesNow) {
         await this.logAppointmentEvent(tx, ctx, id, {
           kind: 'COMPLETED',
-          summary: `Servicio prestado el ${calendarDayCO(servedAt!)} · ${formatCOP(service.priceCOP)}`,
+          summary: `Servicio prestado el ${calendarDayCO(servedAt!)} · ${formatCOP(current.priceCOP ?? service.priceCOP)}`,
           detail: {
             servedAt: servedAt!.toISOString(),
-            priceCOP: service.priceCOP,
-            costCOP: service.costCOP,
+            priceCOP: current.priceCOP ?? service.priceCOP,
+            costCOP: current.costCOP ?? service.costCOP,
           },
         });
       }

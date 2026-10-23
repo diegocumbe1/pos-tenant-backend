@@ -448,15 +448,29 @@ model BarberService {
   // null = ese servicio no entra en la lista de vencidos.
   retouchAfterDays     Int? // micropigmentación: ~30
   maintenanceAfterDays Int? // micropigmentación: ~365
+  // Qué es: SERVICE (se presta en una cita) | PLAN (mensualidad con vigencia) |
+  // PACKAGE (N sesiones) | CLASS (clase grupal con cupo). Texto libre validado
+  // en el DTO, como `bookingMode`.
+  kind                 String   @default("SERVICE")
+  // PLAN/PACKAGE: cuántos días dura lo contratado. null = sin vencimiento.
+  validityDays         Int?
+  // PACKAGE (y PLAN con ingresos limitados): sesiones incluidas. null = ilimitado.
+  sessionsIncluded     Int?
+  // CLASS: cuántas personas caben. 1 en todo lo demás.
+  capacity             Int      @default(1)
   primaryImageUrl      String?
   isActive             Boolean  @default(true)
   sortOrder            Int      @default(0)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  staffServices BarberStaffService[]
-  appointments  BarberAppointment[]
-  assets        BarberServiceAsset[]
+  staffServices     BarberStaffService[]
+  appointments      BarberAppointment[]
+  assets            BarberServiceAsset[]
+  charges           BarberCharge[]
+  classSchedules    BarberClassSchedule[]
+  classSessions     BarberClassSession[]
+  recurringBookings BarberRecurringBooking[]
 
   @@unique([branchId, name])
   @@index([tenantId])
@@ -523,8 +537,11 @@ model BarberStaff {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  services     BarberStaffService[]
-  appointments BarberAppointment[]
+  services          BarberStaffService[]
+  appointments      BarberAppointment[]
+  classSchedules    BarberClassSchedule[]
+  classSessions     BarberClassSession[]
+  recurringBookings BarberRecurringBooking[]
 
   @@unique([branchId, name])
   @@index([tenantId])
@@ -561,7 +578,10 @@ model BarberCustomer {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  appointments BarberAppointment[]
+  appointments      BarberAppointment[]
+  charges           BarberCharge[]
+  classEnrollments  BarberClassEnrollment[]
+  recurringBookings BarberRecurringBooking[]
 
   @@unique([branchId, phone])
   @@index([tenantId])
@@ -602,10 +622,26 @@ model BarberAppointment {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  events BarberAppointmentEvent[]
+  // Clase grupal a la que pertenece esta asistencia. null = cita normal.
+  classSessionId     String?
+  classSession       BarberClassSession?     @relation(fields: [classSessionId], references: [id], onDelete: SetNull)
+  // El plan o paquete que cubre esta sesión: no se cobra aparte y, si el
+  // paquete tiene sesiones contadas, descuenta una. null = se cobra suelta.
+  coveredByChargeId  String?
+  coveredByCharge    BarberCharge?           @relation("ChargeCoverage", fields: [coveredByChargeId], references: [id], onDelete: SetNull)
+  // Ocurrencia de una reserva fija semanal ("martes 20:00, cancha 2"). Es una
+  // reserva normal: se cobra el día, se cancela sola o se mueve. null = suelta.
+  recurringBookingId String?
+  recurringBooking   BarberRecurringBooking? @relation(fields: [recurringBookingId], references: [id], onDelete: SetNull)
+
+  events  BarberAppointmentEvent[]
+  charges BarberCharge[]           @relation("AppointmentCharges")
 
   @@index([tenantId])
   @@index([branchId, status])
+  @@index([classSessionId])
+  @@index([coveredByChargeId])
+  @@index([recurringBookingId])
   @@index([staffId, scheduledAt])
   @@index([customerId, scheduledAt])
   // Para la segmentación de clientes: "quién no vuelve desde…" ordena y filtra
@@ -664,6 +700,282 @@ enum BarberAppointmentEventKind {
   CANCELLED // se canceló
   NO_SHOW // el cliente no llegó
   NOTE // una anotación a mano, sin más consecuencia
+}
+
+/**
+ * Un cobro: lo que el cliente debe por algo. Puede venir de una cita o ser
+ * suelto (la mensualidad del gimnasio, un producto, un día de entrada).
+ * EL COBRO NO ES EL INGRESO. El ingreso son sus pagos (`BarberPayment`), el día
+ * en que entró la plata: base caja, la misma regla de los abonos de retail. Así
+ * una mensualidad de 120.000 que se paga 60.000 hoy y 60.000 el viernes pesa en
+ * esos dos días, y lo que falta es saldo, no ingreso.
+ * Una cita completada SIN cobro sigue contando como antes (precio congelado el
+ * día del servicio). En cuanto la cita tiene un cobro —anulado o no— manda el
+ * cobro: así no se cuenta dos veces y una cita cobrada por error se corrige
+ * anulando, no borrando.
+ */
+model BarberCharge {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  customerId    String?
+  customer      BarberCustomer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  appointmentId String?
+  appointment   BarberAppointment? @relation("AppointmentCharges", fields: [appointmentId], references: [id], onDelete: SetNull)
+  serviceId     String?
+  service       BarberService?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  /// Qué se cobró, congelado: renombrar el servicio no reescribe el histórico.
+  concept   String
+  /// Cuánto vale. Lo pagado sale de sumar los pagos no anulados.
+  totalCOP  Int
+  /// Cuándo se hizo el cobro. Puede no ser hoy: se digita después.
+  chargedAt DateTime @default(now())
+  note      String?
+
+  /// Desde cuándo tiene el servicio. Puede ir antes del pago: arrancó el 2 y
+  /// paga el 7. Fecha calendario Colombia, sin hora.
+  startsOn DateTime? @db.Date
+  /// Hasta cuándo va lo contratado (fin de la mensualidad). null = no aplica.
+  endsOn   DateTime? @db.Date
+  /// Compromiso de pago: hasta ese día el saldo está "en plazo", no vencido.
+  /// null = se espera de contado.
+  dueOn    DateTime? @db.Date
+
+  /// Sesiones o ingresos que incluye (paquete, plan limitado). null = ilimitado.
+  /// Las usadas se cuentan sobre `coveredAppointments`, no se guardan.
+  sessionsTotal Int?
+  /// Días que se congeló (viaje, lesión). Ya están sumados a `endsOn`; este
+  /// número queda para que se vea por qué la vigencia es más larga.
+  frozenDays    Int  @default(0)
+
+  userId   String?
+  userName String?
+
+  /// Anulado: sigue en el histórico, pero ni él ni sus pagos cuentan.
+  voidedAt     DateTime?
+  voidedReason String?
+  voidedBy     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments            BarberPayment[]
+  coveredAppointments BarberAppointment[] @relation("ChargeCoverage")
+
+  @@index([tenantId, branchId, chargedAt])
+  @@index([tenantId, branchId, dueOn])
+  @@index([customerId])
+  @@index([appointmentId])
+  @@map("barber_charges")
+}
+
+/**
+ * Horario fijo de una clase: "Funcional · lunes · 17:00 · 60 min · cupo 15".
+ * Se repite cada semana entre `activeFrom` y `activeUntil`. Las clases
+ * concretas NO se crean por adelantado (no hay scheduler): se calculan desde el
+ * horario y se guardan como `BarberClassSession` cuando entra el primer inscrito.
+ */
+model BarberClassSchedule {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  serviceId String
+  service   BarberService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staffId   String?
+  staff     BarberStaff?  @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  /// 0 = domingo … 6 = sábado (como `Date.getDay`).
+  weekday     Int
+  /// Hora de inicio en Colombia, 'HH:mm'.
+  startTime   String
+  durationMin Int
+  capacity    Int
+  activeFrom  DateTime  @db.Date
+  activeUntil DateTime? @db.Date
+  isActive    Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions    BarberClassSession[]
+  enrollments BarberClassEnrollment[]
+  events      BarberClassScheduleEvent[]
+
+  @@index([tenantId, branchId, isActive])
+  @@map("barber_class_schedules")
+}
+
+/**
+ * Histórico de un horario de clase: creado, cambiado desde una fecha,
+ * archivado, una clase cancelada… Mismo patrón que `BarberAppointmentEvent`: la
+ * frase se congela al escribirse y nada de aquí se edita después.
+ */
+model BarberClassScheduleEvent {
+  id         String              @id @default(cuid())
+  tenantId   String
+  branchId   String
+  scheduleId String
+  schedule   BarberClassSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  /// CREATED | UPDATED | SPLIT | ARCHIVED | RESTORED | SESSION_UPDATED | SESSION_CANCELLED | SESSION_RESTORED
+  kind    String
+  /// Frase lista para mostrar, congelada en el momento en que pasó.
+  summary String
+  /// Datos crudos: valores anterior y nuevo, fecha efectiva, ids.
+  detail  Json?
+
+  userId   String?
+  userName String?
+
+  occurredAt DateTime @default(now())
+
+  @@index([scheduleId, occurredAt])
+  @@map("barber_class_schedule_events")
+}
+
+/**
+ * Una clase concreta (la del lunes 27 a las 17:00). Cada asistente es una cita.
+ */
+model BarberClassSession {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  scheduleId String?
+  schedule   BarberClassSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  serviceId  String
+  service    BarberService        @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staffId    String?
+  staff      BarberStaff?         @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  startsAt DateTime
+  endsAt   DateTime
+  /// Congelado al crear la sesión: cambiar el cupo del horario no reescribe
+  /// clases que ya tienen gente.
+  capacity Int
+  /// SCHEDULED | CANCELLED
+  status   String   @default("SCHEDULED")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendees BarberAppointment[]
+
+  /// Una sola sesión por horario y hora: dos recepcionistas inscribiendo al
+  /// tiempo no crean dos clases.
+  @@unique([scheduleId, startsAt])
+  @@index([tenantId, branchId, startsAt])
+  @@map("barber_class_sessions")
+}
+
+/**
+ * Inscripción fija: quien va siempre a esa clase. Aparece como "esperado" en
+ * cada sesión del horario y ocupa cupo aunque todavía no tenga cita.
+ */
+model BarberClassEnrollment {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  scheduleId String
+  schedule   BarberClassSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   BarberCustomer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  activeFrom  DateTime  @db.Date
+  /// null = sigue inscrito. Retirarse pone la fecha, no borra.
+  activeUntil DateTime? @db.Date
+
+  createdAt DateTime @default(now())
+
+  @@index([scheduleId])
+  @@index([customerId])
+  @@map("barber_class_enrollments")
+}
+
+/**
+ * Reserva fija semanal: "Equipo X · cancha 2 · martes 20:00 · 1 h · $80.000
+ * por vez". Lo habitual en canchas es pagar el día, así que NO es una
+ * mensualidad: cada semana genera una reserva normal (BarberAppointment) que se
+ * cobra ese día con su propio cobro.
+ * LAS OCURRENCIAS SE CREAN DE VERDAD, hasta `generatedUntil` (unas 12 semanas
+ * adelante), para que bloqueen la cancha en la agenda y en la web con la misma
+ * regla de choques de siempre. Al abrir la agenda o la reserva pública se
+ * completan hacia adelante: no hace falta un proceso programado.
+ */
+model BarberRecurringBooking {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  customerId String
+  customer   BarberCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceId  String
+  service    BarberService  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staffId    String?
+  staff      BarberStaff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  /// 0 = domingo … 6 = sábado.
+  weekday        Int
+  /// Hora Colombia 'HH:mm'.
+  startTime      String
+  durationMin    Int
+  /// Precio pactado por vez (puede ser precio de equipo). Se congela en cada reserva.
+  priceCOP       Int
+  activeFrom     DateTime  @db.Date
+  /// null = hasta que se termine.
+  activeUntil    DateTime? @db.Date
+  /// Hasta qué día ya se crearon sus reservas.
+  generatedUntil DateTime? @db.Date
+  notes          String?
+
+  userId   String?
+  userName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointments BarberAppointment[]
+
+  @@index([tenantId, branchId])
+  @@index([branchId, generatedUntil])
+  @@map("barber_recurring_bookings")
+}
+
+/**
+ * Un pago de un cobro. Varios pagos = abonos. Es la unidad de ingreso.
+ */
+model BarberPayment {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  chargeId String
+  charge   BarberCharge @relation(fields: [chargeId], references: [id], onDelete: Cascade)
+
+  /// Siempre positivo: un reverso se hace anulando, no restando.
+  amountCOP Int
+  /// CASH | TRANSFER | NEQUI | DAVIPLATA | CARD | OTHER
+  method    String   @default("CASH")
+  /// Cuándo entró la plata. Es la fecha que manda en Finanzas.
+  paidAt    DateTime @default(now())
+  note      String?
+
+  userId   String?
+  userName String?
+
+  voidedAt     DateTime?
+  voidedReason String?
+  voidedBy     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, branchId, paidAt])
+  @@index([chargeId])
+  @@map("barber_payments")
 }
 
 // ─── Users & RBAC ────────────────────────────────────────────────────────────

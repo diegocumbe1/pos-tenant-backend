@@ -335,6 +335,9 @@ export class AdminService {
             OR: [{ staff: { tenantId } }, { service: { tenantId } }],
           },
         });
+        // Los cobros no cuelgan del tenant por llave: se borran a mano, y los
+        // pagos se van con ellos por el CASCADE.
+        await tx.barberCharge.deleteMany({ where: { tenantId } });
         await tx.barberAppointment.deleteMany({ where: { tenantId } });
 
         await tx.paymentContribution.deleteMany({
