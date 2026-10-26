@@ -9,5 +9,6 @@ import { BarberClassesService } from './barber-classes.service';
   imports: [BarberSharedModule, BarberAppointmentsModule, BarberChargesModule],
   controllers: [BarberClassesController],
   providers: [BarberClassesService],
+  exports: [BarberClassesService],
 })
 export class BarberClassesModule {}

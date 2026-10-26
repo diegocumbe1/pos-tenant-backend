@@ -11,6 +11,7 @@ import { ensureRecurringHorizon } from '../../shared/recurring-horizon';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import { calendarDayCO, formatDateTimeCO } from '../../../common/date.util';
+import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 import {
   CreatePublicAppointmentDto,
   PublicAvailabilityQueryDto,
@@ -34,6 +35,7 @@ export class BarberPublicService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationDispatcherService,
+    private readonly googleCalendar: GoogleCalendarService,
   ) {}
 
   async getProfile(slug: string) {
@@ -108,12 +110,27 @@ export class BarberPublicService {
       select: { scheduledAt: true, scheduledEnd: true },
       orderBy: { scheduledAt: 'asc' },
     });
+    // Lo que el especialista tiene en su Google personal, sin título.
+    const google = query.specialistId
+      ? await this.googleCalendar.busyForStaff(
+          branchId,
+          query.specialistId,
+          from,
+          to,
+        )
+      : [];
 
     return {
-      ranges: appointments.map((a) => ({
-        startTime: a.scheduledAt.toISOString(),
-        endTime: a.scheduledEnd.toISOString(),
-      })),
+      ranges: [
+        ...appointments.map((a) => ({
+          startTime: a.scheduledAt.toISOString(),
+          endTime: a.scheduledEnd.toISOString(),
+        })),
+        ...google.map((g) => ({
+          startTime: g.start.toISOString(),
+          endTime: g.end.toISOString(),
+        })),
+      ],
     };
   }
 
@@ -159,6 +176,17 @@ export class BarberPublicService {
       },
       select: { scheduledAt: true, scheduledEnd: true },
     });
+    if (query.specialistId) {
+      const google = await this.googleCalendar.busyForStaff(
+        branchId,
+        query.specialistId,
+        dayStart,
+        dayEnd,
+      );
+      appointments.push(
+        ...google.map((g) => ({ scheduledAt: g.start, scheduledEnd: g.end })),
+      );
+    }
 
     const slots: string[] = [];
     const now = Date.now();
@@ -273,7 +301,18 @@ export class BarberPublicService {
       },
       select: { id: true },
     });
-    if (conflict) {
+    const googleBusy = staff
+      ? await this.googleCalendar.busyForStaff(
+          branchId,
+          staff.id,
+          scheduledAt,
+          scheduledEnd,
+        )
+      : [];
+    if (
+      conflict ||
+      googleBusy.some((g) => g.start < scheduledEnd && g.end > scheduledAt)
+    ) {
       throw new ConflictException({
         code: 'SLOT_TAKEN',
         message: 'The requested time slot is no longer available',

@@ -542,6 +542,7 @@ model BarberStaff {
   classSchedules    BarberClassSchedule[]
   classSessions     BarberClassSession[]
   recurringBookings BarberRecurringBooking[]
+  googleCalendar    GoogleCalendarConnection?
 
   @@unique([branchId, name])
   @@index([tenantId])
@@ -943,6 +944,69 @@ model BarberRecurringBooking {
   @@index([tenantId, branchId])
   @@index([branchId, generatedUntil])
   @@map("barber_recurring_bookings")
+}
+
+/**
+ * Un Google Calendar conectado: el de un especialista (recibe sus citas y
+ * clases) o el del negocio (recibe todas las de la sede).
+ * LYNKO MANDA. Las citas se escriben en un calendario aparte que crea Lynko
+ * ("Lynko · <negocio>"); de Google solo se lee el ocupado del calendario
+ * principal. Ver docs/PLAN_GOOGLE_CALENDAR.md (frontend).
+ */
+model GoogleCalendarConnection {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+
+  /// null = conexión del negocio (todas las citas de la sede).
+  staffId  String?      @unique
+  staff    BarberStaff? @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  /// staffId, o `branch:<branchId>` para la del negocio. Una por cada uno.
+  scopeKey String       @unique
+
+  googleEmail     String
+  /// El calendario secundario que Lynko creó. Aquí se escribe.
+  calendarId      String
+  /// Cifrado con GOOGLE_TOKEN_ENC_KEY (AES-256-GCM). Nunca en claro.
+  refreshTokenEnc String
+  /// Minutos antes de cada cita en que Google avisa.
+  reminderMinutes Int[]   @default([30])
+  /// El teléfono del cliente en la descripción del evento.
+  includePhone    Boolean @default(false)
+
+  connectedAt  DateTime  @default(now())
+  /// Google rechazó el token (lo revocaron o venció): hay que volver a conectar.
+  needsReauth  Boolean   @default(false)
+  lastSyncedAt DateTime?
+  lastError    String?
+  lastErrorAt  DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  events GoogleCalendarEventLink[]
+
+  @@index([tenantId, branchId])
+  @@map("google_calendar_connections")
+}
+
+/**
+ * Qué evento de Google corresponde a qué cita o clase, con el hash de lo que se
+ * escribió: si no cambió, no se vuelve a llamar a Google.
+ */
+model GoogleCalendarEventLink {
+  id            String                   @id @default(cuid())
+  connectionId  String
+  connection    GoogleCalendarConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  /// `appt:<id>`, `class:<scheduleId>|<inicio ISO>` o `session:<id>`.
+  ref           String
+  googleEventId String
+  contentHash   String
+  /// Inicio del evento: decide si cae dentro de la ventana que se reconcilia.
+  startsAt      DateTime
+  updatedAt     DateTime                 @updatedAt
+
+  @@unique([connectionId, ref])
+  @@index([connectionId, startsAt])
+  @@map("google_calendar_event_links")
 }
 
 /**
