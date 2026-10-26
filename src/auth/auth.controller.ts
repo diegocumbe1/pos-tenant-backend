@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -23,12 +24,22 @@ import { RecoverPasswordDto } from './dto/recover-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResendInvitationDto } from './dto/resend-invitation.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { AllowWithoutPassword } from './guards/password-set.guard';
+import { CurrentTenant } from './decorators/current-tenant.decorator';
+import { RequirePermissions } from './decorators/require-permissions.decorator';
+import {
+  AllowWithoutPassword,
+  PasswordSetGuard,
+} from './guards/password-set.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PermissionsGuard } from './guards/permissions.guard';
+import { TenantGuard } from './guards/tenant.guard';
 import { elapsedMs, toServerTimingHeader } from './helpers/auth-helpers';
 import { AuthService } from './services/auth.service';
 import { SupabaseJwtPayload } from './types/jwt-payload.interface';
-import { AuthenticatedUser } from './types/tenant-context.interface';
+import {
+  AuthenticatedUser,
+  TenantContext,
+} from './types/tenant-context.interface';
 
 @ApiTags('Auth')
 @ApiBearerAuth()
@@ -38,12 +49,20 @@ export class AuthController {
 
   constructor(private readonly authService: AuthService) {}
 
+  // Estuvo abierto sin sesión: cualquiera se invitaba como OWNER de cualquier
+  // negocio (auditoría legal, C-1). Ahora exige sesión, el mismo permiso que
+  // `tenant-admin/users/invite` y que el negocio sea el de la sesión.
   @Post('invite')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard, PermissionsGuard)
+  @RequirePermissions('admin:users:invite')
   @ApiOperation({
     summary: 'Invite a user by email and prepare tenant/role provisioning',
   })
-  inviteUser(@Body() dto: InviteUserDto) {
+  inviteUser(@Body() dto: InviteUserDto, @CurrentTenant() ctx: TenantContext) {
+    if (!ctx.isRoot && dto.tenantId !== ctx.tenantId) {
+      throw new ForbiddenException('Solo puedes invitar a tu propio negocio');
+    }
     return this.authService.inviteUser(dto);
   }
 
