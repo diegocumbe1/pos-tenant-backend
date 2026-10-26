@@ -45,6 +45,25 @@ Ver `docs/BACKOFFICE_ARCHITECTURE.md` §3 y §10.
 | POST   | `/platform/tenants/:id/subscription/cancel`   | `{ reason? }`                                                       | `Subscription` (→ tenant INACTIVE)                        |
 | PATCH  | `/platform/users/:id/status`                  | `{ status: 'ACTIVE'\|'DISABLED' }`                                  | `TenantUser`                                              |
 
+## Modo soporte (entrar a un negocio como super-admin)
+
+Código en `src/auth/support/` (vive en AuthModule: TenantGuard y `/auth/me` dependen de él).
+
+- `POST /platform/support-sessions` `{ tenantId, reason (≥10), durationMinutes (15–240, def. 60) }`
+  → `{ session, profile }`. `profile` es el perfil del negocio (rol `OWNER` "Soporte Lynko",
+  `isRoot`, `permissions: ['*']`, todas las sedes, `supportSession`). Un actor tiene una sola
+  sesión viva: abrir otra cierra la anterior (`endedReason: 'replaced'`).
+- `POST /platform/support-sessions/:id/end` · `GET /platform/support-sessions?tenantId&cursor`
+  · `GET /platform/support-sessions/:id/actions`.
+- `TenantGuard`: un super-admin con `X-Tenant-Id` de un negocio ajeno (≠ `platform`) **solo
+  puede escribir con sesión viva** → si no, `403 { code: 'SUPPORT_SESSION_REQUIRED' }`. Las
+  lecturas sin sesión siguen permitidas al ROOT (insights del backoffice).
+- `GET /auth/me` con `X-Tenant-Id` del negocio devuelve el perfil de soporte mientras la sesión
+  viva; al vencer, vuelve el perfil de plataforma.
+- `SupportAuditInterceptor` (global) guarda cada POST/PUT/PATCH/DELETE de la sesión en
+  `support_session_actions` (cuerpo sin credenciales, recortado a 4 KB).
+- El historial es solo del backoffice: el owner no lo ve ni recibe aviso.
+
 ## Finanzas internas del backoffice
 
 Estas rutas son de **Lynko como plataforma**, no de los negocios/tenants. Usan pagos de suscripción

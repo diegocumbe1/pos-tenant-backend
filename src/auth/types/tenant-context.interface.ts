@@ -13,6 +13,8 @@ export interface TenantContext {
   isRoot: boolean;
   permissions: Set<string>;
   accessibleBranches: string[]; // branches a las que el user pertenece (o [] para ROOT)
+  /** Super-admin operando como soporte en este tenant (ver SupportSessionService). */
+  supportSessionId?: string;
 }
 
 /** Shape adjuntado a `req.user` por JwtStrategy (pre-TenantGuard). */

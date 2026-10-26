@@ -86,7 +86,11 @@ export class AuthController {
     const totalStart = performance.now();
     const timings: Record<string, number> = {};
     const authUser = req.user as AuthenticatedUser;
-    const profile = await this.authService.getCurrentProfile(authUser, timings);
+    const profile = await this.authService.getCurrentProfile(
+      authUser,
+      timings,
+      req.headers['x-tenant-id'] as string | undefined,
+    );
     timings.total = elapsedMs(totalStart);
 
     res.setHeader('Cache-Control', 'no-store');

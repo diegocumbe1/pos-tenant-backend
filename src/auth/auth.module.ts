@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { PassportModule } from '@nestjs/passport';
 import { AdminModule } from '../admin/admin.module';
 import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
@@ -10,13 +11,18 @@ import { TenantGuard } from './guards/tenant.guard';
 import { JwtStrategy } from './jwt.strategy';
 import { AuthService } from './services/auth.service';
 import { PermissionsCacheService } from './services/permissions-cache.service';
+import { SupportAuditInterceptor } from './support/support-audit.interceptor';
+import { SupportSessionController } from './support/support-session.controller';
+import { SupportSessionService } from './support/support-session.service';
 
 @Global()
 @Module({
   imports: [PassportModule.register({ defaultStrategy: 'jwt' }), AdminModule],
-  controllers: [AuthController],
+  controllers: [AuthController, SupportSessionController],
   providers: [
     AuthService,
+    SupportSessionService,
+    { provide: APP_INTERCEPTOR, useClass: SupportAuditInterceptor },
     JwtStrategy,
     JwtAuthGuard,
     TenantGuard,
@@ -33,6 +39,7 @@ import { PermissionsCacheService } from './services/permissions-cache.service';
     PermissionsGuard,
     PasswordSetGuard,
     PermissionsCacheService,
+    SupportSessionService,
     PassportModule,
   ],
 })

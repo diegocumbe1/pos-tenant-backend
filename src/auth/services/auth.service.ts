@@ -34,6 +34,10 @@ import { SupabaseJwtPayload } from '../types/jwt-payload.interface';
 import { AuthenticatedUser } from '../types/tenant-context.interface';
 import { resolveEffectiveFeatures } from '../../platform/plans/plan-features';
 import { PermissionsCacheService } from './permissions-cache.service';
+import {
+  ActiveSupportSession,
+  SupportSessionService,
+} from '../support/support-session.service';
 
 // Estados de suscripción que permiten operar la app del tenant (§10.5).
 const ACTIVE_SUBSCRIPTION_STATUSES = ['TRIALING', 'ACTIVE', 'PAST_DUE'];
@@ -96,6 +100,13 @@ type AuthProfile = {
   isRoot: boolean;
   permissions: string[];
   branches: BranchProfile[];
+  /** Solo en modo soporte: el super-admin está operando este tenant. */
+  supportSession?: {
+    id: string;
+    reason: string;
+    startedAt: string;
+    expiresAt: string;
+  };
 };
 
 @Injectable()
@@ -108,6 +119,7 @@ export class AuthService {
     private readonly permissionsCache: PermissionsCacheService,
     private readonly adminService: AdminService,
     private readonly planPricing: PlanPricingService,
+    private readonly supportSessions: SupportSessionService,
   ) {}
 
   async inviteUser(dto: InviteUserDto) {
@@ -343,6 +355,7 @@ export class AuthService {
   async getCurrentProfile(
     authUser: AuthenticatedUser,
     timings: Record<string, number> = {},
+    headerTenantId?: string,
   ) {
     const profileStart = performance.now();
     const user = await this.loadLoginProfile(authUser.id);
@@ -350,6 +363,16 @@ export class AuthService {
 
     if (!user) throw new UnauthorizedException('User not found');
     if (!user.role) throw new UnauthorizedException('User role not found');
+
+    // Super-admin dentro de un negocio: mientras la sesión viva, su perfil es el
+    // del negocio. Al vencer, vuelve solo al perfil de plataforma.
+    if (this.supportSessions.isCrossTenant(authUser, headerTenantId)) {
+      const session = await this.supportSessions.findActive(
+        authUser.id,
+        headerTenantId!,
+      );
+      if (session) return this.buildSupportProfile(user, session);
+    }
 
     this.assertTenantAccess(user, authUser.isRoot);
 
@@ -719,6 +742,81 @@ export class AuthService {
       isRoot,
       permissions: isRoot ? ['*'] : [...(permissions ?? new Set<string>())],
       branches,
+    };
+  }
+
+  /**
+   * Perfil con el que el super-admin opera un negocio en modo soporte: el
+   * tenant, sus features y todas sus sedes, con poderes de owner. Se marca
+   * `isPlatformAdmin: false` para que el FE lo trate como usuario del negocio
+   * hasta que salga del modo soporte.
+   */
+  async buildSupportProfile(
+    user: LoginProfileRow,
+    session: ActiveSupportSession,
+  ): Promise<AuthProfile> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: session.tenantId },
+      select: {
+        id: true,
+        name: true,
+        documentId: true,
+        plan: true,
+        featureOverrides: true,
+        vertical: { select: { code: true } },
+        branches: {
+          select: { id: true, name: true, tenantId: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!tenant) throw new UnauthorizedException('Tenant not found');
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isActive: user.isActive,
+      isPlatformAdmin: false,
+      passwordSet: !!user.passwordSetAt,
+      tenant: this.toTenantProfile(tenant),
+      features: resolveEffectiveFeatures(
+        tenant.plan,
+        tenant.featureOverrides as unknown as Record<string, boolean | number> | null,
+      ),
+      role: {
+        id: user.role?.id ?? 'support',
+        code: 'OWNER',
+        name: 'Soporte Lynko',
+        isSystem: true,
+      },
+      isRoot: true,
+      permissions: ['*'],
+      branches: tenant.branches.map((branch) => this.toBranchProfile(branch)),
+      supportSession: {
+        id: session.id,
+        reason: session.reason,
+        startedAt: session.startedAt.toISOString(),
+        expiresAt: session.expiresAt.toISOString(),
+      },
+    };
+  }
+
+  /** Abre la sesión y devuelve el perfil del negocio para entrar de una vez. */
+  async startSupportSession(
+    actor: AuthenticatedUser,
+    input: { tenantId: string; reason: string; durationMinutes: number },
+  ) {
+    const user = await this.loadLoginProfile(actor.id);
+    if (!user) throw new UnauthorizedException('User not found');
+    const session = await this.supportSessions.start(actor, input);
+    return {
+      session: {
+        ...session,
+        startedAt: session.startedAt.toISOString(),
+        expiresAt: session.expiresAt.toISOString(),
+      },
+      profile: await this.buildSupportProfile(user, session),
     };
   }
 

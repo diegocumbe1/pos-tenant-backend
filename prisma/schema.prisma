@@ -2471,6 +2471,50 @@ model PlatformAuditLog {
   @@map("platform_audit_logs")
 }
 
+// ─── Modo soporte (super-admin operando dentro de un negocio) ─────────────────
+
+/// Ingreso explícito, con motivo y vencimiento, de un super-admin a un tenant.
+/// Sin sesión activa, un super-admin no puede escribir en un tenant ajeno.
+///
+/// `tenantId` va SIN FK a propósito: el historial es de la plataforma y debe
+/// sobrevivir al borrado del negocio. Por eso también se copia el nombre.
+/// Solo se consulta desde el backoffice; el owner no ve este historial.
+model SupportSession {
+  id          String                 @id @default(cuid())
+  actorUserId String
+  actorEmail  String
+  tenantId    String
+  tenantName  String
+  reason      String
+  startedAt   DateTime               @default(now())
+  expiresAt   DateTime
+  endedAt     DateTime?
+  /// 'manual' | 'replaced' (abrió otra sesión)
+  endedReason String?
+  actions     SupportSessionAction[]
+
+  @@index([actorUserId, endedAt])
+  @@index([tenantId, startedAt])
+  @@map("support_sessions")
+}
+
+/// Cada escritura (POST/PUT/PATCH/DELETE) hecha durante una sesión de soporte.
+model SupportSessionAction {
+  id         String         @id @default(cuid())
+  sessionId  String
+  session    SupportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  method     String
+  path       String
+  statusCode Int
+  durationMs Int
+  /// Cuerpo enviado, sin credenciales y recortado.
+  body       Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([sessionId, createdAt])
+  @@map("support_session_actions")
+}
+
 // ─── Mensajería de plataforma (super-admin → dueño del tenant) ────────────────
 // Envío MANUAL de WhatsApp/correo desde el backoffice: recordatorios de pago,
 // datos de pago, bienvenida. No hay scheduler: cada mensaje sale por un clic.

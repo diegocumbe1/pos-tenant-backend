@@ -40,9 +40,9 @@ export class PermissionsGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest();
     const user: AuthenticatedUser | undefined = req.user;
     if (!user) throw new ForbiddenException('No authenticated user');
-    if (user.isRoot) return true;
-
     const tenantContext = req.tenantContext as TenantContext | undefined;
+    if (user.isRoot || tenantContext?.supportSessionId) return true;
+
     const perms =
       tenantContext?.roleId === user.roleId
         ? tenantContext.permissions
