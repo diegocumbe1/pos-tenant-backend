@@ -165,7 +165,7 @@ export class CreateRetailProductDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(3000)
   description?: string;
 
   @ApiPropertyOptional({ example: 28000, description: 'Costo de compra' })

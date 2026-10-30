@@ -464,14 +464,15 @@ export class FinanceService {
     // "Órdenes" = tickets de restaurante + citas de barber + ventas de tienda
     // CERRADAS en el período. Una venta a medio abonar todavía no es una venta
     // cerrada, y contarla en los dos períodos en que recibió plata la duplicaría.
-    // Los cobros sueltos cuentan una vez por cobro, aunque tengan varios abonos.
-    const barberStandaloneCharges = new Set(
-      barberStandalonePayments.map((p) => p.charge.id),
-    );
+    // En barber cuenta cada cobro que recibió plata en el período (una vez,
+    // aunque tenga varios abonos), sea de una cita o suelto, más las citas
+    // completadas SIN cobro. Antes contaba las citas completadas: una reserva
+    // pagada pero aún no marcada "Completada" sumaba ingreso y cero órdenes.
+    const barberPaidCharges = new Set(barberPayments.map((p) => p.charge.id));
     const ordersCount =
       new Set(splits.map((s) => s.orderId)).size +
-      barberAppointments.length +
-      barberStandaloneCharges.size +
+      barberAppointments.filter((a) => a._count.charges === 0).length +
+      barberPaidCharges.size +
       retail.closedSales.length;
     const averageOrderValue =
       ordersCount > 0 ? Math.round(revenue / ordersCount) : 0;

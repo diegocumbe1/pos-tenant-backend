@@ -1,5 +1,8 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
   IsIn,
   IsInt,
   IsOptional,
@@ -87,6 +90,12 @@ export class CreateBarberChargeDto {
   @Matches(DAY_RE)
   dueOn?: string;
 
+  // Descuento ya restado de `totalCOP`. Se guarda para que el recibo lo muestre.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountCOP?: number;
+
   @IsOptional()
   @IsString()
   note?: string;
@@ -97,11 +106,26 @@ export class CreateBarberChargeDto {
   @Min(1)
   sessionsTotal?: number | null;
 
+  // Cupo por mes de plan. Sin dato = el del servicio. null = sin cupo.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  sessionsPerMonth?: number | null;
+
   // El primer pago, si lo hubo en el mismo momento. Puede ser parcial.
   @IsOptional()
   @ValidateNested()
   @Type(() => BarberPaymentInputDto)
   payment?: BarberPaymentInputDto;
+
+  // Pago repartido entre medios (parte en efectivo, parte por transferencia):
+  // cada uno queda como un pago aparte. Se suma con `payment` si vienen ambos.
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => BarberPaymentInputDto)
+  payments?: BarberPaymentInputDto[];
 }
 
 export class UpdateBarberChargeDto {
@@ -131,6 +155,12 @@ export class UpdateBarberChargeDto {
   @IsInt()
   @Min(1)
   sessionsTotal?: number | null;
+
+  // Cupo por mes de plan. Sin dato = el del servicio. null = sin cupo.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  sessionsPerMonth?: number | null;
 }
 
 export class RenewBarberChargeDto {
@@ -155,10 +185,21 @@ export class RenewBarberChargeDto {
 }
 
 export class FreezeBarberChargeDto {
+  // Desde cuándo. Sin dato = hoy.
+  @IsOptional()
+  @Matches(DAY_RE)
+  startsOn?: string;
+
+  // Cuántos días, o hasta qué día (inclusive). Uno de los dos.
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(365)
-  days!: number;
+  days?: number;
+
+  @IsOptional()
+  @Matches(DAY_RE)
+  untilOn?: string;
 
   @IsString()
   @MinLength(2)
@@ -221,4 +262,71 @@ export class ListBarberChargesQueryDto {
   @IsOptional()
   @IsIn(['open', 'all'])
   status?: 'open' | 'all';
+}
+
+export class BarberAttendanceCheckQueryDto {
+  @IsString()
+  customerId!: string;
+
+  // Día de la sesión. Sin dato = hoy.
+  @IsOptional()
+  @Matches(DAY_RE)
+  day?: string;
+
+  // La sesión que se va a registrar, si ya existe: no se cuenta contra sí misma.
+  @IsOptional()
+  @IsString()
+  appointmentId?: string;
+}
+
+/**
+ * Cobrar de una vez las visitas que no cubrió ningún plan.
+ *   PER_SESSION → cada visita al valor por sesión del plan (240.000 / 8).
+ *   FULL_PLAN   → el plan completo, y esas visitas quedan dentro de él.
+ */
+export class SettleBarberSessionsDto {
+  @IsString()
+  customerId!: string;
+
+  // El plan con el que se valoran (y que se contrata, en FULL_PLAN).
+  @IsString()
+  serviceId!: string;
+
+  @IsIn(['PER_SESSION', 'FULL_PLAN'])
+  mode!: 'PER_SESSION' | 'FULL_PLAN';
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  appointmentIds!: string[];
+
+  // Sin dato = el calculado (valor por sesión × visitas, o el precio del plan).
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  totalCOP?: number;
+
+  @IsOptional()
+  @Matches(DAY_RE)
+  dueOn?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => BarberPaymentInputDto)
+  payments?: BarberPaymentInputDto[];
+}
+
+export class CoverOverQuotaDto {
+  @IsString()
+  appointmentId!: string;
+
+  @IsIn(['NEXT_CYCLE', 'COURTESY'])
+  mode!: 'NEXT_CYCLE' | 'COURTESY';
 }

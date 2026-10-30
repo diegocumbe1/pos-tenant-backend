@@ -12,6 +12,7 @@ import { PublicSiteService } from '../../../public-site/admin/public-site.servic
 import { BarberPublicService } from './barber-public.service';
 import {
   CreatePublicAppointmentDto,
+  CreatePublicSignupDto,
   PublicAvailabilityQueryDto,
   PublicSpecialistsQueryDto,
 } from './dto/public-appointment.dto';
@@ -74,5 +75,14 @@ export class BarberPublicController {
     @Body() dto: CreatePublicAppointmentDto,
   ) {
     return this.publicService.createAppointment(branchId, dto);
+  }
+
+  // Inscripción sin agenda (gimnasio): registra al cliente y devuelve cómo pagar.
+  @Post('branches/:branchId/signups')
+  createSignup(
+    @Param('branchId') branchId: string,
+    @Body() dto: CreatePublicSignupDto,
+  ) {
+    return this.publicService.createSignup(branchId, dto);
   }
 }

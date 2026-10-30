@@ -238,6 +238,12 @@ const PERMISSIONS: Array<{
     description: 'Crear/editar servicios de barbería',
   },
   {
+    code: 'barber:classes:delete',
+    resource: 'barber-classes',
+    action: 'delete',
+    description: 'Eliminar para siempre horarios de clases archivados',
+  },
+  {
     code: 'barber:staff:read',
     resource: 'barber-staff',
     action: 'read',
@@ -453,7 +459,8 @@ const SYSTEM_ROLES: Array<{
       'restaurant:print:update',
       'restaurant:cash:read',
       'restaurant:cash:manage',
-      ...BARBER_PERMS,
+      // Eliminar horarios de clases queda en el dueño (se puede dar desde Roles).
+      ...BARBER_PERMS.filter((c) => c !== 'barber:classes:delete'),
       // Retail: todo menos borrar catálogo, anular ventas y ver vencimientos
       // (quedan en el dueño).
       ...RETAIL_PERMS.filter(

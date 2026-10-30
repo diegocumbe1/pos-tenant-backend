@@ -7,6 +7,7 @@ import {
   formatDateLongCO,
 } from '../../common/date.util';
 import { addDays, GRACE_DAYS } from '../../platform/platform.constants';
+import { subscriptionPriceAt } from '../../platform/pricing/subscription-price';
 
 const PLAN_LABELS: Record<string, string> = {
   BASIC: 'Básico',
@@ -66,7 +67,7 @@ export class SubscriptionContextService {
   ): Promise<SubscriptionContext> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
-      include: { subscription: true },
+      include: { subscription: true, vertical: { select: { code: true } } },
     });
     if (!tenant)
       throw new NotFoundException(`Tenant no encontrado: ${tenantId}`);
@@ -85,8 +86,23 @@ export class SubscriptionContextService {
     // suspensión vacía aunque en pantalla se vea.
     const suspendsAt =
       sub?.graceEndsAt ?? (dueAt ? addDays(dueAt, GRACE_DAYS) : null);
+    // El monto del cobro que viene: la tarifa de la fecha de pago, o el precio
+    // que fijó el admin. Igual que el link de pago (ChargesService.quote).
+    const priced = sub
+      ? await subscriptionPriceAt(this.prisma, {
+          verticalCode: tenant.vertical?.code,
+          planCode: sub.plan,
+          subscription: sub,
+          at: dueAt ?? now,
+        })
+      : null;
+    // La tarifa es mensual; un precio fijado ya está guardado por ciclo.
+    const pricedCOP =
+      priced && !priced.locked && priced.priceCOP != null && sub?.billingCycle === 'yearly'
+        ? priced.priceCOP * 12
+        : priced?.priceCOP;
     const amountCOP =
-      sub?.agreedPriceCOP ?? sub?.priceCOP ?? sub?.listPriceCOP ?? 0;
+      pricedCOP ?? sub?.agreedPriceCOP ?? sub?.priceCOP ?? sub?.listPriceCOP ?? 0;
     if (sub && amountCOP <= 0) missing.push('la suscripción no tiene precio');
 
     const lastPayment = await this.prisma.subscriptionPayment.findFirst({

@@ -114,6 +114,7 @@ export class BarberClassesService {
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        deletedAt: null,
         ...(includeHistory
           ? {}
           : {
@@ -219,6 +220,7 @@ export class BarberClassesService {
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        deletedAt: null,
         serviceId: dto.serviceId,
         startTime: dto.startTime,
         weekday: { in: weekdays },
@@ -493,6 +495,31 @@ export class BarberClassesService {
     return { ok: true };
   }
 
+  /**
+   * Eliminar para siempre un horario ARCHIVADO. Si nunca tuvo clases se borra
+   * de la base; si tuvo, queda marcado como eliminado y desaparece de toda la
+   * pantalla de Clases, pero las asistencias y pagos de quienes fueron siguen
+   * en su historial (borrarlos cambiaría ingresos ya registrados).
+   */
+  async deleteSchedulePermanently(ctx: TenantContext, id: string) {
+    const current = await this.findSchedule(ctx, id);
+    if (current.isActive) {
+      throw new BadRequestException('Primero archiva el horario; después se puede eliminar.');
+    }
+    const used = await this.prisma.barberClassSession.count({
+      where: { scheduleId: id },
+    });
+    if (used === 0) {
+      await this.prisma.barberClassSchedule.delete({ where: { id } });
+    } else {
+      await this.prisma.barberClassSchedule.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+    }
+    return { ok: true, hadHistory: used > 0 };
+  }
+
   async listScheduleEvents(ctx: TenantContext, id: string) {
     await this.findSchedule(ctx, id);
     return this.prisma.barberClassScheduleEvent.findMany({
@@ -679,7 +706,7 @@ export class BarberClassesService {
       where: {
         customerId,
         OR: [{ activeUntil: null }, { activeUntil: { gte: dateOf(today) } }],
-        schedule: { isActive: true },
+        schedule: { isActive: true, deletedAt: null },
       },
       include: {
         schedule: {
@@ -729,9 +756,9 @@ export class BarberClassesService {
       lte: instantOf(to, '23:59'),
     };
 
-    const [schedules, stored] = await Promise.all([
+    const [schedules, storedAll] = await Promise.all([
       this.prisma.barberClassSchedule.findMany({
-        where: { ...scope, isActive: true },
+        where: { ...scope, isActive: true, deletedAt: null },
         include: {
           service: {
             select: { id: true, name: true, color: true, priceCOP: true },
@@ -752,6 +779,18 @@ export class BarberClassesService {
         },
       }),
     ]);
+
+    // Las clases guardadas de un horario archivado o eliminado no se muestran
+    // en el calendario. Sus asistencias siguen en el historial de cada cliente.
+    const hidden = new Set(
+      (
+        await this.prisma.barberClassSchedule.findMany({
+          where: { ...scope, OR: [{ isActive: false }, { deletedAt: { not: null } }] },
+          select: { id: true },
+        })
+      ).map((s) => s.id),
+    );
+    const stored = storedAll.filter((s) => !s.scheduleId || !hidden.has(s.scheduleId));
 
     const storedKey = new Map(
       stored
@@ -947,6 +986,10 @@ export class BarberClassesService {
           : await coverage(a.customerId),
         isCovered: !!a.coveredByCharge,
         chargeId: a.charges[0]?.id ?? null,
+        // Cuántas lleva del mes de plan, si su plan venció y cuánto debe: la
+        // recepción lo ve antes de marcar "Vino".
+        // Su propia reserva de esta clase no cuenta contra sí misma.
+        check: await this.charges.attendanceCheck(ctx, a.customerId, day, a.id),
       })),
     );
     const expectedRows = await Promise.all(
@@ -956,6 +999,7 @@ export class BarberClassesService {
         customerName: e.customer.name,
         customerPhone: e.customer.phone,
         coverage: await coverage(e.customerId),
+        check: await this.charges.attendanceCheck(ctx, e.customerId, day),
       })),
     );
 
@@ -1173,7 +1217,7 @@ export class BarberClassesService {
 
   private async findSchedule(ctx: TenantContext, id: string) {
     const row = await this.prisma.barberClassSchedule.findFirst({
-      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId, deletedAt: null },
     });
     if (!row) throw new NotFoundException(`Class schedule ${id} not found`);
     return row;
@@ -1214,6 +1258,7 @@ export class BarberClassesService {
         id: ref.scheduleId,
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        deletedAt: null,
       },
       include: {
         service: {

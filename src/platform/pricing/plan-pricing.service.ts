@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { syncUnlockedSubscriptionPrices } from './subscription-price';
 
 /**
  * Tarifas con fecha efectiva (precio de plan por vertical + tasa USD→COP).
@@ -564,6 +565,10 @@ export class PlanPricingService {
         createdBy: actorUserId,
       },
     });
+    // Si ya rige, las cuentas que siguen la tarifa pasan a este precio.
+    if (row.effectiveFrom <= new Date()) {
+      await syncUnlockedSubscriptionPrices(this.prisma);
+    }
     return this.toDto(row);
   }
 
@@ -599,6 +604,10 @@ export class PlanPricingService {
         create: { id: 'singleton', usdToCopRate: rate, updatedBy: actorUserId },
       }),
     ]);
+    // Si ya rige, las cuentas que siguen la tarifa pasan a la tasa nueva.
+    if (effectiveFrom <= new Date()) {
+      await syncUnlockedSubscriptionPrices(this.prisma);
+    }
 
     return {
       id: row.id,

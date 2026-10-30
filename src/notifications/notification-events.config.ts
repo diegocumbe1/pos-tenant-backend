@@ -9,6 +9,8 @@ export const NOTIFICATION_EVENT_ROLES: Record<string, string[]> = {
   // aprobación: alguien del negocio tiene que verla. Reemplaza el WhatsApp que
   // el negocio se mandaba a sí mismo por cada reserva.
   'barber.appointment.requested': ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'],
+  // Inscripción desde el sitio (gimnasio sin agenda): hay que llamarlo y venderle el plan.
+  'barber.signup.received': ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'],
   // Venta registrada por otra persona del equipo (quien la hizo no se avisa).
   'retail.sale.created': ['OWNER', 'ADMIN', 'MANAGER'],
 };

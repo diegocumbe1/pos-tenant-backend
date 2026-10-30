@@ -45,6 +45,7 @@ import {
   resolveFeatureValue,
 } from './plans/plan-features';
 import { PlanPricingService, usdToCop } from './pricing/plan-pricing.service';
+import { syncUnlockedSubscriptionPrices } from './pricing/subscription-price';
 
 type SubscriptionAction = 'activate' | 'suspend' | 'cancel';
 type PlatformGoalMetric =
@@ -865,6 +866,9 @@ export class PlatformService {
 
   async getSubscription(tenantId: string) {
     const tenant = await this.loadTenant(tenantId);
+    // Si sigue la tarifa, se trae a la de hoy antes de mostrarla: el precio
+    // guardado puede ser de cuando se asignó el plan, con otra tasa.
+    await syncUnlockedSubscriptionPrices(this.prisma, new Date(), tenantId);
     const sub = await this.prisma.subscription.findUnique({
       where: { tenantId },
     });
@@ -912,10 +916,34 @@ export class PlatformService {
       );
       // El precio vigente (priceCOP/priceUSD) es siempre el pactado: si llega
       // agreedPrice manda ese; si no, el alias legacy priceCOP.
+      //
+      // Un precio escrito por el admin queda FIJO (agreedPriceLockedAt): ya no
+      // sigue la tarifa. "Seguir la tarifa" lo suelta y lo lleva a la lista de
+      // hoy. Ver platform/pricing/subscription-price.ts.
+      const explicitPrice =
+        !dto.followListPrice &&
+        [dto.agreedPriceCOP, dto.agreedPriceUSD, dto.priceCOP, dto.priceUSD].some(
+          (v) => v !== undefined,
+        );
+      const followList = dto.followListPrice
+        ? await this.pricing.getListPriceAt(
+            tenant.vertical?.code ?? '',
+            dto.plan ?? sub.plan,
+          )
+        : null;
+      if (dto.followListPrice && !followList) {
+        throw new BadRequestException(
+          'No hay tarifa cargada para este vertical y plan: fija el precio a mano.',
+        );
+      }
       const agreedCOP =
-        dto.agreedPriceCOP ?? dto.priceCOP ?? repriced?.agreedPriceCOP;
+        followList?.priceCOP ??
+        (explicitPrice ? (dto.agreedPriceCOP ?? dto.priceCOP) : undefined) ??
+        repriced?.agreedPriceCOP;
       const agreedUSD =
-        dto.agreedPriceUSD ?? dto.priceUSD ?? repriced?.agreedPriceUSD;
+        followList?.priceUSD ??
+        (explicitPrice ? (dto.agreedPriceUSD ?? dto.priceUSD) : undefined) ??
+        repriced?.agreedPriceUSD;
       const s = await tx.subscription.update({
         where: { tenantId },
         data: {
@@ -939,12 +967,21 @@ export class PlatformService {
             : undefined,
           priceCOP: agreedCOP,
           priceUSD: agreedUSD,
-          listPriceCOP: dto.listPriceCOP ?? repriced?.listPriceCOP,
-          listPriceUSD: dto.listPriceUSD ?? repriced?.listPriceUSD,
+          listPriceCOP:
+            followList?.priceCOP ?? dto.listPriceCOP ?? repriced?.listPriceCOP,
+          listPriceUSD:
+            followList?.priceUSD ?? dto.listPriceUSD ?? repriced?.listPriceUSD,
           agreedPriceCOP: agreedCOP,
           agreedPriceUSD: agreedUSD,
-          discountReason: dto.discountReason,
-          discountApprovedBy: dto.discountApprovedBy,
+          agreedPriceLockedAt: dto.followListPrice
+            ? null
+            : explicitPrice
+              ? new Date()
+              : undefined,
+          discountReason: dto.followListPrice ? null : dto.discountReason,
+          discountApprovedBy: dto.followListPrice
+            ? null
+            : dto.discountApprovedBy,
         },
       });
       void sub;
@@ -1080,12 +1117,15 @@ export class PlatformService {
       // último término, de la tarifa vigente a la fecha del pago. Antes se caía a
       // `dto.amount`, con lo que un cobro con descuento se registraba sin rastro
       // de que hubiera descuento.
+      // La tarifa de la fecha del pago va antes que la foto guardada en la
+      // suscripción: esa foto puede ser de cuando se asignó el plan, con otra
+      // tasa, y el descuento saldría inventado (o negativo).
       const listPrice =
         dto.officialPrice ??
+        listedPrice ??
         (currency === 'USD'
           ? (subscription.listPriceUSD ?? subscription.priceUSD)
           : (subscription.listPriceCOP ?? subscription.priceCOP)) ??
-        listedPrice ??
         undefined;
       const officialPrice = listPrice ?? dto.amount;
       const discountApplied =
@@ -2538,14 +2578,16 @@ export class PlatformService {
     const list = await this.pricing.getListPriceAt(verticalCode, dto.plan);
     if (!list) return null;
 
-    // Descuento vigente = pactado por debajo de la lista. Las suscripciones
-    // legacy sin lista (precio heredado de `Plan.priceCOP`) no cuentan como
-    // descuento: ese número nunca lo decidió nadie.
+    // Precio fijado por el admin, o descuento vigente (pactado por debajo de la
+    // lista): se respeta. Las suscripciones legacy sin lista (precio heredado
+    // de `Plan.priceCOP`) no cuentan como descuento: ese número nunca lo
+    // decidió nadie.
     const hadDiscount =
       existing != null &&
-      ((existing.listPriceCOP != null &&
-        existing.agreedPriceCOP != null &&
-        existing.agreedPriceCOP < existing.listPriceCOP) ||
+      (existing.agreedPriceLockedAt != null ||
+        (existing.listPriceCOP != null &&
+          existing.agreedPriceCOP != null &&
+          existing.agreedPriceCOP < existing.listPriceCOP) ||
         (existing.listPriceUSD != null &&
           existing.agreedPriceUSD != null &&
           existing.agreedPriceUSD < existing.listPriceUSD));
@@ -2734,6 +2776,8 @@ export class PlatformService {
       ),
       discountReason: sub.discountReason ?? undefined,
       discountApprovedBy: sub.discountApprovedBy ?? undefined,
+      /** true = precio fijado por el admin; false = sigue la tarifa de lista. */
+      priceLocked: sub.agreedPriceLockedAt != null,
       provider: sub.provider,
       createdAt: sub.createdAt.toISOString(),
       updatedAt: sub.updatedAt.toISOString(),

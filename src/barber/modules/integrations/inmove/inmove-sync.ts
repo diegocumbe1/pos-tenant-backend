@@ -18,6 +18,10 @@ import { Prisma, PrismaClient } from '@prisma/client';
  *
  * NO BORRA. Un deportista que ya no viene de In Move se reporta, pero su
  * cliente se queda: puede tener pagos y asistencias.
+ *
+ * LAS CATEGORÍAS SON SERVICIOS. Cada categoría de In Move que no exista ya como
+ * servicio (mismo nombre, sin tildes ni mayúsculas) se crea en $0 y 60 min.
+ * Las que ya existen no se tocan.
  */
 
 export type InMoveAthlete = {
@@ -43,6 +47,8 @@ export type InMoveExport = {
   source: 'in-move';
   exportedAt: string;
   athletes: InMoveAthlete[];
+  /** Catálogo de categorías de In Move. Falta en exportaciones viejas. */
+  categories?: string[];
 };
 
 export type InMoveSyncAction = 'create' | 'link' | 'update' | 'unchanged';
@@ -58,6 +64,8 @@ export type InMoveSyncReport = {
   withoutPhone: number;
   /** Clientes con etiqueta de In Move que ya no vienen en la exportación. */
   missingInSource: { customerId: string; name: string; code: string }[];
+  /** Las categorías de In Move como servicios: las nuevas se crean, las demás se dejan. */
+  services: { total: number; created: string[]; existing: number };
   items: {
     code: string;
     name: string;
@@ -212,10 +220,51 @@ export async function syncInMoveAthletes(
     unchanged: 0,
     withoutPhone: 0,
     missingInSource: [],
+    services: { total: 0, created: [], existing: 0 },
     items: [],
   };
   const writes: Prisma.PrismaPromise<unknown>[] = [];
   const seenCodes = new Set<string>();
+
+  // Categorías → servicios. Del catálogo de In Move y, si la exportación es
+  // vieja y no lo trae, de las que tienen los deportistas. Se compara el nombre
+  // sin tildes ni mayúsculas contra TODOS los servicios de la sede (también los
+  // inactivos): si ya está, no se crea ni se toca — precio y duración son de Lynko.
+  const categoryNames = new Map<string, string>();
+  for (const raw of [
+    ...(payload.categories ?? []),
+    ...payload.athletes.map((a) => a.category ?? ''),
+  ]) {
+    const name = raw.trim().replace(/\s+/g, ' ');
+    if (name && !categoryNames.has(normalizeName(name))) {
+      categoryNames.set(normalizeName(name), name);
+    }
+  }
+  const services = await prisma.barberService.findMany({
+    where: { tenantId: scope.tenantId, branchId: scope.branchId },
+    select: { name: true },
+  });
+  const serviceNames = new Set(services.map((s) => normalizeName(s.name)));
+  report.services.total = categoryNames.size;
+  for (const [key, name] of categoryNames) {
+    if (serviceNames.has(key)) {
+      report.services.existing += 1;
+      continue;
+    }
+    report.services.created.push(name);
+    writes.push(
+      prisma.barberService.create({
+        data: {
+          tenantId: scope.tenantId,
+          branchId: scope.branchId,
+          name,
+          // In Move no tiene precio ni duración: quedan para ajustar en Servicios.
+          durationMin: 60,
+          priceCOP: 0,
+        },
+      }),
+    );
+  }
 
   for (const raw of payload.athletes) {
     // Espacios dobles o sobrantes que se colaron al digitar en In Move.

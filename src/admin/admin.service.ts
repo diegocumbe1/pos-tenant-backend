@@ -709,7 +709,8 @@ export class AdminService {
         name: 'Gerente',
         perms: [
           ...restaurantPerms.filter((p) => !p.endsWith(':delete')),
-          ...barberPerms,
+          // Eliminar horarios de clases queda en el dueño (se da desde Roles).
+          ...barberPerms.filter((p) => p !== 'barber:classes:delete'),
           // Retail: todo menos borrar catálogo, anular ventas y ver
           // vencimientos (quedan en el dueño).
           ...retailPerms.filter(

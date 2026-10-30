@@ -88,6 +88,14 @@ export class BarberClassesController {
     return this.classes.restoreSchedule(ctx, id);
   }
 
+  // Eliminar para siempre un horario archivado. Permiso propio: por defecto
+  // solo el dueño; se le da a otros roles desde Roles y permisos.
+  @Delete('schedules/:id/permanent')
+  @RequirePermissions('barber:classes:delete')
+  deleteSchedulePermanently(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.classes.deleteSchedulePermanently(ctx, id);
+  }
+
   // Borrar de verdad: solo si nunca tuvo clases con gente (si no, archivar).
   @Delete('schedules/:id')
   @RequirePermissions('barber:appointments:write')

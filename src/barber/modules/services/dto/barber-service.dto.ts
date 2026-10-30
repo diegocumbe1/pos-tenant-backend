@@ -130,6 +130,13 @@ export class CreateBarberServiceDto {
   @Max(1000)
   sessionsIncluded?: number | null;
 
+  // PLAN: sesiones por mes de plan. null = sin cupo mensual.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  sessionsPerMonth?: number | null;
+
   // CLASS: cupo por clase.
   @IsOptional()
   @IsInt()
@@ -241,6 +248,13 @@ export class UpdateBarberServiceDto {
   @Min(1)
   @Max(1000)
   sessionsIncluded?: number | null;
+
+  // PLAN: sesiones por mes de plan. null = sin cupo mensual.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  sessionsPerMonth?: number | null;
 
   // CLASS: cupo por clase.
   @IsOptional()

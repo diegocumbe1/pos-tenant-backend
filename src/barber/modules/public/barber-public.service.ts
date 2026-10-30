@@ -8,12 +8,17 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ensureRecurringHorizon } from '../../shared/recurring-horizon';
+import {
+  isWithinBusinessHours,
+  resolveBusinessHours,
+} from '../../shared/business-hours';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
 import { calendarDayCO, formatDateTimeCO } from '../../../common/date.util';
 import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 import {
   CreatePublicAppointmentDto,
+  CreatePublicSignupDto,
   PublicAvailabilityQueryDto,
 } from './dto/public-appointment.dto';
 
@@ -27,6 +32,146 @@ type BrochureSettings = Prisma.BarberSettingsGetPayload<{
 const DEFAULT_DAY_START_MIN = 9 * 60; // 09:00
 const DEFAULT_DAY_END_MIN = 19 * 60; // 19:00
 const SLOT_STEP_MIN = 30;
+
+// ─── Inscripción web ─────────────────────────────────────────────────────────
+const SIGNUP_TAG = 'Inscripción web';
+const SIGNUP_START = '── Inscripción web ──';
+const SIGNUP_END = '── /Inscripción web ──';
+
+/** Lo que llenó en el formulario, como bloque de notas (se reemplaza entero). */
+function signupNotesBlock(
+  dto: CreatePublicSignupDto,
+  serviceName: string | null,
+): string {
+  const g = dto.guardian;
+  const lines = [
+    `Inscrito: ${formatDateTimeCO(new Date())}`,
+    serviceName ? `Le interesa: ${serviceName}` : null,
+    dto.document ? `Documento: ${dto.document.trim()}` : null,
+    dto.birthDate ? `Nacimiento: ${dto.birthDate}` : null,
+    g
+      ? `Acudiente: ${g.name.trim()}${g.relationship ? ` (${g.relationship.trim()})` : ''} · ${g.phone.trim()}${g.email ? ` · ${g.email}` : ''}`
+      : null,
+    dto.notes?.trim() ? `Comentario: ${dto.notes.trim()}` : null,
+    dto.intake ? 'Ficha deportiva completa: ver "Ficha de inscripción".' : null,
+  ].filter(Boolean);
+  return [SIGNUP_START, ...lines, SIGNUP_END].join('\n');
+}
+
+const INTAKE_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+/**
+ * La ficha deportiva tal como se guarda en `BarberCustomer.intake`. La lee la
+ * ficha del cliente (frontend: CustomerIntake). `version` por si cambia.
+ */
+function buildIntake(
+  dto: CreatePublicSignupDto,
+  serviceName: string | null,
+): Prisma.InputJsonValue | null {
+  const i = dto.intake;
+  if (!i) return null;
+  const clean = (v?: string) => v?.trim() || null;
+  const yesNo = (v: { has: boolean; detail?: string }) => ({
+    has: v.has,
+    detail: v.has ? clean(v.detail) : null,
+  });
+  // Solo días conocidos y horas HH:MM, sin repetir y en orden.
+  const availability: Record<string, string[]> = {};
+  for (const day of INTAKE_DAYS) {
+    const raw = i.availability?.[day];
+    if (!Array.isArray(raw)) continue;
+    const hours = [...new Set(raw.filter((h) => typeof h === 'string' && /^\d{2}:\d{2}$/.test(h)))]
+      .sort()
+      .slice(0, 24);
+    if (hours.length > 0) availability[day] = hours;
+  }
+  const g = dto.guardian;
+  return {
+    version: 1,
+    submittedAt: new Date().toISOString(),
+    documentType: i.documentType ?? null,
+    document: clean(dto.document),
+    birthDate: dto.birthDate ?? null,
+    sex: i.sex ?? null,
+    city: clean(i.city),
+    guardian: g
+      ? {
+          name: g.name.trim(),
+          relationship: clean(g.relationship),
+          phone: g.phone.trim(),
+          email: clean(g.email),
+        }
+      : null,
+    sport: clean(i.sport),
+    sportLevel: i.sportLevel ?? null,
+    club: clean(i.club),
+    health: {
+      disease: yesNo(i.health.disease),
+      injury: yesNo(i.health.injury),
+      discomfort: yesNo(i.health.discomfort),
+      restrictions: i.health.restrictions.trim(),
+    },
+    goal: i.goal.trim(),
+    availability,
+    interest: clean(i.interest),
+    serviceId: dto.serviceId ?? null,
+    serviceName,
+    consents: {
+      truthful: true,
+      dataPolicy: true,
+      selfResponsibility: true,
+      media: i.consents.media,
+      acceptedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function mergeSignupNotes(current: string | null, block: string): string {
+  const text = current ?? '';
+  const start = text.indexOf(SIGNUP_START);
+  const end = text.indexOf(SIGNUP_END);
+  if (start >= 0 && end > start) {
+    return (
+      text.slice(0, start) +
+      block +
+      text.slice(end + SIGNUP_END.length)
+    ).trim();
+  }
+  return text.trim() ? `${text.trim()}\n\n${block}` : block;
+}
+
+/**
+ * Los medios de pago que el negocio configuró para que sus clientes le paguen.
+ * Sin las rutas internas de los archivos ni el documento del titular.
+ */
+function publicPaymentInfo(
+  raw: Prisma.JsonValue | undefined,
+): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const info = raw as Record<string, unknown>;
+  const allowed = [
+    'bankName',
+    'accountType',
+    'accountNumber',
+    'accountHolder',
+    'nequiPhone',
+    'daviplataPhone',
+    'brebKey',
+    'brebKeyType',
+    'wallets',
+    'qrImageUrl',
+    'qrPdfUrl',
+    'qrProvider',
+    'qrSourceType',
+    'transferInstructions',
+  ];
+  const out = Object.fromEntries(
+    allowed
+      .filter((k) => info[k] != null && info[k] !== '')
+      .map((k) => [k, info[k]]),
+  );
+  return Object.keys(out).length ? out : null;
+}
 
 @Injectable()
 export class BarberPublicService {
@@ -221,6 +366,7 @@ export class BarberPublicService {
         branchId: true,
         publicProfilePublished: true,
         onlineBookingEnabled: true,
+        businessHours: true,
       },
     });
     if (!settings || !settings.publicProfilePublished) {
@@ -288,6 +434,21 @@ export class BarberPublicService {
     }
     const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledEnd = new Date(scheduledAt.getTime() + durationMin * 60_000);
+
+    // El sitio solo ofrece horas dentro del horario; esto cierra la puerta a
+    // quien llame a la API directo. El equipo sí puede agendar fuera de horario.
+    if (
+      !isWithinBusinessHours(
+        resolveBusinessHours(settings.businessHours),
+        scheduledAt,
+        scheduledEnd,
+      )
+    ) {
+      throw new BadRequestException({
+        code: 'OUTSIDE_BUSINESS_HOURS',
+        message: 'Esa hora está fuera del horario de atención',
+      });
+    }
 
     // Con especialista: conflicto por persona. Sin especialista (recurso):
     // conflicto por el propio servicio/espacio para no doble-reservarlo.
@@ -389,6 +550,102 @@ export class BarberPublicService {
         name: customer.name,
         phone: customer.phone,
       },
+    };
+  }
+
+  /**
+   * Inscripción desde el sitio público, para negocios sin agenda (gimnasio).
+   * Deja al cliente registrado con su acudiente, avisa al equipo por push y
+   * devuelve cómo pagar. No crea cita ni cobro: el plan lo vende la recepción.
+   *
+   * Si el teléfono ya existe, NO se renombra al cliente (cualquiera puede
+   * escribir cualquier número): solo se pone al día el bloque de inscripción
+   * en sus notas.
+   */
+  async createSignup(branchId: string, dto: CreatePublicSignupDto) {
+    const settings = await this.prisma.barberSettings.findUnique({
+      where: { branchId },
+      select: { tenantId: true, publicProfilePublished: true },
+    });
+    if (!settings || !settings.publicProfilePublished) {
+      throw new NotFoundException('Branch not found');
+    }
+    const service = dto.serviceId
+      ? await this.prisma.barberService.findFirst({
+          where: { id: dto.serviceId, branchId, isActive: true },
+          select: { id: true, name: true, priceCOP: true },
+        })
+      : null;
+
+    const block = signupNotesBlock(dto, service?.name ?? null);
+    // La última ficha que mandó reemplaza la anterior, igual que el bloque de
+    // notas. Sin ficha (formulario básico) no se toca la que tenga.
+    const intake = buildIntake(dto, service?.name ?? null);
+    const phone = dto.phone.trim();
+    const name = dto.name.trim().replace(/\s+/g, ' ');
+    const existing = await this.prisma.barberCustomer.findUnique({
+      where: { branchId_phone: { branchId, phone } },
+    });
+    const customer = existing
+      ? await this.prisma.barberCustomer.update({
+          where: { id: existing.id },
+          data: {
+            email: existing.email ?? dto.email ?? null,
+            notes: mergeSignupNotes(existing.notes, block),
+            ...(intake ? { intake } : {}),
+            tags: existing.tags.includes(SIGNUP_TAG)
+              ? existing.tags
+              : [...existing.tags, SIGNUP_TAG],
+          },
+        })
+      : await this.prisma.barberCustomer.create({
+          data: {
+            tenantId: settings.tenantId,
+            branchId,
+            name,
+            phone,
+            email: dto.email ?? null,
+            notes: block,
+            tags: [SIGNUP_TAG],
+            ...(intake ? { intake } : {}),
+          },
+        });
+
+    void this.notifications
+      .dispatch({
+        tenantId: settings.tenantId,
+        branchId,
+        vertical: 'barber',
+        type: 'barber.signup.received',
+        title: existing
+          ? 'Inscripción de un cliente que ya existía'
+          : 'Nueva inscripción desde el sitio',
+        body: [
+          name,
+          service?.name,
+          dto.guardian ? `Acudiente: ${dto.guardian.name}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        url: '/barber/customers',
+        payload: { customerId: customer.id },
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Signup notification dispatch failed: ${message}`);
+      });
+
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { paymentInfo: true },
+    });
+    return {
+      customerId: customer.id,
+      name: customer.name,
+      service: service
+        ? { id: service.id, name: service.name, priceCOP: service.priceCOP }
+        : null,
+      paymentInfo: publicPaymentInfo(branch?.paymentInfo),
     };
   }
 

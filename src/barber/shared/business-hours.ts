@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { calendarDayCO, clockTimeCO } from '../../common/date.util';
 
 export const DAY_OF_WEEK_ORDER = [
   'monday',
@@ -69,6 +70,29 @@ export function sanitizeBusinessHours(
       .sort((a, b) => hhmmToMinutes(a.start) - hhmmToMinutes(b.start));
     return acc;
   }, {} as BusinessHours);
+}
+
+/**
+ * ¿El rango [start, end) cae entero dentro de UN turno del horario, en hora
+ * Colombia? Una reserva no puede cruzar un corte (almuerzo) ni pasar del
+ * cierre. Rangos que cruzan la medianoche se tratan como fuera de horario.
+ */
+export function isWithinBusinessHours(
+  hours: BusinessHours,
+  start: Date,
+  end: Date,
+): boolean {
+  const startDay = calendarDayCO(start);
+  if (calendarDayCO(new Date(end.getTime() - 1)) !== startDay) return false;
+  const [y, m, d] = startDay.split('-').map(Number);
+  const weekday = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  // getUTCDay: 0 = domingo; DAY_OF_WEEK_ORDER empieza en lunes.
+  const day = DAY_OF_WEEK_ORDER[(weekday + 6) % 7];
+  const from = hhmmToMinutes(clockTimeCO(start).slice(0, 5));
+  const to = from + Math.round((end.getTime() - start.getTime()) / 60_000);
+  return hours[day].some(
+    (r) => from >= hhmmToMinutes(r.start) && to <= hhmmToMinutes(r.end),
+  );
 }
 
 // Lo que persistimos puede ser {} (default de columna). En ese caso devolvemos

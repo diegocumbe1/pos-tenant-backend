@@ -3,6 +3,7 @@ import { TenantContext } from '../auth/types/tenant-context.interface';
 import { PrismaService } from '../prisma/prisma.service';
 import { calendarDayCO, formatDateCO } from '../common/date.util';
 import { toExpenseDto } from './expense-dto';
+import { subscriptionPriceAt } from '../platform/pricing/subscription-price';
 
 import {
   PLATFORM_SUBSCRIPTION_SOURCE,
@@ -68,8 +69,12 @@ export class PlatformSubscriptionExpenseService {
           status: true,
           billingCycle: true,
           agreedPriceCOP: true,
+          agreedPriceUSD: true,
           priceCOP: true,
+          priceUSD: true,
+          agreedPriceLockedAt: true,
           nextPaymentDueAt: true,
+          tenant: { select: { vertical: { select: { code: true } } } },
         },
       }),
       // Pagos y cortesías. Una cortesía se registra como gasto de $0 con su
@@ -140,12 +145,30 @@ export class PlatformSubscriptionExpenseService {
       );
     };
 
+    // Lo que se le va a cobrar en el próximo pago: la tarifa de esa fecha, o el
+    // precio que fijó el admin. No el precio guardado al asignar el plan, que
+    // puede venir de una tasa que ya cambió.
+    const next = subscription
+      ? await subscriptionPriceAt(this.prisma, {
+          verticalCode: subscription.tenant.vertical?.code,
+          planCode: subscription.plan,
+          subscription,
+          at: subscription.nextPaymentDueAt ?? undefined,
+        })
+      : null;
+
     return {
       plan: subscription?.plan ?? payments[0]?.plan ?? null,
       status: subscription?.status ?? null,
       billingCycle: subscription?.billingCycle ?? null,
-      /** Lo que se cobra hoy por ciclo (precio pactado). */
-      priceCOP: subscription?.agreedPriceCOP ?? subscription?.priceCOP ?? null,
+      /** Lo que se cobra en el próximo pago por ciclo. */
+      // La tarifa es mensual; el precio fijado se guarda por ciclo.
+      priceCOP:
+        next && !next.locked && next.priceCOP != null && subscription?.billingCycle === 'yearly'
+          ? next.priceCOP * 12
+          : (next?.priceCOP ?? currentPrice),
+      /** true = precio fijado por la plataforma; false = sigue la tarifa. */
+      priceLocked: next?.locked ?? false,
       nextPaymentDueAt: subscription?.nextPaymentDueAt
         ? calendarDayCO(subscription.nextPaymentDueAt)
         : null,

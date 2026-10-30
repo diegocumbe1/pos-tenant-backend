@@ -18,13 +18,16 @@ import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberChargesService } from './barber-charges.service';
 import {
+  BarberAttendanceCheckQueryDto,
   BarberPaymentInputDto,
   CoverAppointmentDto,
+  CoverOverQuotaDto,
   CreateBarberChargeDto,
   FreezeBarberChargeDto,
   ListBarberChargesQueryDto,
   ListBarberMembershipsQueryDto,
   RenewBarberChargeDto,
+  SettleBarberSessionsDto,
   UpdateBarberChargeDto,
   VoidBarberChargeDto,
 } from './dto/barber-charge.dto';
@@ -67,6 +70,37 @@ export class BarberChargesController {
     @Query() query: ListBarberMembershipsQueryDto,
   ) {
     return this.chargesService.memberships(ctx, query);
+  }
+
+  // Antes de registrar una asistencia: su plan la cubre, cuántas lleva del mes
+  // de plan y cuánto debe. La recepción decide con esto si registra o pausa.
+  @Get('attendance-check')
+  @RequirePermissions('barber:appointments:read')
+  attendanceCheck(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: BarberAttendanceCheckQueryDto,
+  ) {
+    return this.chargesService.attendanceCheck(ctx, query.customerId, query.day, query.appointmentId);
+  }
+
+  // Estado de cuenta por meses de plan: pagados, debidos y sesiones de cada uno.
+  @Get('account')
+  @RequirePermissions('barber:appointments:read')
+  account(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: BarberAttendanceCheckQueryDto,
+  ) {
+    return this.chargesService.account(ctx, query.customerId);
+  }
+
+  // Cobra de una vez visitas sin plan: por sesión o el plan completo.
+  @Post('sessions')
+  @RequirePermissions('barber:appointments:write')
+  settleSessions(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: SettleBarberSessionsDto,
+  ) {
+    return this.chargesService.settleSessions(ctx, dto);
   }
 
   // Quita el plan que cubría una cita (vuelve a cobrarse suelta).
@@ -135,6 +169,17 @@ export class BarberChargesController {
   }
 
   // La cita la cubre este plan o paquete.
+  // Reactivar un plan congelado antes de tiempo (devuelve los días que no usó).
+  @Post(':id/freezes/:freezeId/end')
+  @RequirePermissions('barber:appointments:write')
+  unfreeze(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Param('freezeId') freezeId: string,
+  ) {
+    return this.chargesService.unfreeze(ctx, id, freezeId);
+  }
+
   @Post(':id/cover')
   @RequirePermissions('barber:appointments:write')
   cover(
@@ -143,6 +188,18 @@ export class BarberChargesController {
     @Body() dto: CoverAppointmentDto,
   ) {
     return this.chargesService.cover(ctx, id, dto.appointmentId);
+  }
+
+  // Sesión pasada del cupo mensual: la cubre el plan contando en el mes
+  // siguiente, o como cortesía. Cobrarla aparte va por el cobro normal.
+  @Post(':id/over-quota')
+  @RequirePermissions('barber:appointments:write')
+  coverOverQuota(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: CoverOverQuotaDto,
+  ) {
+    return this.chargesService.coverOverQuota(ctx, id, dto.appointmentId, dto.mode);
   }
 
   @Patch(':id/void')

@@ -252,6 +252,15 @@ export class UpdateSubscriptionDto {
   @IsOptional()
   @IsString()
   discountApprovedBy?: string;
+
+  /**
+   * true = quitar el precio fijo: la cuenta vuelve a cobrarse con la tarifa de
+   * lista vigente en cada fecha de cobro. Ignora los precios que vengan.
+   */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  followListPrice?: boolean;
 }
 
 export class SubscriptionActionDto {

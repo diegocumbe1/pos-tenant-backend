@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -19,7 +20,12 @@ import { TenantContext } from '../auth/types/tenant-context.interface';
 import { StaffCompensationService } from './staff-compensation.service';
 import { UpsertCompensationDto } from './dto/compensation.dto';
 import { UpsertRoleTemplateDto } from './dto/role-template.dto';
-import { CreateLedgerEntryDto, LedgerQueryDto } from './dto/ledger.dto';
+import {
+  CreateLedgerEntryDto,
+  EarningsQueryDto,
+  UpdateLedgerEntryDto,
+  LedgerQueryDto,
+} from './dto/ledger.dto';
 
 @ApiTags('Staff Compensation')
 @ApiBearerAuth()
@@ -37,6 +43,15 @@ export class StaffCompensationController {
   }
 
   // OJO: declarar antes de `compensation/:staffId` para que no lo capture como staffId.
+  // Base de la comisión del mes por persona (servicios prestados).
+  @Get('compensation/earnings')
+  getEarnings(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: EarningsQueryDto,
+  ) {
+    return this.service.getEarnings(ctx, query.period);
+  }
+
   @Get('compensation/role-templates')
   getRoleTemplates(@CurrentTenant() ctx: TenantContext) {
     return this.service.getRoleTemplates(ctx);
@@ -83,6 +98,15 @@ export class StaffCompensationController {
     @Body() dto: CreateLedgerEntryDto,
   ) {
     return this.service.addLedgerEntry(ctx, dto);
+  }
+
+  @Patch('ledger/:id')
+  updateLedgerEntry(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateLedgerEntryDto,
+  ) {
+    return this.service.updateLedgerEntry(ctx, id, dto);
   }
 
   @Delete('ledger/:id')

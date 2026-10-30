@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { calendarDayCO } from '../../../common/date.util';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
 import { BarberAppointmentsService } from '../appointments/barber-appointments.service';
 import {
@@ -62,6 +63,7 @@ export class BarberServicesService {
         kind: dto.kind,
         validityDays: dto.validityDays,
         sessionsIncluded: dto.sessionsIncluded,
+        sessionsPerMonth: dto.sessionsPerMonth,
         capacity: dto.capacity,
         primaryImageUrl: dto.primaryImageUrl,
         sortOrder: dto.sortOrder,
@@ -110,6 +112,7 @@ export class BarberServicesService {
         kind: dto.kind,
         validityDays: dto.validityDays,
         sessionsIncluded: dto.sessionsIncluded,
+        sessionsPerMonth: dto.sessionsPerMonth,
         capacity: dto.capacity,
         primaryImageUrl: dto.primaryImageUrl,
         isActive: dto.isActive,
@@ -121,6 +124,20 @@ export class BarberServicesService {
         },
       },
     });
+    // El cupo mensual se copia al cobrar. Los planes vigentes de este servicio
+    // que todavía no tenían cupo lo toman ya; los que tienen uno propio, no.
+    if (dto.sessionsPerMonth) {
+      await this.prisma.barberCharge.updateMany({
+        where: {
+          serviceId: id,
+          tenantId: ctx.tenantId,
+          voidedAt: null,
+          sessionsPerMonth: null,
+          endsOn: { gte: new Date(`${calendarDayCO(new Date())}T00:00:00Z`) },
+        },
+        data: { sessionsPerMonth: dto.sessionsPerMonth },
+      });
+    }
     return this.toServiceDto(updated);
   }
 
@@ -249,6 +266,7 @@ export class BarberServicesService {
           kind: source.kind,
           validityDays: source.validityDays,
           sessionsIncluded: source.sessionsIncluded,
+          sessionsPerMonth: source.sessionsPerMonth,
           capacity: source.capacity,
           primaryImageUrl: source.primaryImageUrl,
           isActive: source.isActive,
@@ -354,6 +372,7 @@ export class BarberServicesService {
       kind: service.kind,
       validityDays: service.validityDays,
       sessionsIncluded: service.sessionsIncluded,
+      sessionsPerMonth: service.sessionsPerMonth,
       capacity: service.capacity,
       primaryImageUrl: service.primaryImageUrl,
       isActive: service.isActive,

@@ -127,10 +127,13 @@ export class ChargesService {
       verticalCode: tenant.vertical.code,
       planCode: tenant.plan,
       termMonths,
-      // El precio pactado manda sobre el de lista: un cliente con tarifa
-      // negociada no debe recibir la rebaja comercial dos veces.
-      agreedMonthlyCOP:
-        tenant.subscription?.agreedPriceCOP ?? tenant.subscription?.priceCOP,
+      // Solo un precio FIJADO por el admin manda sobre la lista (y así un
+      // cliente con tarifa negociada no recibe la rebaja dos veces). Sin eso,
+      // el cobro va con la tarifa de hoy: lo guardado puede ser la lista de
+      // cuando se asignó el plan, con una tasa que ya cambió.
+      agreedMonthlyCOP: tenant.subscription?.agreedPriceLockedAt
+        ? (tenant.subscription.agreedPriceCOP ?? tenant.subscription.priceCOP)
+        : null,
     });
   }
 

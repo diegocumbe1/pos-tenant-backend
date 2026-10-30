@@ -456,6 +456,9 @@ model BarberService {
   validityDays         Int?
   // PACKAGE (y PLAN con ingresos limitados): sesiones incluidas. null = ilimitado.
   sessionsIncluded     Int?
+  // PLAN: sesiones por mes de plan (Personalizado = 8/mes). null = sin cupo
+  // mensual. El mes arranca el día que arrancó el plan (26 oct → 25 nov).
+  sessionsPerMonth     Int?
   // CLASS: cuántas personas caben. 1 en todo lo demás.
   capacity             Int      @default(1)
   primaryImageUrl      String?
@@ -576,6 +579,9 @@ model BarberCustomer {
   totalVisits Int       @default(0)
   lastVisitAt DateTime?
   isActive    Boolean   @default(true)
+  // Ficha de inscripción que llenó en el sitio (datos, salud, deporte,
+  // objetivo, disponibilidad, consentimientos). Forma en barber-public.service.
+  intake      Json?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -630,6 +636,9 @@ model BarberAppointment {
   // paquete tiene sesiones contadas, descuenta una. null = se cobra suelta.
   coveredByChargeId  String?
   coveredByCharge    BarberCharge?           @relation("ChargeCoverage", fields: [coveredByChargeId], references: [id], onDelete: SetNull)
+  // Sesión pasada del cupo mensual que igual cubre el plan: 'NEXT_CYCLE' cuenta
+  // en el cupo del mes de plan siguiente; 'COURTESY' no cuenta. null = normal.
+  quotaMode          String?
   // Ocurrencia de una reserva fija semanal ("martes 20:00, cancha 2"). Es una
   // reserva normal: se cobra el día, se cancela sola o se mueve. null = suelta.
   recurringBookingId String?
@@ -728,12 +737,15 @@ model BarberCharge {
   service       BarberService?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   /// Qué se cobró, congelado: renombrar el servicio no reescribe el histórico.
-  concept   String
+  concept     String
   /// Cuánto vale. Lo pagado sale de sumar los pagos no anulados.
-  totalCOP  Int
+  totalCOP    Int
+  /// Descuento que se le hizo. `totalCOP` ya lo tiene restado: el precio de
+  /// lista es totalCOP + discountCOP. No es un gasto, es lo que no se cobró.
+  discountCOP Int      @default(0)
   /// Cuándo se hizo el cobro. Puede no ser hoy: se digita después.
-  chargedAt DateTime @default(now())
-  note      String?
+  chargedAt   DateTime @default(now())
+  note        String?
 
   /// Desde cuándo tiene el servicio. Puede ir antes del pago: arrancó el 2 y
   /// paga el 7. Fecha calendario Colombia, sin hora.
@@ -747,6 +759,9 @@ model BarberCharge {
   /// Sesiones o ingresos que incluye (paquete, plan limitado). null = ilimitado.
   /// Las usadas se cuentan sobre `coveredAppointments`, no se guardan.
   sessionsTotal Int?
+  /// Cupo por mes de plan, copiado del servicio al cobrar. null = sin cupo
+  /// mensual. Pasado el cupo, la sesión no la cubre el plan: se cobra aparte.
+  sessionsPerMonth Int?
   /// Días que se congeló (viaje, lesión). Ya están sumados a `endsOn`; este
   /// número queda para que se vea por qué la vigencia es más larga.
   frozenDays    Int  @default(0)
@@ -764,12 +779,35 @@ model BarberCharge {
 
   payments            BarberPayment[]
   coveredAppointments BarberAppointment[] @relation("ChargeCoverage")
+  freezes             BarberChargeFreeze[]
 
   @@index([tenantId, branchId, chargedAt])
   @@index([tenantId, branchId, dueOn])
   @@index([customerId])
   @@index([appointmentId])
   @@map("barber_charges")
+}
+
+/// Una congelación de un plan (viaje, lesión): del `startsOn` al `endsOn`,
+/// ambos inclusive. Esos días el plan no cubre asistencias, la vigencia se
+/// corre lo mismo y el mes de plan también (no se pierden sesiones del cupo).
+model BarberChargeFreeze {
+  id        String       @id @default(cuid())
+  tenantId  String
+  branchId  String
+  chargeId  String
+  charge    BarberCharge @relation(fields: [chargeId], references: [id], onDelete: Cascade)
+  startsOn  DateTime     @db.Date
+  endsOn    DateTime     @db.Date
+  days      Int
+  reason    String
+  userId    String?
+  userName  String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([chargeId])
+  @@map("barber_charge_freezes")
 }
 
 /**
@@ -797,6 +835,9 @@ model BarberClassSchedule {
   activeFrom  DateTime  @db.Date
   activeUntil DateTime? @db.Date
   isActive    Boolean   @default(true)
+  // Eliminado para siempre (estaba archivado): no aparece en ninguna vista de
+  // Clases. Las asistencias de quienes fueron siguen en su historial.
+  deletedAt   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2295,6 +2336,10 @@ model Subscription {
   agreedPriceUSD     Int?
   discountReason     String? // 'cliente fundador', 'bono 2 meses', …
   discountApprovedBy String?
+  // != null = el admin fijó el precio (precio especial o descuento) y manda.
+  // null = sigue la tarifa de lista vigente en la fecha de cada cobro. El
+  // anticipo (3/6/12 meses) no necesita esto: queda en el pago de su término.
+  agreedPriceLockedAt DateTime?
   provider           String             @default("manual") // 'manual' | 'stripe' | 'mercadopago'
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt

@@ -13,9 +13,12 @@ import {
   clockTimeCO,
   dayEndCO,
   dayStartCO,
+  formatCOP,
+  formatDateCO,
 } from '../../../common/date.util';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
 import { COMPLETED_STATUS_VARIANTS } from '../../shared/appointment-status';
+import { addMonthsDay, planCycle, usedInCycle, type FreezeRange } from '../../shared/plan-cycle';
 import {
   BarberPaymentInputDto,
   CreateBarberChargeDto,
@@ -23,6 +26,7 @@ import {
   ListBarberChargesQueryDto,
   ListBarberMembershipsQueryDto,
   RenewBarberChargeDto,
+  SettleBarberSessionsDto,
   UpdateBarberChargeDto,
 } from './dto/barber-charge.dto';
 
@@ -52,6 +56,7 @@ const CHARGE_INCLUDE = {
       kind: true,
       validityDays: true,
       sessionsIncluded: true,
+      sessionsPerMonth: true,
       priceCOP: true,
     },
   },
@@ -62,6 +67,12 @@ const CHARGE_INCLUDE = {
       },
     },
   },
+  // Para el cupo por mes de plan: en qué días se usó cada sesión.
+  coveredAppointments: {
+    where: { status: { notIn: NOT_CONSUMED_STATUSES } },
+    select: { id: true, scheduledAt: true, servedAt: true, quotaMode: true },
+  },
+  freezes: { orderBy: { startsOn: 'asc' } },
 } satisfies Prisma.BarberChargeInclude;
 
 type ChargeRow = Prisma.BarberChargeGetPayload<{
@@ -329,6 +340,7 @@ export class BarberChargesService {
     let startsOn = dto.startsOn ?? null;
     let endsOn = dto.endsOn ?? null;
     let sessionsTotal = dto.sessionsTotal ?? null;
+    let sessionsPerMonth = dto.sessionsPerMonth ?? null;
 
     if (dto.appointmentId) {
       await this.tenantHelper.assertScopedRecord(
@@ -361,6 +373,7 @@ export class BarberChargesService {
           priceCOP: true,
           validityDays: true,
           sessionsIncluded: true,
+          sessionsPerMonth: true,
         },
       });
       concept = concept || service.name;
@@ -376,6 +389,9 @@ export class BarberChargesService {
       }
       if (dto.sessionsTotal === undefined) {
         sessionsTotal = service.sessionsIncluded;
+      }
+      if (dto.sessionsPerMonth === undefined) {
+        sessionsPerMonth = service.sessionsPerMonth;
       }
     }
     if (customerId) {
@@ -393,7 +409,12 @@ export class BarberChargesService {
       throw new BadRequestException('Falta el valor del cobro');
     }
     this.assertDayOrder(startsOn ?? undefined, endsOn ?? undefined);
-    if (dto.payment && dto.payment.amountCOP > totalCOP) {
+    const payments = [
+      ...(dto.payment ? [dto.payment] : []),
+      ...(dto.payments ?? []),
+    ];
+    const paidCOP = payments.reduce((sum, p) => sum + p.amountCOP, 0);
+    if (paidCOP > totalCOP) {
       throw new BadRequestException(
         'El pago no puede ser mayor que el valor del cobro',
       );
@@ -425,18 +446,20 @@ export class BarberChargesService {
           serviceId,
           concept,
           totalCOP: totalCOP,
+          discountCOP: dto.discountCOP ?? 0,
           ...(chargedAt ? { chargedAt } : {}),
           startsOn: startsOn ? dateOf(startsOn) : null,
           endsOn: endsOn ? dateOf(endsOn) : null,
           dueOn: dto.dueOn ? dateOf(dto.dueOn) : null,
           sessionsTotal,
+          sessionsPerMonth,
           note: dto.note ?? null,
           userId: ctx.userId,
           userName: ctx.name,
         },
       });
-      if (dto.payment) {
-        await this.insertPayment(tx, ctx, charge.id, dto.payment);
+      for (const payment of payments) {
+        await this.insertPayment(tx, ctx, charge.id, payment);
       }
       return charge;
     });
@@ -479,6 +502,9 @@ export class BarberChargesService {
           : {}),
         ...(dto.sessionsTotal !== undefined
           ? { sessionsTotal: dto.sessionsTotal }
+          : {}),
+        ...(dto.sessionsPerMonth !== undefined
+          ? { sessionsPerMonth: dto.sessionsPerMonth }
           : {}),
       },
     });
@@ -531,6 +557,7 @@ export class BarberChargesService {
       startsOn,
       endsOn: addDays(startsOn, Math.max(1, length) - 1),
       sessionsTotal: service?.sessionsIncluded ?? current.sessionsTotal,
+      ...(service ? {} : { sessionsPerMonth: current.sessionsPerMonth }),
       dueOn: dto.dueOn,
       note: dto.note,
       payment: dto.payment,
@@ -543,24 +570,123 @@ export class BarberChargesService {
    * queda en la nota.
    */
   async freeze(ctx: TenantContext, id: string, dto: FreezeBarberChargeDto) {
-    const current = await this.findScoped(ctx, id);
+    await this.findScoped(ctx, id);
+    const current = await this.prisma.barberCharge.findUniqueOrThrow({
+      where: { id },
+      include: CHARGE_INCLUDE,
+    });
     if (current.voidedAt) {
       throw new BadRequestException('El cobro está anulado');
     }
     if (!current.endsOn) {
-      throw new BadRequestException(
-        'Este cobro no tiene vigencia que congelar',
-      );
+      throw new BadRequestException('Este cobro no tiene vigencia que congelar');
     }
-    const line = `Congelado ${dto.days} día(s) el ${calendarDayCO(new Date())}: ${dto.reason}`;
-    await this.prisma.barberCharge.update({
-      where: { id },
-      data: {
-        endsOn: dateOf(addDays(dayOf(current.endsOn)!, dto.days)),
-        frozenDays: { increment: dto.days },
-        note: current.note ? `${current.note}\n${line}` : line,
-      },
+    const today = calendarDayCO(new Date());
+    const planEnd = dayOf(current.endsOn)!;
+    // Congelar un plan vencido lo "revive" y cubre hacia atrás días que no se
+    // pagaron. Si ya venció, se renueva.
+    if (planEnd < today) {
+      throw new BadRequestException('El plan ya venció: renuévalo en vez de congelarlo');
+    }
+
+    const start = dto.startsOn ?? today;
+    if (start > planEnd) {
+      throw new BadRequestException('La congelación tiene que empezar antes de que venza el plan');
+    }
+    const startsOn = dayOf(current.startsOn);
+    if (startsOn && start < startsOn) {
+      throw new BadRequestException('La congelación no puede empezar antes que el plan');
+    }
+    if (!dto.days && !dto.untilOn) {
+      throw new BadRequestException('Indica cuántos días o hasta qué fecha');
+    }
+    const end = dto.untilOn ?? addDays(start, dto.days! - 1);
+    if (end < start) throw new BadRequestException('La fecha final es antes de la inicial');
+    const days = daysBetween(start, end) + 1;
+    if (days > 365) throw new BadRequestException('Máximo 365 días');
+
+    if (this.freezesOf(current).some((f) => f.start <= end && start <= f.end)) {
+      throw new ConflictException({
+        code: 'FREEZE_OVERLAP',
+        message: 'Ya hay una congelación en esas fechas',
+      });
+    }
+    // Lo que ya vino (o tiene reservado) en esos días no puede quedar sin cubrir.
+    const busy = current.coveredAppointments
+      .map((a) => calendarDayCO(a.servedAt ?? a.scheduledAt))
+      .filter((d) => d >= start && d <= end)
+      .sort();
+    if (busy.length > 0) {
+      throw new ConflictException({
+        code: 'FREEZE_HAS_ATTENDANCE',
+        message: `Tiene sesiones registradas en esas fechas (${busy.join(', ')}). Congela desde el día siguiente o sácalo de esas clases.`,
+      });
+    }
+
+    const line = `Congelado del ${start} al ${end} (${days} día(s)): ${dto.reason}`;
+    await this.prisma.$transaction([
+      this.prisma.barberChargeFreeze.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          chargeId: id,
+          startsOn: dateOf(start),
+          endsOn: dateOf(end),
+          days,
+          reason: dto.reason,
+          userId: ctx.userId,
+          userName: ctx.name,
+        },
+      }),
+      this.prisma.barberCharge.update({
+        where: { id },
+        data: {
+          endsOn: dateOf(addDays(planEnd, days)),
+          frozenDays: { increment: days },
+          note: current.note ? `${current.note}\n${line}` : line,
+        },
+      }),
+    ]);
+    return this.findOne(ctx, id);
+  }
+
+  /**
+   * Reactivar antes de tiempo: volvió antes de lo previsto. Si la congelación
+   * no ha empezado, se borra; si está en curso, termina ayer y se devuelven al
+   * plan los días que no usó (la vigencia se acorta lo mismo).
+   */
+  async unfreeze(ctx: TenantContext, id: string, freezeId: string) {
+    const current = await this.findScoped(ctx, id);
+    const freeze = await this.prisma.barberChargeFreeze.findFirst({
+      where: { id: freezeId, chargeId: id },
     });
+    if (!freeze) throw new NotFoundException(`Freeze ${freezeId} not found`);
+    const today = calendarDayCO(new Date());
+    const start = dayOf(freeze.startsOn)!;
+    const end = dayOf(freeze.endsOn)!;
+    if (end < today) {
+      throw new BadRequestException('Esa congelación ya terminó');
+    }
+    // Desde hoy vuelve a estar activo: hoy no cuenta como congelado.
+    const keepUntil = addDays(today, -1);
+    const returned = start > keepUntil ? freeze.days : daysBetween(keepUntil, end);
+    const planEnd = dayOf(current.endsOn)!;
+
+    await this.prisma.$transaction([
+      start > keepUntil
+        ? this.prisma.barberChargeFreeze.delete({ where: { id: freezeId } })
+        : this.prisma.barberChargeFreeze.update({
+            where: { id: freezeId },
+            data: { endsOn: dateOf(keepUntil), days: freeze.days - returned },
+          }),
+      this.prisma.barberCharge.update({
+        where: { id },
+        data: {
+          endsOn: dateOf(addDays(planEnd, -returned)),
+          frozenDays: { decrement: returned },
+        },
+      }),
+    ]);
     return this.findOne(ctx, id);
   }
 
@@ -617,7 +743,7 @@ export class BarberChargesService {
     );
     await this.prisma.barberAppointment.update({
       where: { id: appointmentId },
-      data: { coveredByChargeId: null },
+      data: { coveredByChargeId: null, quotaMode: null },
     });
     return { ok: true };
   }
@@ -655,6 +781,404 @@ export class BarberChargesService {
       );
     });
     return usable[0] ?? null;
+  }
+
+  /**
+   * Lo que la recepción necesita saber ANTES de registrar una asistencia: si su
+   * plan la cubre ese día, cuántas sesiones lleva del mes de plan, si el plan
+   * venció y cuánto debe. No bloquea nada: con esto se decide si registrar
+   * (la sesión de más se cobra aparte) o pausar.
+   */
+  async attendanceCheck(
+    ctx: TenantContext,
+    customerId: string,
+    day?: string,
+    /** La sesión que se va a registrar, si ya existe: no se cuenta contra sí misma. */
+    appointmentId?: string,
+  ) {
+    await this.tenantHelper.assertScopedRecord(
+      'barberCustomer',
+      ctx,
+      customerId,
+      'Customer',
+    );
+    const today = calendarDayCO(new Date());
+    const onDay = day ?? today;
+    const charges = await this.prisma.barberCharge.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        customerId,
+        voidedAt: null,
+      },
+      include: CHARGE_INCLUDE,
+      orderBy: { chargedAt: 'desc' },
+    });
+
+    const plans = charges.filter(
+      (c) => c.endsOn !== null || c.sessionsTotal !== null,
+    );
+    const covering =
+      plans.find((c) => this.coverageProblem(c, customerId, onDay, appointmentId) === null) ??
+      null;
+    // Si nada la cubre, el plan del que hablar: el vigente por fechas (está
+    // sin cupo o sin sesiones) o, si no, el más reciente.
+    const inDates = (c: ChargeRow) =>
+      (!c.startsOn || dayOf(c.startsOn)! <= onDay) &&
+      (!c.endsOn || dayOf(c.endsOn)! >= onDay);
+    const plan = covering ?? plans.find(inDates) ?? plans[0] ?? null;
+
+    const reasons: { code: string; message: string }[] = [];
+    if (!plan) {
+      reasons.push({ code: 'NO_PLAN', message: 'No tiene plan: la sesión se cobra suelta' });
+    } else if (!covering) {
+      const startsOn = dayOf(plan.startsOn);
+      const endsOn = dayOf(plan.endsOn);
+      const frozen = this.frozenOn(plan, onDay);
+      if (frozen) {
+        reasons.push({
+          code: 'PLAN_FROZEN',
+          message: `Su plan está congelado hasta el ${formatDateCO(`${frozen.end}T12:00:00${CO_UTC_OFFSET}`)}`,
+        });
+      } else if (endsOn && onDay > endsOn) {
+        reasons.push({ code: 'PLAN_EXPIRED', message: `Su plan venció el ${formatDateCO(`${endsOn}T12:00:00${CO_UTC_OFFSET}`)}` });
+      } else if (startsOn && onDay < startsOn) {
+        reasons.push({ code: 'PLAN_NOT_STARTED', message: `Su plan arranca el ${formatDateCO(`${startsOn}T12:00:00${CO_UTC_OFFSET}`)}` });
+      } else if (
+        plan.sessionsTotal !== null &&
+        plan._count.coveredAppointments >= plan.sessionsTotal
+      ) {
+        reasons.push({ code: 'NO_SESSIONS', message: `Ya usó las ${plan.sessionsTotal} sesiones del paquete` });
+      } else if (plan.sessionsPerMonth !== null) {
+        reasons.push({
+          code: 'MONTHLY_LIMIT',
+          message: `Ya usó las ${plan.sessionsPerMonth} sesiones de este mes de plan`,
+        });
+      }
+    }
+
+    // Aviso, no problema: con esta sesión se completa el cupo del mes o el paquete.
+    if (covering) {
+      if (
+        covering.sessionsPerMonth !== null &&
+        this.cycleUsage(covering, onDay, appointmentId).used === covering.sessionsPerMonth - 1
+      ) {
+        reasons.push({
+          code: 'LAST_SESSION',
+          message: `Es su última sesión de este mes de plan (${covering.sessionsPerMonth} de ${covering.sessionsPerMonth})`,
+        });
+      } else if (
+        covering.sessionsTotal !== null &&
+        covering.sessionsTotal - covering._count.coveredAppointments === 1
+      ) {
+        reasons.push({
+          code: 'LAST_SESSION',
+          message: `Es la última sesión del paquete (${covering.sessionsTotal} de ${covering.sessionsTotal})`,
+        });
+      }
+    }
+
+    const dtos = charges.map((c) => this.toDto(c, today));
+    const open = dtos.filter((c) => c.balanceCOP > 0);
+    const balanceCOP = open.reduce((acc, c) => acc + c.balanceCOP, 0);
+    const overdueCOP = open
+      .filter((c) => c.status === 'OVERDUE' || c.status === 'DUE_TODAY')
+      .reduce((acc, c) => acc + c.balanceCOP, 0);
+    if (overdueCOP > 0) {
+      reasons.push({ code: 'DEBT_OVERDUE', message: `Tiene ${formatCOP(overdueCOP)} vencido por pagar` });
+    } else if (balanceCOP > 0) {
+      reasons.push({ code: 'DEBT_PENDING', message: `Debe ${formatCOP(balanceCOP)}` });
+    }
+
+    const planDto = plan ? this.toDto(plan, today) : null;
+    let nextCycle: { start: string; end: string; used: number; left: number; available: boolean } | null = null;
+    if (plan && plan.sessionsPerMonth !== null) {
+      const start = addDays(planCycle(dayOf(plan.startsOn), onDay, this.freezesOf(plan)).end, 1);
+      const usage = this.cycleUsage(plan, start);
+      const endsOn = dayOf(plan.endsOn);
+      const left = Math.max(0, plan.sessionsPerMonth - usage.used);
+      nextCycle = {
+        start: usage.start,
+        end: usage.end,
+        used: usage.used,
+        left,
+        available: (!endsOn || start <= endsOn) && left > 0,
+      };
+    }
+    const cycle =
+      plan && plan.sessionsPerMonth !== null
+        ? this.cycleUsage(plan, onDay, appointmentId)
+        : null;
+    return {
+      customerId,
+      day: onDay,
+      covers: covering !== null,
+      plan: planDto
+        ? {
+            chargeId: planDto.id,
+            concept: planDto.concept,
+            serviceId: planDto.serviceId,
+            startsOn: planDto.startsOn,
+            endsOn: planDto.endsOn,
+            sessionsTotal: planDto.sessionsTotal,
+            sessionsLeft: planDto.sessionsLeft,
+            sessionsPerMonth: planDto.sessionsPerMonth,
+            cycle: cycle
+              ? {
+                  start: cycle.start,
+                  end: cycle.end,
+                  used: cycle.used,
+                  left: Math.max(0, plan!.sessionsPerMonth! - cycle.used),
+                }
+              : null,
+            perSessionCOP: planDto.perSessionCOP,
+            // Para "descontar del próximo mes": si el plan llega y queda cupo.
+            nextCycle: nextCycle,
+          }
+        : null,
+      debt: { balanceCOP, overdueCOP },
+      reasons,
+    };
+  }
+
+  /**
+   * Estado de cuenta por meses de plan, desde el primer plan hasta hoy. Arrancó
+   * en abril y estamos en octubre: mes por mes, qué se cobró y si se pagó,
+   * cuántas sesiones hizo y cuáles quedaron sin cobrar.
+   *
+   *   PAID       → lo cubre un cobro pagado.
+   *   OWED       → lo cubre un cobro con saldo pendiente.
+   *   NOT_CHARGED→ vino y ningún cobro cubre ese mes: se le debe cobrar.
+   *   INACTIVE   → no vino y no hay cobro: no se cuenta como deuda.
+   */
+  async account(ctx: TenantContext, customerId: string) {
+    await this.tenantHelper.assertScopedRecord('barberCustomer', ctx, customerId, 'Customer');
+    const today = calendarDayCO(new Date());
+    const rows = await this.prisma.barberCharge.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        customerId,
+        voidedAt: null,
+        OR: [
+          { endsOn: { not: null } },
+          { sessionsTotal: { not: null } },
+          { sessionsPerMonth: { not: null } },
+        ],
+      },
+      include: CHARGE_INCLUDE,
+      orderBy: { chargedAt: 'asc' },
+    });
+    const plans = rows.map((r) => ({ row: r, dto: this.toDto(r, today) }));
+    const firstStart = plans
+      .map((p) => p.dto.startsOn ?? calendarDayCO(p.row.chargedAt))
+      .sort()[0];
+    if (!firstStart) {
+      return { customerId, anchor: null, months: [], totals: { monthsOwed: 0, owedCOP: 0 }, plan: null };
+    }
+
+    // El plan de referencia (precio del mes, cupo, valor por sesión): el último.
+    const latest = plans[plans.length - 1];
+    const planPriceCOP = latest.row.service?.priceCOP ?? latest.row.totalCOP;
+    const sessionsPerMonth =
+      latest.row.sessionsPerMonth ?? latest.row.service?.sessionsPerMonth ?? null;
+    const perSessionCOP = latest.dto.perSessionCOP;
+
+    const visits = await this.prisma.barberAppointment.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        customerId,
+        status: { in: COMPLETED_STATUS_VARIANTS },
+        OR: [
+          { servedAt: { gte: dayStartCO(firstStart) } },
+          { servedAt: null, scheduledAt: { gte: dayStartCO(firstStart) } },
+        ],
+      },
+      select: {
+        id: true,
+        servedAt: true,
+        scheduledAt: true,
+        coveredByChargeId: true,
+        charges: { where: { voidedAt: null }, select: { id: true } },
+      },
+    });
+    const visitDays = visits.map((v) => ({
+      id: v.id,
+      day: calendarDayCO(v.servedAt ?? v.scheduledAt),
+      settled: !!v.coveredByChargeId || v.charges.length > 0,
+    }));
+
+    const months: {
+      start: string;
+      end: string;
+      isCurrent: boolean;
+      sessions: number;
+      sessionsPerMonth: number | null;
+      status: 'PAID' | 'OWED' | 'NOT_CHARGED' | 'INACTIVE';
+      charges: { id: string; concept: string; totalCOP: number; paidCOP: number; balanceCOP: number; status: string }[];
+      /** Visitas de ese mes que nada cubrió ni cobró (sin plan o pasadas del cupo). */
+      unsettledAppointmentIds: string[];
+    }[] = [];
+    for (let k = 0; addMonthsDay(firstStart, k) <= today; k++) {
+      const start = addMonthsDay(firstStart, k);
+      const end = addDays(addMonthsDay(firstStart, k + 1), -1);
+      const inMonth = visitDays.filter((v) => v.day >= start && v.day <= end);
+      const covering = plans.filter((p) => {
+        const from = p.dto.startsOn ?? calendarDayCO(p.row.chargedAt);
+        const to = p.dto.endsOn ?? from;
+        return from <= end && to >= start;
+      });
+      // Sin plan que lo cubra: si cada visita se cobró suelta, está al día; si
+      // quedó alguna sin cobrar, falta cobrar ese mes.
+      const status = covering.length
+        ? covering.some((p) => p.dto.balanceCOP > 0)
+          ? 'OWED'
+          : 'PAID'
+        : inMonth.some((v) => !v.settled)
+          ? 'NOT_CHARGED'
+          : inMonth.length > 0
+            ? 'PAID'
+            : 'INACTIVE';
+      months.push({
+        start,
+        end,
+        isCurrent: start <= today && today <= end,
+        sessions: inMonth.length,
+        sessionsPerMonth,
+        status,
+        charges: covering.map((p) => ({
+          id: p.dto.id,
+          concept: p.dto.concept,
+          totalCOP: p.dto.totalCOP,
+          paidCOP: p.dto.paidCOP,
+          balanceCOP: p.dto.balanceCOP,
+          status: p.dto.status,
+        })),
+        unsettledAppointmentIds: inMonth.filter((v) => !v.settled).map((v) => v.id),
+      });
+    }
+
+    // Lo que debe: saldos de los cobros (una vez cada uno, aunque cubran
+    // varios meses) + un mes de plan por cada mes que vino sin cobro.
+    const owedCharges = new Map<string, number>();
+    for (const m of months) for (const c of m.charges) if (c.balanceCOP > 0) owedCharges.set(c.id, c.balanceCOP);
+    const notCharged = months.filter((m) => m.status === 'NOT_CHARGED');
+    return {
+      customerId,
+      anchor: firstStart,
+      plan: {
+        serviceId: latest.row.serviceId,
+        concept: latest.row.service?.name ?? latest.row.concept,
+        priceCOP: planPriceCOP,
+        sessionsPerMonth,
+        perSessionCOP,
+      },
+      months: months.reverse(),
+      totals: {
+        monthsOwed: months.filter((m) => m.status === 'OWED' || m.status === 'NOT_CHARGED').length,
+        owedCOP:
+          [...owedCharges.values()].reduce((a, b) => a + b, 0) +
+          notCharged.length * planPriceCOP,
+      },
+    };
+  }
+
+  /**
+   * Cobra de una vez visitas que no cubrió ningún plan, y las deja cubiertas
+   * por ese cobro (dejan de verse "sin plan" y no se cobran dos veces):
+   *   PER_SESSION → visitas × valor por sesión del plan (240.000 / 8 = 30.000).
+   *   FULL_PLAN   → el plan completo desde la primera visita; las visitas
+   *                 quedan dentro y el resto del mes sigue cubierto.
+   */
+  async settleSessions(ctx: TenantContext, dto: SettleBarberSessionsDto) {
+    await this.tenantHelper.assertScopedRecord('barberService', ctx, dto.serviceId, 'Service');
+    const service = await this.prisma.barberService.findUniqueOrThrow({
+      where: { id: dto.serviceId },
+      select: {
+        name: true,
+        priceCOP: true,
+        validityDays: true,
+        sessionsIncluded: true,
+        sessionsPerMonth: true,
+      },
+    });
+    const appts = await this.prisma.barberAppointment.findMany({
+      where: {
+        id: { in: dto.appointmentIds },
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+      },
+      select: {
+        id: true,
+        customerId: true,
+        status: true,
+        scheduledAt: true,
+        servedAt: true,
+        coveredByChargeId: true,
+        charges: { where: { voidedAt: null }, select: { id: true } },
+      },
+    });
+    if (appts.length !== dto.appointmentIds.length) {
+      throw new NotFoundException('Alguna visita no existe');
+    }
+    for (const a of appts) {
+      if (a.customerId !== dto.customerId) {
+        throw new BadRequestException('Hay visitas de otro cliente');
+      }
+      if (NOT_CONSUMED_STATUSES.includes(a.status)) {
+        throw new BadRequestException('Solo se cobran visitas en las que vino');
+      }
+      if (a.coveredByChargeId || a.charges.length > 0) {
+        throw new ConflictException({
+          code: 'ALREADY_CHARGED',
+          message: 'Alguna visita ya está cobrada o cubierta por un plan',
+        });
+      }
+    }
+
+    const days = appts
+      .map((a) => calendarDayCO(a.servedAt ?? a.scheduledAt))
+      .sort();
+    const n = appts.length;
+    const perMonth = service.sessionsPerMonth ?? service.sessionsIncluded;
+    const perSession = perMonth ? Math.round(service.priceCOP / perMonth) : service.priceCOP;
+
+    const created =
+      dto.mode === 'PER_SESSION'
+        ? await this.create(ctx, {
+            customerId: dto.customerId,
+            serviceId: dto.serviceId,
+            concept: `${service.name} · ${n} ${n === 1 ? 'sesión' : 'sesiones'}`,
+            totalCOP: dto.totalCOP ?? perSession * n,
+            // Un "paquete" exacto de esas visitas: no cubre nada más.
+            startsOn: days[0],
+            endsOn: days[days.length - 1],
+            sessionsTotal: n,
+            sessionsPerMonth: null,
+            dueOn: dto.dueOn,
+            note: dto.note,
+            payments: dto.payments,
+          })
+        : await this.create(ctx, {
+            customerId: dto.customerId,
+            serviceId: dto.serviceId,
+            totalCOP: dto.totalCOP ?? service.priceCOP,
+            startsOn: days[0],
+            ...(service.validityDays
+              ? { endsOn: addDays(days[0], service.validityDays - 1) }
+              : {}),
+            dueOn: dto.dueOn,
+            note: dto.note,
+            payments: dto.payments,
+          });
+
+    await this.prisma.barberAppointment.updateMany({
+      where: { id: { in: dto.appointmentIds } },
+      // Cubiertas = su plata entró con este cobro, no son venta aparte.
+      data: { coveredByChargeId: created.id, priceCOP: 0 },
+    });
+    return this.findOne(ctx, created.id);
   }
 
   /**
@@ -811,6 +1335,12 @@ export class BarberChargesService {
         ? null
         : Math.max(0, row.sessionsTotal - sessionsUsed);
     const isMembership = row.endsOn !== null || row.sessionsTotal !== null;
+    // Mes de plan de hoy (o del último día del plan, si ya venció).
+    const cycleDay = endsOn && endsOn < today ? endsOn : today;
+    const cycle =
+      row.sessionsPerMonth !== null
+        ? this.cycleUsage(row, cycleDay)
+        : null;
 
     let membershipState: BarberMembershipState | null = null;
     if (isMembership && !row.voidedAt) {
@@ -839,6 +1369,7 @@ export class BarberChargesService {
       color: row.service?.color ?? null,
       concept: row.concept,
       totalCOP: row.totalCOP,
+      discountCOP: row.discountCOP,
       paidCOP,
       balanceCOP,
       status,
@@ -855,7 +1386,38 @@ export class BarberChargesService {
       sessionsTotal: row.sessionsTotal,
       sessionsUsed,
       sessionsLeft,
+      /** Cupo por mes de plan y cómo va el mes de hoy. null = sin cupo. */
+      sessionsPerMonth: row.sessionsPerMonth,
+      cycle: cycle
+        ? {
+            start: cycle.start,
+            end: cycle.end,
+            used: cycle.used,
+            left: Math.max(0, row.sessionsPerMonth! - cycle.used),
+          }
+        : null,
+      /** Valor de una sesión: el plan entre su cupo mensual (o el paquete entre sus sesiones). */
+      perSessionCOP: this.perSessionCOP(row),
       frozenDays: row.frozenDays,
+      /** Congelaciones con fechas. status: por venir, en curso o terminada. */
+      freezes: row.freezes.map((f) => {
+        const start = dayOf(f.startsOn)!;
+        const end = dayOf(f.endsOn)!;
+        return {
+          id: f.id,
+          startsOn: start,
+          endsOn: end,
+          days: f.days,
+          reason: f.reason,
+          userName: f.userName,
+          status: start > today ? 'UPCOMING' : end < today ? 'DONE' : 'ACTIVE',
+        };
+      }),
+      /** Congelado hoy: no cubre asistencias hasta `endsOn`. */
+      frozenNow: (() => {
+        const f = row.freezes.find((x) => dayOf(x.startsOn)! <= today && today <= dayOf(x.endsOn)!);
+        return f ? { startsOn: dayOf(f.startsOn)!, endsOn: dayOf(f.endsOn)! } : null;
+      })(),
       note: row.note,
       userName: row.userName,
       voidedAt: row.voidedAt?.toISOString() ?? null,
@@ -878,6 +1440,7 @@ export class BarberChargesService {
     charge: ChargeRow,
     customerId: string,
     day: string,
+    excludeAppointmentId?: string,
   ): string | null {
     if (charge.voidedAt) return 'El plan está anulado';
     if (charge.customerId !== customerId) {
@@ -890,12 +1453,128 @@ export class BarberChargesService {
     const endsOn = dayOf(charge.endsOn);
     if (startsOn && day < startsOn) return 'El plan todavía no ha empezado';
     if (endsOn && day > endsOn) return 'El plan ya venció';
+    const frozen = this.frozenOn(charge, day);
+    if (frozen) {
+      return `El plan está congelado del ${frozen.start} al ${frozen.end}`;
+    }
     if (
       charge.sessionsTotal !== null &&
       charge._count.coveredAppointments >= charge.sessionsTotal
     ) {
       return 'El paquete ya no tiene sesiones';
     }
+    if (
+      charge.sessionsPerMonth !== null &&
+      this.cycleUsage(charge, day, excludeAppointmentId).used >= charge.sessionsPerMonth
+    ) {
+      return `Ya usó las ${charge.sessionsPerMonth} sesiones de este mes de plan`;
+    }
+    return null;
+  }
+
+  /**
+   * Sesiones usadas en el mes de plan que contiene `day`. Una cortesía no
+   * cuenta; una "del próximo mes" cuenta en el mes siguiente al suyo.
+   */
+  private cycleUsage(charge: ChargeRow, day: string, excludeAppointmentId?: string) {
+    const startsOn = dayOf(charge.startsOn);
+    const freezes = this.freezesOf(charge);
+    const days = charge.coveredAppointments
+      .filter((a) => a.quotaMode !== 'COURTESY' && a.id !== excludeAppointmentId)
+      .map((a) => {
+        const d = calendarDayCO(a.servedAt ?? a.scheduledAt);
+        return a.quotaMode === 'NEXT_CYCLE'
+          ? addDays(planCycle(startsOn, d, freezes).end, 1)
+          : d;
+      });
+    return usedInCycle(startsOn, day, days, freezes);
+  }
+
+  /** Las congelaciones del plan como rangos de días (inclusive). */
+  private freezesOf(charge: ChargeRow): FreezeRange[] {
+    return charge.freezes.map((f) => ({ start: dayOf(f.startsOn)!, end: dayOf(f.endsOn)! }));
+  }
+
+  /** La congelación que tiene a `day` adentro, si hay. */
+  private frozenOn(charge: ChargeRow, day: string): FreezeRange | null {
+    return this.freezesOf(charge).find((f) => f.start <= day && day <= f.end) ?? null;
+  }
+
+  /**
+   * Una sesión pasada del cupo que igual cubre el plan: se descuenta del mes
+   * de plan siguiente (si el plan llega hasta allá y queda cupo) o va de
+   * cortesía (no cuenta). La alternativa, cobrarla aparte, no pasa por aquí.
+   */
+  async coverOverQuota(
+    ctx: TenantContext,
+    id: string,
+    appointmentId: string,
+    mode: 'NEXT_CYCLE' | 'COURTESY',
+  ) {
+    await this.findScoped(ctx, id);
+    await this.tenantHelper.assertScopedRecord('barberAppointment', ctx, appointmentId, 'Appointment');
+    await this.prisma.$transaction(async (tx) => {
+      const appt = await tx.barberAppointment.findUniqueOrThrow({
+        where: { id: appointmentId },
+        select: {
+          customerId: true,
+          status: true,
+          scheduledAt: true,
+          servedAt: true,
+          coveredByChargeId: true,
+          charges: { where: { voidedAt: null }, select: { id: true } },
+        },
+      });
+      if (appt.coveredByChargeId || appt.charges.length > 0) {
+        throw new ConflictException({
+          code: 'ALREADY_CHARGED',
+          message: 'Esta sesión ya está cubierta o cobrada',
+        });
+      }
+      if (NOT_CONSUMED_STATUSES.includes(appt.status)) {
+        throw new BadRequestException('Solo se cubren sesiones en las que vino');
+      }
+      const charge = await tx.barberCharge.findUniqueOrThrow({
+        where: { id },
+        include: CHARGE_INCLUDE,
+      });
+      if (charge.customerId !== appt.customerId) {
+        throw new BadRequestException('El plan es de otro cliente');
+      }
+      if (charge.sessionsPerMonth === null) {
+        throw new BadRequestException('Este plan no tiene cupo mensual');
+      }
+      const day = calendarDayCO(appt.servedAt ?? appt.scheduledAt);
+      if (mode === 'NEXT_CYCLE') {
+        const next = addDays(planCycle(dayOf(charge.startsOn), day, this.freezesOf(charge)).end, 1);
+        const endsOn = dayOf(charge.endsOn);
+        if (endsOn && next > endsOn) {
+          throw new BadRequestException(
+            'El plan no llega al mes siguiente: cóbrala aparte o como cortesía',
+          );
+        }
+        if (this.cycleUsage(charge, next).used >= charge.sessionsPerMonth) {
+          throw new BadRequestException('El mes siguiente ya tiene el cupo lleno');
+        }
+      }
+      await tx.barberAppointment.update({
+        where: { id: appointmentId },
+        data: { coveredByChargeId: id, quotaMode: mode, priceCOP: 0 },
+      });
+    });
+    return this.findOne(ctx, id);
+  }
+
+  /**
+   * Valor de una sesión de un plan: su precio de lista entre las sesiones del
+   * mes (Personalizado 240.000 / 8 = 30.000). Un paquete, entre sus sesiones.
+   * null si el plan no cuenta sesiones.
+   */
+  private perSessionCOP(row: ChargeRow): number | null {
+    const price = row.service?.priceCOP ?? null;
+    const perMonth = row.sessionsPerMonth ?? row.service?.sessionsPerMonth ?? null;
+    if (price && perMonth) return Math.round(price / perMonth);
+    if (row.sessionsTotal) return Math.round(row.totalCOP / row.sessionsTotal);
     return null;
   }
 
