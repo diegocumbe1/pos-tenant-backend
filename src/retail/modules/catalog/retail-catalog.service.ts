@@ -133,7 +133,17 @@ export class RetailCatalogService {
 
   async listProducts(
     ctx: TenantContext,
-    filters: { categoryId?: string; search?: string; lowStock?: boolean } = {},
+    filters: {
+      categoryId?: string;
+      search?: string;
+      lowStock?: boolean;
+      /**
+       * Trae las filas de reparto (cuánto hay de cada sabor/talla). Solo lo pide la pantalla de
+       * Inventario, que las muestra debajo de cada producto; el mostrador y el catálogo siguen sin
+       * ellas por el peso del payload (ver docs/PLAN_VARIANTES_MULTIDIMENSION_RETAIL.md §4).
+       */
+      withVariants?: boolean;
+    } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
     const products = await this.prisma.retailProduct.findMany({
@@ -176,9 +186,14 @@ export class RetailCatalogService {
       ),
     ]);
     return visible.map((product) =>
-      // `false` = sin filas de reparto. El resumen (`variantCount`, `assignedStock`,
+      // Sin `withVariants`, sin filas de reparto. El resumen (`variantCount`, `assignedStock`,
       // `hasLowStockVariant`) sí viaja, que es lo único que un listado necesita.
-      this.toProductDto(product, committed.get(product.id) ?? 0, false, expiry),
+      this.toProductDto(
+        product,
+        committed.get(product.id) ?? 0,
+        filters.withVariants === true,
+        expiry,
+      ),
     );
   }
 

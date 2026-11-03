@@ -81,16 +81,19 @@ export class RetailProductsController {
   @ApiQuery({ name: 'categoryId', required: false })
   @ApiQuery({ name: 'search', required: false })
   @ApiQuery({ name: 'lowStock', required: false, type: Boolean })
+  @ApiQuery({ name: 'withVariants', required: false, type: Boolean })
   list(
     @CurrentTenant() ctx: TenantContext,
     @Query('categoryId') categoryId?: string,
     @Query('search') search?: string,
     @Query('lowStock') lowStock?: string,
+    @Query('withVariants') withVariants?: string,
   ) {
     return this.catalog.listProducts(ctx, {
       categoryId,
       search,
       lowStock: lowStock === 'true',
+      withVariants: withVariants === 'true',
     });
   }
 
