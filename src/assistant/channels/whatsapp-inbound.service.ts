@@ -495,8 +495,9 @@ export class WhatsAppInboundService {
         {
           vertical: result.context.vertical,
           intentId: result.context.intent,
-          outcome:
-            result.action === 'RESPOND'
+          outcome: result.context.denied
+            ? 'DENIED_PLAN'
+            : result.action === 'RESPOND'
               ? 'ANSWERED'
               : result.action === 'CLARIFY'
                 ? 'CLARIFIED'

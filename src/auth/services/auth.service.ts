@@ -713,7 +713,11 @@ export class AuthService {
     tenant: LoginProfileRow['tenant'],
   ): Record<string, boolean | number> | null {
     if (!tenant) return null;
-    return resolveEffectiveFeatures(tenant.plan, tenant.featureOverrides);
+    return resolveEffectiveFeatures(
+      tenant.plan,
+      tenant.featureOverrides,
+      tenant.vertical?.code,
+    );
   }
 
   private toAuthProfile(
@@ -783,6 +787,7 @@ export class AuthService {
       features: resolveEffectiveFeatures(
         tenant.plan,
         tenant.featureOverrides as unknown as Record<string, boolean | number> | null,
+        tenant.vertical?.code,
       ),
       role: {
         id: user.role?.id ?? 'support',

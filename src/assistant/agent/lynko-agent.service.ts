@@ -22,9 +22,11 @@ import {
   IdentityResolverService,
   ResolvedIdentity,
 } from '../identity/identity-resolver.service';
+import { AssistantQuotaException } from '../telemetry/assistant-quota.service';
 import { AgentRequest, AgentResult } from './agent.types';
 import { handoffTiming } from './business-hours';
 import {
+  assistantQuotaText,
   ASK_PERIOD,
   IDENTITY_DISCLOSURE,
   MAX_SPOKEN_BUSINESSES,
@@ -574,6 +576,14 @@ export class LynkoAgentService {
       repliedByAgent: true,
     });
 
+    // Antes que Forbidden: es su subclase, y "no tienes permiso" sería falso.
+    if (error instanceof AssistantQuotaException) {
+      return {
+        action: 'RESPOND',
+        reply: assistantQuotaText(business.name, error.reason, error.usage),
+        context: { ...this.contextOf(personId, scope, intent), denied: 'plan' },
+      };
+    }
     if (error instanceof ForbiddenException) {
       this.logger.warn(`Denied: role lacks permission for ${intent}`);
       return {

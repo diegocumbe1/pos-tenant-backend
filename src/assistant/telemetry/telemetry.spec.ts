@@ -15,6 +15,7 @@ import { PasswordSetGuard } from '../../auth/guards/password-set.guard';
 import { TenantGuard } from '../../auth/guards/tenant.guard';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { sanitizeEvent } from './telemetry.dto';
+import { AssistantQuotaService } from './assistant-quota.service';
 
 const ctx = {
   tenantId: 'token-tenant',
@@ -40,6 +41,7 @@ describe('Assistant telemetry HTTP', () => {
       controllers: [AssistantTelemetryController],
       providers: [
         AssistantTelemetryService,
+        { provide: AssistantQuotaService, useValue: {} },
         {
           provide: PrismaService,
           useValue: { assistantQueryLog: { createMany } },
@@ -158,6 +160,7 @@ describe('Privacy and authorization', () => {
     const service = { insights: jest.fn() };
     const controller = new AssistantTelemetryController(
       service as unknown as AssistantTelemetryService,
+      {} as unknown as AssistantQuotaService,
     );
     expect(() => controller.insights({ ...ctx, roleCode: 'CASHIER' })).toThrow(
       ForbiddenException,

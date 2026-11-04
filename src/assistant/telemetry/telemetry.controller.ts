@@ -15,11 +15,15 @@ import { TenantGuard } from '../../auth/guards/tenant.guard';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 import { TelemetryBatchDto } from './telemetry.dto';
 import { AssistantTelemetryService } from './telemetry.service';
+import { AssistantQuotaService } from './assistant-quota.service';
 
 @Controller('assistant')
 @UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard)
 export class AssistantTelemetryController {
-  constructor(private readonly telemetry: AssistantTelemetryService) {}
+  constructor(
+    private readonly telemetry: AssistantTelemetryService,
+    private readonly quota: AssistantQuotaService,
+  ) {}
   @Post('telemetry')
   @HttpCode(204)
   ingest(
@@ -37,6 +41,11 @@ export class AssistantTelemetryController {
     if (!ctx.isRoot && !['OWNER', 'ADMIN'].includes(ctx.roleCode))
       throw new ForbiddenException();
     return this.telemetry.insights(ctx);
+  }
+  /** Consultas del mes contra el tope del plan. Lo lee el chat para avisar desde el 70%. */
+  @Get('usage')
+  usage(@CurrentTenant() ctx: TenantContext) {
+    return this.quota.usage(ctx.tenantId);
   }
   @Get('suggestions')
   suggestions(

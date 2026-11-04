@@ -45,5 +45,7 @@ export interface AgentResult {
      * y ninguno de los dos es una cuenta.
      */
     identity?: string;
+    /** Se negó por plan o cupo: la telemetría no lo cuenta como consulta. */
+    denied?: 'plan';
   };
 }

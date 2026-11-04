@@ -45,6 +45,8 @@ import {
   resolveFeatureValue,
 } from './plans/plan-features';
 import { PlanPricingService, usdToCop } from './pricing/plan-pricing.service';
+import { PlanFeaturesService } from './plans/plan-features.service';
+import { countAssistantQueriesThisMonth } from '../assistant/telemetry/assistant-quota.service';
 import { syncUnlockedSubscriptionPrices } from './pricing/subscription-price';
 
 type SubscriptionAction = 'activate' | 'suspend' | 'cancel';
@@ -101,7 +103,48 @@ export class PlatformService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricing: PlanPricingService,
+    private readonly planFeatures: PlanFeaturesService,
   ) {}
+
+  // ─── Valores de los planes (Ajustes → Planes) ───────────────────────────────
+
+  getPlanFeatures() {
+    return this.planFeatures.view();
+  }
+
+  async updatePlanFeatures(
+    plan: string,
+    values: Record<string, unknown>,
+    actorUserId: string,
+  ) {
+    const { before, after } = await this.planFeatures.update(plan, values, actorUserId);
+    await this.audit(
+      actorUserId,
+      'plan_features.update',
+      'plan',
+      plan.toUpperCase(),
+      before,
+      after,
+    );
+    return this.planFeatures.view();
+  }
+
+  async setAssistantVertical(vertical: string, enabled: boolean, actorUserId: string) {
+    const { before, after } = await this.planFeatures.setAssistantVertical(
+      vertical,
+      enabled,
+      actorUserId,
+    );
+    await this.audit(
+      actorUserId,
+      'assistant_vertical.update',
+      'vertical',
+      vertical,
+      { enabled: before },
+      { enabled: after },
+    );
+    return this.planFeatures.view();
+  }
 
   // ─── Configuracion comercial global ─────────────────────────────────────────
   //
@@ -232,6 +275,7 @@ export class PlatformService {
       features: resolveEffectiveFeatures(
         tenant.plan,
         this.readOverrides(tenant.featureOverrides),
+        tenant.vertical?.code,
       ),
     };
   }
@@ -372,13 +416,15 @@ export class PlatformService {
     const features = resolveEffectiveFeatures(
       tenant.plan,
       this.readOverrides(tenant.featureOverrides),
+      tenant.vertical?.code,
     );
 
     return {
       users,
       branches,
       terminals: terminalGroups.length,
-      aiChatThisMonth: 0, // consumo real de IA: P2 (no instrumentado aún)
+      // Consultas de Pregúntale a Lynko del mes (todos los canales).
+      aiChatThisMonth: await countAssistantQueriesThisMonth(this.prisma, id),
       limits: {
         maxUsers: features.maxUsers,
         maxBranches: features.maxBranches,

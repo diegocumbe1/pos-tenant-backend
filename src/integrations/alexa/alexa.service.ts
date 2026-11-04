@@ -31,6 +31,8 @@ import {
   BusinessResolution,
 } from '../../assistant/assistant-scope.service';
 import { AssistantService } from '../../assistant/assistant.service';
+import { AssistantQuotaException } from '../../assistant/telemetry/assistant-quota.service';
+import { assistantQuotaText } from '../../assistant/agent/reply.text';
 import {
   BusinessReportAnswer,
   ReportPeriod,
@@ -590,6 +592,14 @@ export class AlexaService {
     } catch (error) {
       // Permiso insuficiente del usuario Lynko: distinto de "cuenta de Alexa
       // no autorizada", que se resuelve en resolveActor.
+      // Antes que Forbidden: es su subclase, y "no tienes permiso" sería falso.
+      if (error instanceof AssistantQuotaException) {
+        this.outcome('DENIED_PLAN');
+        return this.speak(
+          assistantQuotaText(error.businessName, error.reason, error.usage),
+          true,
+        );
+      }
       if (error instanceof ForbiddenException) {
         this.outcome('DENIED_PERMISSION');
         this.logger.warn('Query denied: insufficient Lynko permissions');

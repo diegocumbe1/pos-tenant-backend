@@ -32,6 +32,7 @@ import {
   SalesRankingAnswer,
 } from './assistant.types';
 import { periodRange } from './report-period';
+import { AssistantQuotaService } from './telemetry/assistant-quota.service';
 
 const SALES_READ = 'retail:sales:read';
 const INVENTORY_READ = 'retail:inventory:read';
@@ -80,6 +81,7 @@ export class AssistantService {
     private readonly retailPurchases: RetailPurchasesService,
     private readonly retailCatalog: RetailCatalogService,
     private readonly finance: FinanceService,
+    private readonly quota: AssistantQuotaService,
   ) {}
 
   private async open(
@@ -89,6 +91,9 @@ export class AssistantService {
   ): Promise<Scope> {
     const ctx = await this.scope.contextFor(actor, business.id);
     for (const code of permissions) this.scope.assertPermission(ctx, code);
+    // Plan y cupo del mes. El super-admin consultando la cartera no gasta el
+    // cupo del negocio: no es el negocio el que pregunta.
+    if (!actor.isPlatformAdmin) await this.quota.assertAvailable(business.id, business.name);
     return { ctx, branchIds: await this.scope.branchesOf(business.id) };
   }
 

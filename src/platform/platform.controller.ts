@@ -164,6 +164,34 @@ export class PlatformController {
 
   // ─── Dashboard / overview ──────────────────────────────────────────────────────
 
+  @Get('plan-features')
+  @ApiOperation({ summary: 'Plan feature values (factory + backoffice edits)' })
+  getPlanFeatures() {
+    return this.platform.getPlanFeatures();
+  }
+
+  @Patch('plan-features/assistant-verticals/:vertical')
+  @ApiOperation({ summary: 'Turn Pregúntale a Lynko on/off for a whole vertical' })
+  setAssistantVertical(
+    @Param('vertical') vertical: string,
+    @Body() body: { enabled?: boolean },
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.setAssistantVertical(vertical, body?.enabled as boolean, actor.id);
+  }
+
+  @Patch('plan-features/:plan')
+  @ApiOperation({
+    summary: 'Edit feature values of one plan (null on a numeric limit = unlimited)',
+  })
+  updatePlanFeatures(
+    @Param('plan') plan: string,
+    @Body() body: { values?: Record<string, unknown> },
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.updatePlanFeatures(plan, body?.values ?? {}, actor.id);
+  }
+
   @Get('overview')
   @ApiOperation({
     summary: 'Platform dashboard stats (tenants, MRR, payments)',

@@ -57,7 +57,8 @@ export const PLAN_FEATURES = {
     kitchenRole: true,
     rbacEditable: true,
     aiChat: true,
-    aiChatMonthlyLimit: 80,
+    // ≈ 3 consultas al día. No hay LLM: el tope cuida la carga del servidor.
+    aiChatMonthlyLimit: 100,
     menuBuilder: false,
     themeCustomization: false,
     analytics: true,
@@ -82,7 +83,9 @@ export const PLAN_FEATURES = {
     kitchenRole: true,
     rbacEditable: true,
     aiChat: true,
-    aiChatMonthlyLimit: Infinity,
+    // ≈ 10 consultas al día. Antes Infinity: sin tope, un solo negocio podía
+    // convertir el asistente en carga sostenida.
+    aiChatMonthlyLimit: 300,
     menuBuilder: true,
     themeCustomization: true,
     analytics: true,
@@ -103,9 +106,66 @@ export type PlanFeatureKey = keyof PlanFeatures;
 export type FeatureValue = boolean | number;
 export type FeatureOverrides = Record<string, FeatureValue>;
 
-function normalizePlan(plan: string): Plan {
+export function normalizePlan(plan: string): Plan {
   const upper = plan?.toUpperCase();
   return upper === 'PRO' || upper === 'PREMIUM' ? (upper as Plan) : 'BASIC';
+}
+
+// ─── Valores editados desde el backoffice ────────────────────────────────────
+//
+// `PLAN_FEATURES` es el default de fábrica. El super-admin puede subir o bajar
+// cualquier valor de un plan (Ajustes → Planes) y eso se guarda en
+// `platform_pricing_config.planFeatureDefaults`. `PlanFeaturesService` lo carga
+// aquí al arrancar, lo refresca cada minuto y lo reemplaza al guardar.
+//
+// Vive en memoria y no se consulta en cada llamada porque la resolución es
+// síncrona y la usan rutas calientes (/auth/me). Precedencia:
+//   PLAN_FEATURES[plan]  ←  editado en el backoffice  ←  override del tenant
+
+let editedDefaults: Partial<Record<Plan, FeatureOverrides>> = {};
+
+export function setEditedPlanDefaults(
+  value: Partial<Record<Plan, FeatureOverrides>>,
+): void {
+  editedDefaults = value;
+}
+
+// ─── Pregúntale a Lynko por vertical ──────────────────────────────────────────
+//
+// Interruptor global del backoffice, con precedencia AND: apagar una vertical
+// apaga Lynko a TODOS sus negocios, sin importar plan ni override; encenderla
+// no se lo regala a un plan que no lo incluye.
+//
+// De fábrica solo retail: es la única vertical donde Lynko responde con datos
+// reales. El chat de restaurante solo funciona en demo (ver el aviso de
+// `lib/ai-chat/context-builder.ts` en el FE) y en agenda no está montado.
+
+export const ASSISTANT_VERTICALS = ['retail', 'restaurant', 'barber'] as const;
+export type AssistantVertical = (typeof ASSISTANT_VERTICALS)[number];
+
+export const ASSISTANT_VERTICALS_FACTORY: Record<AssistantVertical, boolean> = {
+  retail: true,
+  restaurant: false,
+  barber: false,
+};
+
+const factoryDisabled = () =>
+  ASSISTANT_VERTICALS.filter((code) => !ASSISTANT_VERTICALS_FACTORY[code]);
+
+let disabledAssistantVerticals = new Set<string>(factoryDisabled());
+
+export function setDisabledAssistantVerticals(codes: Iterable<string>): void {
+  disabledAssistantVerticals = new Set(codes);
+}
+
+export function assistantEnabledForVertical(vertical?: string | null): boolean {
+  return !vertical || !disabledAssistantVerticals.has(vertical);
+}
+
+/** Defaults efectivos de un plan: fábrica + lo editado en el backoffice. */
+export function planDefaults(plan: string): Record<string, FeatureValue> {
+  const code = normalizePlan(plan);
+  return { ...PLAN_FEATURES[code], ...(editedDefaults[code] ?? {}) };
 }
 
 /**
@@ -115,11 +175,15 @@ function normalizePlan(plan: string): Plan {
 export function resolveEffectiveFeatures(
   plan: string,
   featureOverrides?: FeatureOverrides | null,
+  /** Con la vertical se aplica el interruptor de Lynko por vertical. */
+  vertical?: string | null,
 ): Record<string, FeatureValue> {
-  return {
-    ...PLAN_FEATURES[normalizePlan(plan)],
+  const features = {
+    ...planDefaults(plan),
     ...(featureOverrides ?? {}),
   };
+  if (!assistantEnabledForVertical(vertical)) features.aiChat = false;
+  return features;
 }
 
 /**
@@ -130,8 +194,10 @@ export function resolveFeatureValue(
   plan: string,
   feature: PlanFeatureKey,
   featureOverrides?: FeatureOverrides | null,
+  vertical?: string | null,
 ): FeatureValue {
+  if (feature === 'aiChat' && !assistantEnabledForVertical(vertical)) return false;
   const override = featureOverrides?.[feature];
   if (override !== undefined) return override;
-  return PLAN_FEATURES[normalizePlan(plan)][feature];
+  return planDefaults(plan)[feature];
 }

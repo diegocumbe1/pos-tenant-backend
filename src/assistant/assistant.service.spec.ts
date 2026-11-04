@@ -8,6 +8,7 @@ import { RetailSalesService } from '../retail/modules/sales/retail-sales.service
 import { FinanceService } from '../finance/finance.service';
 import { AssistantScopeService } from './assistant-scope.service';
 import { AssistantService } from './assistant.service';
+import { AssistantQuotaService } from './telemetry/assistant-quota.service';
 
 describe('AssistantService', () => {
   let service: AssistantService;
@@ -136,6 +137,8 @@ describe('AssistantService', () => {
       retailPurchases as unknown as RetailPurchasesService,
       retailCatalog as unknown as RetailCatalogService,
       finance as unknown as FinanceService,
+      // Plan y cupo: siempre disponibles aquí. Lo que se prueba son las cifras.
+      { assertAvailable: jest.fn().mockResolvedValue(undefined) } as unknown as AssistantQuotaService,
     );
   });
 

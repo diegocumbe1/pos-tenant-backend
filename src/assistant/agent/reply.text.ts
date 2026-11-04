@@ -369,6 +369,26 @@ export function handoffText(reason: string, timing: string): string {
   return `${reason} Te comunico con un asesor más experto para atender tu caso. ${timing}`;
 }
 
+/**
+ * Sin plan o sin cupo. Lo comparten WhatsApp y Alexa: el cupo es del negocio,
+ * no del canal, así que la explicación tiene que ser la misma en los dos.
+ */
+export function assistantQuotaText(
+  businessName: string,
+  reason: 'plan' | 'quota',
+  usage: { limit: number | null; resetsOn: string; disabledBy?: 'plan' | 'vertical' },
+): string {
+  if (reason === 'plan' && usage.disabledBy === 'vertical') {
+    return `Pregúntale a Lynko no está disponible por ahora para ${businessName}. Todo sigue en la app.`;
+  }
+  if (reason === 'plan') {
+    return `El plan de ${businessName} no incluye Pregúntale a Lynko. Escríbenos si quieres activarlo.`;
+  }
+  const [, month, day] = usage.resetsOn.split('-').map(Number);
+  const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  return `${businessName} ya usó sus ${usage.limit ?? ''} consultas de este mes. Se renuevan el ${day} de ${months[month - 1]}; mientras tanto, todo está en la app.`;
+}
+
 export function capabilityUnavailableText(
   businessName: string,
   vertical: string | null | undefined,
