@@ -179,6 +179,14 @@ export class CapitalService {
     if (dto.kind === 'LOAN_REPAYMENT' && dto.repaysMovementId) {
       await this.assertRepayment(ctx, dto.repaysMovementId, dto.amountCOP);
     }
+    await this.assertLoanOut(
+      ctx,
+      dto.kind,
+      dto.repaysMovementId,
+      dto.amountCOP,
+      dto.counterpartyName,
+    );
+    await this.assertAccount(ctx, dto.moneyAccountId);
     const movement = await this.prisma.$transaction(async (tx) => {
       const created = await tx.capitalMovement.create({
         data: {
@@ -218,6 +226,15 @@ export class CapitalService {
     if (kind === 'LOAN_REPAYMENT' && repays) {
       await this.assertRepayment(ctx, repays, amount, id);
     }
+    await this.assertLoanOut(
+      ctx,
+      kind,
+      repays,
+      amount,
+      dto.counterpartyName ?? current.counterpartyName,
+      id,
+    );
+    await this.assertAccount(ctx, dto.moneyAccountId);
     const movement = await this.prisma.$transaction(async (tx) => {
       await tx.capitalMovement.update({
         where: { id },
@@ -273,45 +290,70 @@ export class CapitalService {
   async summary(ctx: TenantContext) {
     const vertical = await this.finance.tenantVertical(ctx);
     const tomorrow = dayEndCO(addCalendarDaysCO(calendarDayCO(new Date()), 1));
-    const [movements, capital, allocations, declared] = await Promise.all([
-      this.finance.cashMovements(ctx, vertical, null, tomorrow),
-      this.prisma.capitalMovement.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          deletedAt: null,
-        },
-      }),
-      this.prisma.capitalAllocation.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          capitalMovement: { branchId: ctx.branchId, deletedAt: null },
-        },
-        select: { capitalMovementId: true, expenseId: true, amountCOP: true },
-      }),
-      this.prisma.expense.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          fundedFromSalesCOP: { gt: 0 },
-        },
-        select: { id: true, fundedFromSalesCOP: true },
-      }),
-    ]);
+    const [movements, capital, allocations, expensesFunding] =
+      await Promise.all([
+        this.finance.cashMovements(ctx, vertical, null, tomorrow),
+        this.prisma.capitalMovement.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            deletedAt: null,
+          },
+        }),
+        this.prisma.capitalAllocation.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            capitalMovement: { branchId: ctx.branchId, deletedAt: null },
+          },
+          select: { capitalMovementId: true, expenseId: true, amountCOP: true },
+        }),
+        this.prisma.expense.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            branchId: ctx.branchId,
+            OR: [
+              { fundedFromSalesCOP: { gt: 0 } },
+              { moneyAccountId: { not: null } },
+            ],
+          },
+          select: {
+            id: true,
+            amountCOP: true,
+            fundedFromSalesCOP: true,
+            moneyAccountId: true,
+          },
+        }),
+      ]);
     const expenseConcepts = new Map(
       movements
         .filter((m) => m.origin === 'EXPENSE' && m.refId)
         .map((m) => [m.refId!, m.label ?? '']),
     );
 
+    // La cascada reparte de qué se pagó cada gasto. Ni la diferencia de un cierre,
+    // ni un préstamo a un tercero, ni un faltante asumido son eso: no reinvierten
+    // ni dejan "compras por explicar".
     const cascade = runCascade(
-      movements,
+      movements.filter(
+        (m) =>
+          m.origin !== 'RECONCILIATION' &&
+          m.category !== 'CASH_SHORTAGE' &&
+          m.category !== 'LOAN_OUT' &&
+          m.category !== 'LOAN_OUT_REPAYMENT',
+      ),
       allocations.map((a) => ({
         movementId: a.capitalMovementId,
         expenseId: a.expenseId,
         amountCOP: a.amountCOP,
       })),
-      new Map(declared.map((e) => [e.id, e.fundedFromSalesCOP ?? 0])),
+      // Decir "salió de Efectivo" ya declara que lo pagó el negocio: pedir además
+      // que confirme de dónde salió sería preguntarle lo mismo dos veces.
+      new Map(
+        expensesFunding.map((e) => [
+          e.id,
+          e.fundedFromSalesCOP ?? (e.moneyAccountId ? e.amountCOP : 0),
+        ]),
+      ),
     );
     const firstAt = movements.reduce<Date | null>(
       (min, row) => (!min || row.at < min ? row.at : min),
@@ -414,13 +456,28 @@ export class CapitalService {
       (s, r) => s + (r.direction === 'IN' ? r.amountCOP : -r.amountCOP),
       0,
     );
-    const cashCOP = rawCashCOP + pendingSuggestedCOP;
+    // Una vez alguien contó la plata, el saldo real ya es la verdad: sumarle lo
+    // sugerido contaría dos veces lo que el dueño haya puesto de verdad.
+    const differences = movements.filter((m) => m.origin === 'RECONCILIATION');
+    const verified = differences.length > 0 || (await this.hasClosings(ctx));
+    const unexplainedCOP = differences.reduce(
+      (s, r) => s + (r.direction === 'IN' ? r.amountCOP : -r.amountCOP),
+      0,
+    );
+    const cashCOP = verified ? rawCashCOP : rawCashCOP + pendingSuggestedCOP;
     const assets = await this.assets(ctx, vertical);
+    // Lo que el negocio prestó sigue siendo suyo: salió de la caja, pero se lo deben.
+    const loansLentCOP = sumKind('LOAN_OUT');
+    const loansReceivableCOP = Math.max(
+      0,
+      loansLentCOP - sumKind('LOAN_OUT_REPAYMENT'),
+    );
     // Lo que TIENE el negocio (antes de las deudas por préstamos): se compara
     // contra todo lo invertido, préstamos incluidos. Lo que queda para el dueño
     // es eso menos lo que se debe.
     const businessAssetsCOP =
       cashCOP +
+      loansReceivableCOP +
       (assets.inventoryCOP ?? 0) +
       (assets.receivablesCOP ?? 0) -
       (assets.customerAdvancesCOP ?? 0) -
@@ -483,7 +540,13 @@ export class CapitalService {
       cashCOP - (assets.supplierDebtCOP ?? 0) - reserveCOP,
     );
     const profitAvailableCOP = Math.max(0, profitCOP - profitWithdrawnCOP);
-    const withdrawableProfitCOP = Math.min(freeCashCOP, profitAvailableCOP);
+    // Un faltante sin explicar puede resultar ser un gasto o un retiro: mientras
+    // nadie lo explique, no se cuenta como ganancia disponible.
+    const unexplainedShortageCOP = Math.max(0, -unexplainedCOP);
+    const withdrawableProfitCOP = Math.min(
+      freeCashCOP,
+      Math.max(0, profitAvailableCOP - unexplainedShortageCOP),
+    );
 
     const byFunding = new Map<string, number>();
     for (const m of contributions) {
@@ -566,6 +629,14 @@ export class CapitalService {
         cashCOP,
         /** Caja sin suponer los aportes sugeridos (lo que Lynko sabe hoy). */
         rawCashCOP,
+        /** true = alguien ya contó la plata y `cashCOP` parte de ese conteo. */
+        cashVerified: verified,
+        /** Suma de las diferencias de cierre aún sin explicar (− = falta). */
+        unexplainedCOP,
+        /** Lo que dice Lynko sin contar: la caja sin las diferencias. */
+        calculatedCashCOP: rawCashCOP - unexplainedCOP,
+        /** Lo que el negocio prestó y aún le deben. */
+        loansReceivableCOP,
         inventoryCOP: assets.inventoryCOP,
         /** Lo ENTREGADO que falta cobrar. Lo no entregado ya está en inventario. */
         receivablesCOP: assets.receivablesCOP,
@@ -591,6 +662,8 @@ export class CapitalService {
         reserveCOP,
         freeCashCOP,
         profitAvailableCOP,
+        /** Faltante de caja sin explicar: se descuenta de lo que se puede sacar. */
+        unexplainedShortageCOP,
         /** Lo que se puede sacar SIN tocar el capital ni la operación. */
         withdrawableProfitCOP,
       },
@@ -900,8 +973,24 @@ export class CapitalService {
         : null,
       interestPeriod: funded ? dto.interestPeriod : null,
       purpose: WITHDRAWALS.includes(kind) ? dto.purpose : null,
-      repaysMovementId: kind === 'LOAN_REPAYMENT' ? dto.repaysMovementId : null,
+      repaysMovementId:
+        kind === 'LOAN_REPAYMENT' || kind === 'LOAN_OUT_REPAYMENT'
+          ? dto.repaysMovementId
+          : null,
       paidFromBusiness: kind === 'LOAN_REPAYMENT' ? dto.paidFromBusiness : null,
+      counterpartyName:
+        kind === 'LOAN_OUT'
+          ? dto.counterpartyName !== undefined
+            ? dto.counterpartyName.trim() || null
+            : undefined
+          : null,
+      // Decir que fue por fuera excluye una cuenta, y decir una cuenta lo apaga.
+      moneyAccountId: dto.paidOutsideBusiness ? null : dto.moneyAccountId,
+      paidOutsideBusiness: dto.paidOutsideBusiness
+        ? true
+        : dto.moneyAccountId
+          ? null
+          : undefined,
       note: dto.note !== undefined ? dto.note.trim() || null : undefined,
     };
   }
@@ -1027,6 +1116,69 @@ export class CapitalService {
     }
   }
 
+  private async hasClosings(ctx: TenantContext) {
+    const count = await this.prisma.cashClosing.count({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
+    });
+    return count > 0;
+  }
+
+  private async assertAccount(
+    ctx: TenantContext,
+    accountId: string | null | undefined,
+  ) {
+    if (!accountId) return;
+    const account = await this.prisma.moneyAccount.findFirst({
+      where: { id: accountId, tenantId: ctx.tenantId, branchId: ctx.branchId },
+      select: { id: true },
+    });
+    if (!account) throw new BadRequestException('Esa cuenta no existe');
+  }
+
+  /** Un préstamo otorgado dice a quién; su abono, de cuál y sin pasarse. */
+  private async assertLoanOut(
+    ctx: TenantContext,
+    kind: CapitalMovementKind,
+    repaysId: string | null | undefined,
+    amountCOP: number,
+    counterparty: string | null | undefined,
+    excludeId?: string,
+  ) {
+    if (kind === 'LOAN_OUT' && !counterparty?.trim()) {
+      throw new BadRequestException('Di a quién le prestó el negocio');
+    }
+    if (kind !== 'LOAN_OUT_REPAYMENT') return;
+    if (!repaysId) {
+      throw new BadRequestException('Di de qué préstamo es este abono');
+    }
+    const capital = await this.prisma.capitalMovement.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+        OR: [{ id: repaysId }, { repaysMovementId: repaysId }],
+      },
+    });
+    const loan = capital.find((m) => m.id === repaysId);
+    if (!loan || loan.kind !== 'LOAN_OUT') {
+      throw new BadRequestException(
+        'Ese movimiento no es un préstamo otorgado',
+      );
+    }
+    const paid = capital
+      .filter((m) => m.kind === 'LOAN_OUT_REPAYMENT' && m.id !== excludeId)
+      .reduce((s, m) => s + m.amountCOP, 0);
+    if (amountCOP > loan.amountCOP - paid) {
+      throw new BadRequestException(
+        `De ese préstamo faltan ${loan.amountCOP - paid}: no se pueden abonar ${amountCOP}`,
+      );
+    }
+  }
+
   private async assertOwn(ctx: TenantContext, id: string) {
     const row = await this.prisma.capitalMovement.findFirst({
       where: {
@@ -1055,6 +1207,9 @@ export class CapitalService {
       purpose: m.purpose,
       repaysMovementId: m.repaysMovementId,
       paidFromBusiness: m.paidFromBusiness,
+      moneyAccountId: m.moneyAccountId,
+      paidOutsideBusiness: m.paidOutsideBusiness === true,
+      counterpartyName: m.counterpartyName,
       source: m.source,
       note: m.note,
       createdAt: m.createdAt.toISOString(),

@@ -36,6 +36,8 @@ const BUCKET_BY_CATEGORY: Record<string, ExpenseBucket> = {
   EXTRAORDINARY: 'other',
   TAXES: 'other',
   PETTY_CASH: 'other',
+  // Plata que faltó en un cierre y se asumió como perdida.
+  CASH_SHORTAGE: 'other',
   OTHER: 'other',
 };
 

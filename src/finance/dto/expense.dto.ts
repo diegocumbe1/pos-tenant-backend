@@ -66,6 +66,17 @@ export class CreateExpenseDto {
   @IsInt()
   @Min(0)
   discountCOP?: number;
+
+  /** De qué cuenta salió. null = sin decir. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  moneyAccountId?: string | null;
+
+  /** Lo pagó el dueño de su bolsillo: no tocó ninguna cuenta del negocio. */
+  @IsOptional()
+  @IsBoolean()
+  paidOutsideBusiness?: boolean;
 }
 
 export class UpdateExpenseDto extends PartialType(CreateExpenseDto) {}

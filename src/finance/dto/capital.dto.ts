@@ -111,6 +111,23 @@ export class CreateCapitalMovementDto {
   @IsBoolean()
   paidFromBusiness?: boolean;
 
+  /** A qué cuenta entró o de cuál salió. null = sin decir. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  moneyAccountId?: string | null;
+
+  /** Aporte que pagó directamente un gasto: nunca pasó por una cuenta. */
+  @IsOptional()
+  @IsBoolean()
+  paidOutsideBusiness?: boolean;
+
+  /** Solo LOAN_OUT: a quién le prestó el negocio. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  counterpartyName?: string;
+
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(100)

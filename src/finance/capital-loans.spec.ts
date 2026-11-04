@@ -23,6 +23,9 @@ const movement = (over: Partial<CapitalMovement>): CapitalMovement => ({
   deletedAt: null,
   repaysMovementId: null,
   paidFromBusiness: null,
+  moneyAccountId: null,
+  paidOutsideBusiness: null,
+  counterpartyName: null,
   ...over,
 });
 

@@ -17,6 +17,8 @@ export interface ExpenseRow {
   templateOccurrence?: string | null;
   sourceType?: string | null;
   discountCOP?: number | null;
+  moneyAccountId?: string | null;
+  paidOutsideBusiness?: boolean | null;
 }
 
 /**
@@ -46,5 +48,7 @@ export function toExpenseDto(e: ExpenseRow) {
     discountCOP: e.discountCOP ?? 0,
     /** El valor normal: lo pagado + el descuento. */
     listAmountCOP: e.amountCOP + (e.discountCOP ?? 0),
+    moneyAccountId: e.moneyAccountId ?? null,
+    paidOutsideBusiness: e.paidOutsideBusiness === true,
   };
 }

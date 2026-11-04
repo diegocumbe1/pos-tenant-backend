@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -13,6 +14,11 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { COMPLETED_STATUS_VARIANTS } from '../barber/shared/appointment-status';
 import { TenantContext } from '../auth/types/tenant-context.interface';
+import {
+  computeChain,
+  differenceRows,
+  type ClosingInput,
+} from './cash-closing-calc';
 import { accumulateBuckets } from './expense-buckets';
 import { ExpenseRow, toExpenseDto } from './expense-dto';
 import { resolveNature } from './expense-nature';
@@ -175,8 +181,11 @@ export interface CashMovement {
    * CAPITAL_RETURN, LOAN_REPAYMENT).
    */
   category: string;
-  /** De qué lado viene: operación del negocio o plata del dueño/préstamos. */
-  origin: 'SALES' | 'EXPENSE' | 'CAPITAL';
+  /**
+   * De qué lado viene: operación del negocio, plata del dueño/préstamos, o la
+   * diferencia de un cierre de caja (ni venta ni gasto: lo contado vs lo esperado).
+   */
+  origin: 'SALES' | 'EXPENSE' | 'CAPITAL' | 'RECONCILIATION';
   amountCOP: number;
   /** id del gasto o del movimiento de capital (para vincular aportes a gastos). */
   refId?: string;
@@ -184,6 +193,10 @@ export interface CashMovement {
   label?: string;
   /** Medio con que se cobró (solo cobros de tienda): CASH, TRANSFER, CARD… */
   method?: string;
+  /** A qué cuenta entró o de cuál salió, si alguien lo dijo. */
+  moneyAccountId?: string | null;
+  /** Pagado por fuera de las cuentas del negocio: no toca ninguna. */
+  outsideBusiness?: boolean;
 }
 
 /** Cómo entra a la caja cada tipo de movimiento de capital. */
@@ -198,6 +211,8 @@ const CAPITAL_CASH: Record<
   CAPITAL_RETURN: { direction: 'OUT', category: 'CAPITAL_RETURN' },
   LOAN_REPAYMENT: { direction: 'OUT', category: 'LOAN_REPAYMENT' },
   OWNER_WITHDRAWAL: { direction: 'OUT', category: 'OWNER_WITHDRAWAL' },
+  LOAN_OUT: { direction: 'OUT', category: 'LOAN_OUT' },
+  LOAN_OUT_REPAYMENT: { direction: 'IN', category: 'LOAN_OUT_REPAYMENT' },
 };
 
 type RevenueBarberAppointment = Prisma.BarberAppointmentGetPayload<{
@@ -1012,8 +1027,8 @@ export class FinanceService {
       };
       if (row.direction === 'IN') {
         entry.inflowCOP += row.amountCOP;
-        if (row.origin === 'CAPITAL') entry.financingCOP += row.amountCOP;
-        else entry.salesCOP += row.amountCOP;
+        if (row.origin === 'SALES') entry.salesCOP += row.amountCOP;
+        else entry.financingCOP += row.amountCOP;
       } else entry.outflowCOP += row.amountCOP;
       byDay.set(key, entry);
     }
@@ -1061,9 +1076,9 @@ export class FinanceService {
       salesInflowCOP: sumWhere(
         (r) => r.direction === 'IN' && r.origin === 'SALES',
       ),
-      /** NO es ingreso: aportes del dueño y préstamos que entraron. */
+      /** NO es ingreso: aportes, préstamos que entraron, sobrantes de un cierre. */
       financingInflowCOP: sumWhere(
-        (r) => r.direction === 'IN' && r.origin === 'CAPITAL',
+        (r) => r.direction === 'IN' && r.origin !== 'SALES',
       ),
       /** Gastos del negocio y devoluciones a clientes. */
       operatingOutflowCOP: sumWhere(
@@ -1087,7 +1102,7 @@ export class FinanceService {
           .filter((r) => r.direction === 'IN' && r.origin === 'SALES')
           .reduce((a, r) => a + r.amountCOP, 0),
         financingCOP: before
-          .filter((r) => r.direction === 'IN' && r.origin === 'CAPITAL')
+          .filter((r) => r.direction === 'IN' && r.origin !== 'SALES')
           .reduce((a, r) => a + r.amountCOP, 0),
         operatingOutCOP: before
           .filter((r) => r.direction === 'OUT' && r.origin !== 'CAPITAL')
@@ -1098,7 +1113,7 @@ export class FinanceService {
       },
       /** Cada aporte o préstamo que entró en el período, con su nota. */
       financingItems: during
-        .filter((r) => r.direction === 'IN' && r.origin === 'CAPITAL')
+        .filter((r) => r.direction === 'IN' && r.origin !== 'SALES')
         .sort((a, b) => a.at.getTime() - b.at.getTime())
         .map((r) => ({
           date: calendarDayCO(r.at),
@@ -1141,8 +1156,66 @@ export class FinanceService {
    * Pública porque la pestaña Inversión hace la cascada sobre estas mismas
    * filas: si cada una armara las suyas, la caja de las dos pantallas no
    * cuadraría.
+   *
+   * Cada cierre de caja agrega una fila con su diferencia: así, una vez alguien
+   * cuenta la plata, el saldo que da esta suma es el real y no el calculado. Se
+   * recalcula aquí y no se guarda, para que anotar un gasto olvidado la reduzca.
    */
   async cashMovements(
+    ctx: TenantContext,
+    vertical: FinanceVertical,
+    from: Date | null,
+    to: Date,
+  ): Promise<CashMovement[]> {
+    const rows = await this.baseCashMovements(ctx, vertical, from, to);
+    const closings = await this.closingInputs(ctx);
+    if (!closings.length) return rows;
+
+    const lastEnd = dayEndCO(closings[closings.length - 1].day);
+    // Para los cierres hace falta todo desde el principio; si esta consulta ya
+    // lo trajo, no se repite.
+    const history =
+      from === null && to > lastEnd
+        ? rows
+        : await this.baseCashMovements(
+            ctx,
+            vertical,
+            null,
+            new Date(lastEnd.getTime() + 1),
+          );
+    // Solo el total importa aquí: las cuentas y los traslados no lo mueven.
+    const chain = computeChain(closings, history, [], []);
+    const differences = differenceRows(chain, dayEndCO).filter((row) =>
+      from === null ? row.at < to : row.at >= from && row.at <= to,
+    );
+    return [...rows, ...differences];
+  }
+
+  /** Los cierres de caja vigentes de la sede, del más viejo al más reciente. */
+  async closingInputs(ctx: TenantContext): Promise<ClosingInput[]> {
+    const closings = await this.prisma.cashClosing.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
+      orderBy: { day: 'asc' },
+      include: { lines: true },
+    });
+    return closings.map((c) => ({
+      id: c.id,
+      day: c.day,
+      expectedTotalCOP: c.expectedTotalCOP,
+      lines: c.lines.map((l) => ({
+        accountId: l.accountId,
+        countedCOP: l.countedCOP,
+        expectedSnapshotCOP: l.expectedSnapshotCOP,
+      })),
+    }));
+  }
+
+  /** Las filas reales de plata, sin las diferencias de cierre. */
+  async baseCashMovements(
     ctx: TenantContext,
     vertical: FinanceVertical,
     from: Date | null,
@@ -1229,6 +1302,8 @@ export class FinanceService {
             amountCOP: true,
             category: true,
             concept: true,
+            moneyAccountId: true,
+            paidOutsideBusiness: true,
           },
         }),
         this.prisma.capitalMovement.findMany({
@@ -1249,6 +1324,9 @@ export class FinanceService {
             fundingSource: true,
             fundingNote: true,
             note: true,
+            moneyAccountId: true,
+            paidOutsideBusiness: true,
+            counterpartyName: true,
           },
         }),
       ]);
@@ -1323,6 +1401,8 @@ export class FinanceService {
         amountCOP: expense.amountCOP,
         refId: expense.id,
         label: expense.concept,
+        moneyAccountId: expense.moneyAccountId,
+        outsideBusiness: expense.paidOutsideBusiness === true,
       });
     }
     for (const movement of capital) {
@@ -1341,8 +1421,14 @@ export class FinanceService {
         origin: 'CAPITAL',
         amountCOP: movement.amountCOP,
         refId: movement.id,
-        label: movement.fundingNote ?? movement.note ?? undefined,
+        label:
+          movement.counterpartyName ??
+          movement.fundingNote ??
+          movement.note ??
+          undefined,
         method: movement.fundingSource ?? undefined,
+        moneyAccountId: movement.moneyAccountId,
+        outsideBusiness: movement.paidOutsideBusiness === true,
       });
     }
     return rows.filter((row) => row.amountCOP > 0);
@@ -1825,6 +1911,7 @@ export class FinanceService {
         note: dto.note ?? null,
         nature: dto.nature ?? null,
         discountCOP: dto.discountCOP || null,
+        ...(await this.expenseAccountData(ctx, dto)),
       },
     });
     return this.toExpenseDto(expense);
@@ -1852,9 +1939,33 @@ export class FinanceService {
         nature: dto.nature,
         discountCOP:
           dto.discountCOP !== undefined ? dto.discountCOP || null : undefined,
+        ...(await this.expenseAccountData(ctx, dto)),
       },
     });
     return this.toExpenseDto(expense);
+  }
+
+  /** De dónde salió el gasto. Decir una cuenta y "por fuera" a la vez no aplica. */
+  private async expenseAccountData(
+    ctx: TenantContext,
+    dto: { moneyAccountId?: string | null; paidOutsideBusiness?: boolean },
+  ) {
+    if (dto.paidOutsideBusiness) {
+      return { moneyAccountId: null, paidOutsideBusiness: true };
+    }
+    if (dto.moneyAccountId === undefined) return {};
+    if (dto.moneyAccountId) {
+      const account = await this.prisma.moneyAccount.findFirst({
+        where: {
+          id: dto.moneyAccountId,
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+        },
+        select: { id: true },
+      });
+      if (!account) throw new BadRequestException('Esa cuenta no existe');
+    }
+    return { moneyAccountId: dto.moneyAccountId, paidOutsideBusiness: null };
   }
 
   async removeExpense(ctx: TenantContext, id: string) {

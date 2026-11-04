@@ -51,6 +51,7 @@ model Tenant {
   expenses                Expense[]
   expenseTemplates        ExpenseTemplate[]
   capitalMovements        CapitalMovement[]
+  moneyAccounts           MoneyAccount[]
   payrolls                Payroll[]
   financeGoals            FinanceGoal[]
   roles                   Role[]
@@ -161,6 +162,7 @@ model Branch {
   expenses                Expense[]
   expenseTemplates        ExpenseTemplate[]
   capitalMovements        CapitalMovement[]
+  moneyAccounts           MoneyAccount[]
   payrolls                Payroll[]
   financeGoals            FinanceGoal[]
   userBranches            UserBranch[]
@@ -1698,6 +1700,13 @@ model Expense {
   /// significa que se haya usado para esto.
   fundedFromSalesCOP Int?
 
+  /// De qué cuenta salió. NULL con `paidOutsideBusiness` en false/NULL = nadie lo
+  /// ha dicho (histórico o gasto automático): aparece en la bandeja de "sin cuenta".
+  moneyAccountId      String?
+  moneyAccount        MoneyAccount? @relation(fields: [moneyAccountId], references: [id], onDelete: SetNull)
+  /// Lo pagó el dueño de su bolsillo: no tocó ninguna cuenta del negocio.
+  paidOutsideBusiness Boolean?
+
   createdAt DateTime @default(now())
 
   @@unique([templateId, templateOccurrence])
@@ -1734,6 +1743,8 @@ enum CapitalMovementKind {
   LOAN_IN // préstamo A NOMBRE DEL NEGOCIO: entra plata, pero es deuda
   LOAN_REPAYMENT // abono a capital de ese préstamo (los intereses son gasto)
   OWNER_WITHDRAWAL // "saqué plata del negocio": Lynko decide si fue ganancia o capital
+  LOAN_OUT // el negocio le prestó a alguien: sale plata, pero se la deben (no es gasto)
+  LOAN_OUT_REPAYMENT // esa persona abonó: vuelve a una cuenta
 }
 
 /// De dónde sacó el dueño la plata que puso. Opcional: es para él.
@@ -1804,6 +1815,14 @@ model CapitalMovement {
   /// negocio, que es como contaban los abonos registrados antes.
   paidFromBusiness Boolean?
 
+  /// A qué cuenta entró o de cuál salió.
+  moneyAccountId      String?
+  moneyAccount        MoneyAccount? @relation(fields: [moneyAccountId], references: [id], onDelete: SetNull)
+  /// Aporte que pagó directamente un gasto: nunca pasó por una cuenta.
+  paidOutsideBusiness Boolean?
+  /// Solo LOAN_OUT: a quién le prestó el negocio.
+  counterpartyName    String?
+
   @@index([tenantId, branchId, deletedAt, occurredAt])
   @@index([repaysMovementId])
   @@map("capital_movements")
@@ -1829,6 +1848,107 @@ model CapitalAllocation {
   @@unique([capitalMovementId, expenseId])
   @@index([expenseId])
   @@map("capital_allocations")
+}
+
+enum MoneyAccountType {
+  CASH
+  BANK
+  WALLET
+  OTHER
+}
+
+/**
+ * Dónde está la plata del negocio: el efectivo, un banco, un bolsillo.
+ * Lista plana a propósito: un bolsillo dentro de un banco es otra cuenta.
+ * Se define por sede. Docs: docs/PLAN_CAJA_REAL_CIERRES_Y_CUENTAS.md
+ */
+model MoneyAccount {
+  id                String           @id @default(cuid())
+  tenantId          String
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId          String
+  branch            Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name              String
+  type              MoneyAccountType @default(OTHER)
+  /// Medios de cobro que caen aquí por defecto (CASH, TRANSFER, CARD…).
+  /// Un medio solo puede estar en una cuenta: lo garantiza el servicio.
+  defaultForMethods String[]         @default([])
+  isActive          Boolean          @default(true)
+  sortOrder         Int              @default(0)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  expenses         Expense[]
+  capitalMovements CapitalMovement[]
+  closingLines     CashClosingLine[]
+  transfersOut     MoneyTransfer[]   @relation("TransferFrom")
+  transfersIn      MoneyTransfer[]   @relation("TransferTo")
+
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId, branchId, isActive])
+  @@map("money_accounts")
+}
+
+/**
+ * "A esta fecha realmente tengo X". Se cierra un DÍA, no una hora: los gastos no
+ * guardan hora real. La diferencia NO se guarda como verdad: se recalcula con
+ * los movimientos actuales, para que anotar un gasto olvidado la reduzca sola.
+ * Lo que se guarda como foto es lo esperado cuando se cerró.
+ */
+model CashClosing {
+  id               String    @id @default(cuid())
+  tenantId         String
+  branchId         String
+  /// Día calendario Colombia, 'YYYY-MM-DD'.
+  day              String
+  /// Foto de lo esperado al momento de cerrar (auditoría).
+  expectedTotalCOP Int
+  countedTotalCOP  Int
+  note             String?
+  userId           String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  lines CashClosingLine[]
+
+  @@index([tenantId, branchId, deletedAt, day])
+  @@map("cash_closings")
+}
+
+model CashClosingLine {
+  id                  String       @id @default(cuid())
+  closingId           String
+  closing             CashClosing  @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  accountId           String
+  account             MoneyAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  countedCOP          Int
+  /// NULL en el primer cierre: el histórico no dice de qué cuenta salió cada gasto.
+  expectedSnapshotCOP Int?
+
+  @@unique([closingId, accountId])
+  @@index([accountId])
+  @@map("cash_closing_lines")
+}
+
+/// Mover plata entre cuentas (consignar el efectivo). No es gasto ni ingreso.
+model MoneyTransfer {
+  id            String       @id @default(cuid())
+  tenantId      String
+  branchId      String
+  fromAccountId String
+  fromAccount   MoneyAccount @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccountId   String
+  toAccount     MoneyAccount @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict)
+  amountCOP     Int
+  occurredAt    DateTime
+  note          String?
+  userId        String?
+  createdAt     DateTime     @default(now())
+  deletedAt     DateTime?
+
+  @@index([tenantId, branchId, deletedAt, occurredAt])
+  @@map("money_transfers")
 }
 
 model ExpenseTemplate {
@@ -2669,6 +2789,14 @@ model PlatformMessage {
 model PlatformPricingConfig {
   id           String   @id @default("singleton")
   usdToCopRate Int      @default(3650)
+  /// Valores de los planes editados desde el backoffice, solo lo que difiere del
+  /// default de fábrica (`PLAN_FEATURES`): `{ "PRO": { "aiChatMonthlyLimit": 150 } }`.
+  /// `null` en un límite numérico = sin tope.
+  planFeatureDefaults Json?
+  /// Pregúntale a Lynko por vertical: `{ "barber": true }`. Lo ausente queda en su
+  /// valor de fábrica (`ASSISTANT_VERTICALS_FACTORY`: solo retail encendida).
+  /// Precedencia AND con el plan: apagada, ningún negocio de esa vertical lo tiene.
+  assistantVerticals  Json?
   updatedBy    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
