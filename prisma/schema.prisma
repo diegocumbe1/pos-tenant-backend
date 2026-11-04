@@ -52,6 +52,7 @@ model Tenant {
   expenseTemplates        ExpenseTemplate[]
   capitalMovements        CapitalMovement[]
   moneyAccounts           MoneyAccount[]
+  appointmentReminderRules AppointmentReminderRule[]
   payrolls                Payroll[]
   financeGoals            FinanceGoal[]
   roles                   Role[]
@@ -1113,6 +1114,7 @@ model User {
   userBranches           UserBranch[]
   notificationEvents     NotificationEvent[]
   notificationPrefs      NotificationPreference[]
+  appointmentReminderRules AppointmentReminderRule[]
   webPushSubscriptions   WebPushSubscription[]
   assistantConversations AssistantConversation[]
 
@@ -2389,6 +2391,72 @@ model WebPushSubscription {
   @@index([tenantId, userId, isActive])
   @@index([tenantId, branchId, isActive])
   @@map("web_push_subscriptions")
+}
+
+/**
+ * Qué avisos recibe alguien (agenda y tienda) y, en agenda, cuánto antes de una
+ * cita, como en Google Calendar. La fila de una persona manda sobre la de su rol,
+ * salvo que el rol esté bloqueado. Sin ninguna: los eventos siguen el mapa de
+ * roles y los recordatorios de cita no salen hasta que alguien los configure.
+ */
+model AppointmentReminderRule {
+  id             String   @id @default(cuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Regla del rol. Excluye a `userId`.
+  roleCode       String?
+  /// Regla personal. Excluye a `roleCode`.
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  offsetsMinutes Int[]    @default([])
+  /// 'ALL' = todas las citas de sus sedes; 'MINE' = solo las que atiende.
+  scope          String   @default("ALL")
+  /// 'ALL' = todos sus avisos; 'CUSTOM' = los que eligió en `filters`; 'NONE' = ninguno.
+  mode           String   @default("ALL")
+  /// { types, staffIds, staffRoleCodes, serviceIds, cases }. Lista vacía = todos.
+  filters        Json?
+  /// Lo decidió el dueño: la persona no lo puede cambiar ni pausar.
+  locked         Boolean  @default(false)
+  updatedById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([tenantId, roleCode])
+  @@unique([tenantId, userId])
+  @@map("appointment_reminder_rules")
+}
+
+/// "No me avises hasta…". Vale para todos los avisos de esa persona, y lo que caiga
+/// en la pausa no se manda después.
+model NotificationPause {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String   @unique
+  pausedUntil DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("notification_pauses")
+}
+
+/**
+ * Qué recordatorio ya salió. Se reclama ANTES de enviar: así un reinicio o una
+ * segunda instancia no lo repiten. Lleva la hora de la cita para que al moverla
+ * se vuelva a avisar.
+ */
+model AppointmentReminderDelivery {
+  id            String   @id @default(cuid())
+  tenantId      String
+  /// `apt:<id>`, o `class:<id>` para las clases, que avisan una vez y no por inscrito.
+  itemKey       String
+  userId        String
+  minutesBefore Int
+  scheduledAt   DateTime
+  createdAt     DateTime @default(now())
+
+  @@unique([itemKey, userId, minutesBefore, scheduledAt])
+  @@index([createdAt])
+  @@map("appointment_reminder_deliveries")
 }
 
 enum NotificationChannel {

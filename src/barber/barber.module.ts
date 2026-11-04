@@ -11,6 +11,7 @@ import { PublicSiteModule } from '../public-site/admin/public-site.module';
 import { BarberServicesModule } from './modules/services/barber-services.module';
 import { BarberSettingsModule } from './modules/settings/barber-settings.module';
 import { BarberStaffModule } from './modules/staff/barber-staff.module';
+import { AppointmentRemindersModule } from './modules/reminders/appointment-reminders.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { BarberStaffModule } from './modules/staff/barber-staff.module';
     BarberChargesModule,
     BarberClassesModule,
     BarberRecurringModule,
+    AppointmentRemindersModule,
     InMoveSyncModule,
     GoogleCalendarModule,
     PublicSiteModule,

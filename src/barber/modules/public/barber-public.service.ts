@@ -80,7 +80,11 @@ function buildIntake(
   for (const day of INTAKE_DAYS) {
     const raw = i.availability?.[day];
     if (!Array.isArray(raw)) continue;
-    const hours = [...new Set(raw.filter((h) => typeof h === 'string' && /^\d{2}:\d{2}$/.test(h)))]
+    const hours = [
+      ...new Set(
+        raw.filter((h) => typeof h === 'string' && /^\d{2}:\d{2}$/.test(h)),
+      ),
+    ]
       .sort()
       .slice(0, 24);
     if (hours.length > 0) availability[day] = hours;
@@ -523,6 +527,12 @@ export class BarberPublicService {
           .join(' · '),
         url: `/barber/appointments?date=${calendarDayCO(appointment.scheduledAt)}&apt=${appointment.id}`,
         payload: { appointmentId: appointment.id },
+        context: {
+          staffId: appointment.staffId,
+          staffUserId: appointment.staff?.userId,
+          serviceId: appointment.serviceId,
+          cases: ['APPOINTMENT', 'PENDING', 'ONLINE'],
+        },
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);

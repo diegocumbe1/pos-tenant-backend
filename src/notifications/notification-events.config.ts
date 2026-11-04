@@ -13,6 +13,9 @@ export const NOTIFICATION_EVENT_ROLES: Record<string, string[]> = {
   'barber.signup.received': ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'],
   // Venta registrada por otra persona del equipo (quien la hizo no se avisa).
   'retail.sale.created': ['OWNER', 'ADMIN', 'MANAGER'],
+  // Los avisos de pago (retail.payment.*, barber.payment.*) NO van aquí a propósito:
+  // arrancan apagados. Un negocio con muchas deudas abiertas recibiría un resumen el
+  // primer día sin haberlo pedido. Se activan en Ajustes → Notificaciones.
 };
 
 export function rolesForEvent(type: string): string[] {

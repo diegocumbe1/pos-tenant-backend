@@ -3,6 +3,12 @@ import { NotificationChannel, NotificationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebPushProvider } from './web-push.provider';
 import { rolesForEvent } from './notification-events.config';
+import {
+  catalogForType,
+  ruleFor,
+  wantsNotification,
+  type NotificationContext,
+} from './notification-rules';
 
 export interface DispatchParams {
   tenantId: string;
@@ -17,6 +23,8 @@ export interface DispatchParams {
   payload?: Record<string, unknown>;
   /** No notificar a este usuario (p. ej. quien disparó la acción). */
   excludeUserId?: string;
+  /** De qué trata, para los filtros de cada persona (solo avisos de agenda). */
+  context?: NotificationContext;
 }
 
 @Injectable()
@@ -49,6 +57,11 @@ export class NotificationDispatcherService {
       return;
     }
 
+    if (catalogForType(params.type)) {
+      await this.deliver(params, await this.recipientsFor(params));
+      return;
+    }
+
     // 1. Destinatarios: usuarios activos del tenant (y sede si aplica) cuyo
     //    rol está en la lista del evento, excluyendo al que disparó la acción.
     const users = await this.prisma.user.findMany({
@@ -66,7 +79,101 @@ export class NotificationDispatcherService {
 
     if (users.length === 0) return;
 
-    const userIds = users.map((user) => user.id);
+    await this.deliver(
+      params,
+      users.map((user) => user.id),
+    );
+  }
+
+  /**
+   * Para quien ya resolvió los destinatarios (los recordatorios de agenda deciden
+   * por regla y no por el mapa evento → roles). Best-effort, igual que `dispatch`.
+   */
+  async dispatchToUsers(params: DispatchParams, userIds: string[]) {
+    if (userIds.length === 0) return;
+    try {
+      await this.deliver(params, userIds);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown dispatch error';
+      this.logger.error(`dispatchToUsers(${params.type}) failed: ${message}`);
+    }
+  }
+
+  /**
+   * Decide lo que cada quien eligió, no solo el mapa de roles, y solo entra quien
+   * hoy tiene el permiso de esa pantalla: el aviso lleva a ella.
+   */
+  async recipientsFor(
+    params: Pick<
+      DispatchParams,
+      'tenantId' | 'branchId' | 'type' | 'context' | 'excludeUserId'
+    >,
+  ): Promise<string[]> {
+    const catalog = catalogForType(params.type);
+    if (!catalog) return [];
+    const roles = rolesForEvent(params.type);
+    const [users, rules, staffUser] = await Promise.all([
+      this.prisma.user.findMany({
+        where: {
+          tenantId: params.tenantId,
+          isActive: true,
+          role: {
+            rolePermissions: {
+              some: { permission: { code: catalog.permission } },
+            },
+          },
+          ...(params.branchId
+            ? {
+                OR: [
+                  { role: { code: 'OWNER' } },
+                  { userBranches: { some: { branchId: params.branchId } } },
+                ],
+              }
+            : {}),
+          ...(params.excludeUserId
+            ? { id: { not: params.excludeUserId } }
+            : {}),
+        },
+        select: { id: true, role: { select: { code: true } } },
+      }),
+      this.prisma.appointmentReminderRule.findMany({
+        where: { tenantId: params.tenantId },
+      }),
+      params.context?.staffUserId
+        ? this.prisma.user.findUnique({
+            where: { id: params.context.staffUserId },
+            select: { role: { select: { code: true } } },
+          })
+        : null,
+    ]);
+    const context = params.context
+      ? { ...params.context, staffRoleCode: staffUser?.role.code ?? null }
+      : null;
+    return users
+      .filter((user) => {
+        const subject = { id: user.id, roleCode: user.role.code };
+        return wantsNotification(
+          subject,
+          ruleFor(subject, rules),
+          params.type,
+          context,
+          roles.includes(user.role.code),
+        );
+      })
+      .map((user) => user.id);
+  }
+
+  private async deliver(params: DispatchParams, allUserIds: string[]) {
+    // Quien pausó no recibe nada, de ningún tipo.
+    const paused = await this.prisma.notificationPause.findMany({
+      where: { userId: { in: allUserIds }, pausedUntil: { gt: new Date() } },
+      select: { userId: true },
+    });
+    const pausedIds = new Set(paused.map((p) => p.userId));
+    const userIds = allUserIds.filter((id) => !pausedIds.has(id));
+    if (userIds.length === 0) return;
+    const users = userIds.map((id) => ({ id }));
     const [preferences, subscriptions] = await Promise.all([
       this.prisma.notificationPreference.findMany({
         where: {
@@ -86,10 +193,7 @@ export class NotificationDispatcherService {
     const preferenceByUser = new Map(
       preferences.map((preference) => [preference.userId, preference]),
     );
-    const subscriptionsByUser = new Map<
-      string,
-      typeof subscriptions
-    >();
+    const subscriptionsByUser = new Map<string, typeof subscriptions>();
     for (const subscription of subscriptions) {
       const list = subscriptionsByUser.get(subscription.userId) ?? [];
       list.push(subscription);
@@ -102,7 +206,10 @@ export class NotificationDispatcherService {
       const pref = preferenceByUser.get(user.id);
       const wantsWebPush = pref ? pref.enabled && pref.webPush : true;
       if (!wantsWebPush) continue;
-      if (pref && this.isQuietNow(pref.quietStart, pref.quietEnd, pref.timezone)) {
+      if (
+        pref &&
+        this.isQuietNow(pref.quietStart, pref.quietEnd, pref.timezone)
+      ) {
         continue;
       }
 
