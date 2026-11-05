@@ -14,6 +14,8 @@ describe('matchBusinessName', () => {
 
   it.each([
     ['bellachi', 'Bella Chic'],
+    ['bellachique', 'Bella Chic'],
+    ['villachique', 'Bella Chic'],
     ['bella chi', 'Bella Chic'],
     ['vella chic', 'Bella Chic'],
     ['bella shic', 'Bella Chic'],

@@ -24,10 +24,6 @@
           "samples": []
         },
         {
-          "name": "AMAZON.FallbackIntent",
-          "samples": []
-        },
-        {
           "name": "DespedidaIntent",
           "slots": [],
           "samples": [
@@ -138,7 +134,11 @@
             "ponme al día del {periodo}",
             "ponme al día del {periodo} en {negocio}",
             "cómo va {negocio}",
-            "cómo nos fue {periodo} en {negocio}"
+            "cómo nos fue {periodo} en {negocio}",
+            "dame el reporte de {negocio}",
+            "dame el estatus de {negocio}",
+            "dime el estatus de {negocio}",
+            "dime estatus de {negocio}"
           ]
         },
         {
@@ -175,7 +175,18 @@
             "solo las ventas de {periodo}",
             "ventas de {periodo}",
             "ventas de {negocio}",
-            "ventas de {periodo} en {negocio}"
+            "ventas de {periodo} en {negocio}",
+            "cuánto vendí",
+            "dime cuánto vendí",
+            "dime cuánto vendí hoy",
+            "dime cuánto vendí {periodo}",
+            "cuánto he vendido",
+            "cuánto he vendido {periodo}",
+            "cuánto llevo vendido",
+            "cuánto llevo vendido {periodo}",
+            "cuánto vendimos {periodo}",
+            "cuánto se vendió {periodo}",
+            "cuánto se ha vendido"
           ]
         },
         {
@@ -235,7 +246,13 @@
             "en qué se me va la plata",
             "en qué se me va la plata {periodo}",
             "cuánto pagué {periodo}",
-            "cuáles fueron mis egresos de {periodo}"
+            "cuáles fueron mis egresos de {periodo}",
+            "cuánto gasté",
+            "dime cuánto gasté",
+            "dime cuánto gasté {periodo}",
+            "cuánto llevo gastado",
+            "cuánto llevo gastado {periodo}",
+            "cuánto se gastó {periodo}"
           ]
         },
         {
@@ -382,7 +399,11 @@
             "cuál fue el producto más vendido del {periodo}",
             "qué aroma se vende más",
             "qué se vendió más {periodo}",
-            "qué se vendió más {periodo} en {negocio}"
+            "qué se vendió más {periodo} en {negocio}",
+            "cuáles son los productos más vendidos",
+            "cuál es el más vendido",
+            "dime el producto más vendido",
+            "qué producto se vende más"
           ]
         },
         {
@@ -476,7 +497,13 @@
             "cuántos quedan de {producto}",
             "cuánto stock tengo de {producto}",
             "a cuánto tengo el {producto}",
-            "qué precio tiene el {producto}"
+            "qué precio tiene el {producto}",
+            "dime cuántos quedan de {producto}",
+            "cuántas quedan de {producto}",
+            "cuánto queda de {producto}",
+            "a cómo tengo el {producto}",
+            "cuánto cuesta el {producto}",
+            "busca {producto}"
           ]
         }
       ],
@@ -529,7 +556,15 @@
                   "vella chic",
                   "vella chi",
                   "vellachi",
-                  "bella chica"
+                  "bella chica",
+                  "bellachique",
+                  "bella chique",
+                  "villachique",
+                  "villa chique",
+                  "villachic",
+                  "villa chic",
+                  "bella chiqui",
+                  "bellachiqui"
                 ]
               }
             },
