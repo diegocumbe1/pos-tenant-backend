@@ -14,10 +14,6 @@ import {
 } from '@nestjs/common';
 import { AlexaSkill } from '@prisma/client';
 import {
-  SkillRequestSignatureVerifier,
-  TimestampVerifier,
-} from 'ask-sdk-express-adapter';
-import {
   Directive,
   IntentRequest,
   RequestEnvelope,
@@ -43,7 +39,6 @@ import {
   PendingDeliveryAnswer,
   PendingPaymentAnswer,
   PendingPurchaseAnswer,
-  PlatformOverviewAnswer,
   ProductLookupAnswer,
   SalesAnswer,
   SalesRankingAnswer,
@@ -53,7 +48,13 @@ import { formatCOP } from '../../common/date.util';
 
 import { AuthenticatedUser } from '../../auth/types/tenant-context.interface';
 import { AlexaAuthService } from './alexa-auth.service';
+import {
+  applicationIdOf,
+  slotValueOf,
+  verifyAlexaRequest,
+} from './alexa-request';
 import { AlexaSkillRepository } from './alexa-skill.repository';
+import { overviewSpeech } from './platform-speech';
 import { debtDocument, reportDocument, salesDocument } from './apl/report.apl';
 /**
  * Plata dicha en voz alta.
@@ -81,8 +82,13 @@ const CATEGORY_SLOT = 'categoria';
 const PRODUCT_SLOT = 'producto';
 /** Por voz no se retienen más de tres nombres seguidos. */
 const MAX_NAMES = 3;
-const ASK_FOR_CODE =
-  'Para consultar tus negocios necesito tu código de activación. Di: mi código es, y tu frase.';
+const askForCode = (skill: AlexaSkill): string =>
+  `Para consultar ${skill.tenantId ? 'tu negocio' : 'tus negocios'} necesito tu código de activación. Di: mi código es, y tu frase.`;
+/** Lo primero que se ofrece depende de qué es la skill: plataforma o un negocio. */
+const startHint = (skill: AlexaSkill): string =>
+  skill.tenantId
+    ? 'Puedes preguntarme cuánto vendí hoy, quién me debe o qué se está acabando.'
+    : 'Puedes preguntarme por tus suscripciones.';
 const DENIED = 'Esta cuenta de Alexa no está autorizada para usar Lynko.';
 const UNCONFIGURED =
   'La autorización por voz de Lynko todavía no está configurada.';
@@ -104,8 +110,6 @@ export class AlexaService {
     outcome: AssistantOutcome;
   }>();
   private readonly logger = new Logger('Alexa');
-  private readonly signatureVerifier = new SkillRequestSignatureVerifier();
-  private readonly timestampVerifier = new TimestampVerifier();
 
   constructor(
     private readonly skills: AlexaSkillRepository,
@@ -119,51 +123,12 @@ export class AlexaService {
     rawBody: Buffer | undefined,
     headers: IncomingHttpHeaders,
   ): Promise<ResponseEnvelope> {
-    let envelope: RequestEnvelope;
-    try {
-      if (!rawBody?.length) throw new Error('Missing raw body');
-      const body = rawBody.toString('utf8');
-      envelope = JSON.parse(body) as RequestEnvelope;
-      // The SDK rejects stale requests; explicitly reject invalid/future dates too.
-      const timestamp = envelope?.request?.timestamp;
-      if (
-        typeof timestamp !== 'string' ||
-        !Number.isFinite(Date.parse(timestamp)) ||
-        Math.abs(Date.now() - Date.parse(timestamp)) > 150_000
-      ) {
-        throw new Error('Invalid timestamp');
-      }
-      await this.timestampVerifier.verify(body);
-      await this.signatureVerifier.verify(body, headers);
-
-      const sessionId = envelope.session?.application?.applicationId;
-      const contextId = envelope.context?.System?.application?.applicationId;
-      if (
-        (!sessionId && !contextId) ||
-        // Las dos copias del id tienen que coincidir entre sí: una petición que
-        // diga una skill en la sesión y otra en el contexto está manipulada.
-        (sessionId !== undefined &&
-          contextId !== undefined &&
-          sessionId !== contextId) ||
-        envelope.version !== '1.0' ||
-        typeof envelope.request?.type !== 'string' ||
-        (envelope.request.type === 'IntentRequest' &&
-          typeof envelope.request.intent?.name !== 'string')
-      ) {
-        throw new Error('Invalid envelope');
-      }
-    } catch {
-      this.logger.warn('Request verification failed');
-      throw new UnauthorizedException('Invalid Alexa request');
-    }
+    const envelope = await verifyAlexaRequest(rawBody, headers, this.logger);
 
     // Qué negocio es lo decide el applicationId que Amazon firmó, no algo que
     // alguien haya pronunciado. Una skill sin registrar se rechaza como antes
     // lo hacía un ALEXA_SKILL_ID distinto.
-    const applicationId =
-      envelope.context?.System?.application?.applicationId ??
-      envelope.session?.application?.applicationId ??
-      '';
+    const applicationId = applicationIdOf(envelope);
     const skill = await this.skills.byApplicationId(applicationId);
     if (!skill) {
       this.logger.warn('Request from an unregistered skill');
@@ -258,11 +223,11 @@ export class AlexaService {
     const result = await this.resolveActor(envelope, skill);
     if (result.status !== 'active') {
       this.outcome('DENIED_PERMISSION');
-      return this.reject(result);
+      return this.reject(result, skill);
     }
     const firstName = result.actor.name?.trim().split(/\s+/)[0];
     return this.speak(
-      `Hola${firstName ? ` ${firstName}` : ''}. Lynko está listo. Puedes preguntarme por tus suscripciones.`,
+      `Hola${firstName ? ` ${firstName}` : ''}. Lynko está listo. ${startHint(skill)}`,
       false,
     );
   }
@@ -284,9 +249,11 @@ export class AlexaService {
         this.logger.log('IntentRequest: GetSubscriptionsIntent');
         // La sesión queda abierta: encadenar preguntas es lo natural en un
         // asistente de consulta, y reabrir la skill por cada una molesta.
+        // La cartera de la plataforma no se consulta desde la skill de un negocio.
+        if (skill.tenantId) return this.fallback(envelope);
         return this.guarded(envelope, skill, async (actor) =>
           this.speak(
-            this.overviewSpeech(await this.assistant.platformOverview(actor)),
+            overviewSpeech(await this.assistant.platformOverview(actor)),
             false,
             '¿Quieres preguntar algo más?',
           ),
@@ -313,7 +280,10 @@ export class AlexaService {
         return this.guarded(envelope, skill, async (actor) =>
           this.speak(
             this.businessListSpeech(
-              await this.scope.accessibleBusinesses(actor),
+              await this.scope.accessibleBusinesses(
+                actor,
+                skill.tenantId ?? undefined,
+              ),
             ),
             false,
             '¿Quieres preguntar algo más?',
@@ -381,7 +351,11 @@ export class AlexaService {
         this.logger.log('IntentRequest: expenses_summary');
         return this.forBusiness(envelope, skill, request, async (a, b) =>
           this.expensesSpeech(
-            await this.assistant.expenses(a, b, this.periodOf(request, 'month')),
+            await this.assistant.expenses(
+              a,
+              b,
+              this.periodOf(request, 'month'),
+            ),
           ),
         );
       case 'pending_delivery':
@@ -481,10 +455,12 @@ export class AlexaService {
       case 'AMAZON.HelpIntent':
         this.logger.log('IntentRequest: AMAZON.HelpIntent');
         return this.speak(
-          // Se nombran siete de las catorce: una lista hablada más larga no se
-          // retiene, y estas cubren las cuatro áreas —entra, sale, mercancía,
-          // clientes— para que se entienda el alcance sin enumerarlo entero.
-          'Puedes preguntarme por un negocio: cuánto vendí hoy, cuántas unidades vendí este mes, en qué se me va la plata, quién me debe, qué tengo por entregar, qué pedidos faltan por recibir, o qué se está acabando. También puedes pedirme un período: el mes pasado, o los últimos quince días. Para activar el acceso di: mi código es, y tu frase.',
+          skill.tenantId
+            ? 'Puedes preguntarme: cuánto vendí hoy, cuántas unidades vendí este mes, en qué se me va la plata, quién me debe, qué tengo por entregar, qué pedidos faltan por recibir, o qué se está acabando. También puedes pedirme un período: el mes pasado, o los últimos quince días.'
+            : // Se nombran siete de las catorce: una lista hablada más larga no se
+              // retiene, y estas cubren las cuatro áreas —entra, sale, mercancía,
+              // clientes— para que se entienda el alcance sin enumerarlo entero.
+              'Puedes preguntarme por un negocio: cuánto vendí hoy, cuántas unidades vendí este mes, en qué se me va la plata, quién me debe, qué tengo por entregar, qué pedidos faltan por recibir, o qué se está acabando. También puedes pedirme un período: el mes pasado, o los últimos quince días. Para activar el acceso di: mi código es, y tu frase.',
           false,
         );
       case 'AMAZON.YesIntent':
@@ -543,14 +519,14 @@ export class AlexaService {
     try {
       outcome = await this.auth.activate(envelope, skill, phrase);
     } catch (error) {
-      return this.reject(this.classify(error));
+      return this.reject(this.classify(error), skill);
     }
     this.logger.log(`Activation attempt: ${outcome}`);
 
     switch (outcome) {
       case 'active':
         return this.speak(
-          `Listo. Tu acceso a Lynko queda activo ${skill.ttlDays} días. Puedes preguntarme por tus suscripciones.`,
+          `Listo. Tu acceso a Lynko queda activo ${skill.ttlDays} días. ${startHint(skill)}`,
           false,
         );
       case 'locked':
@@ -570,7 +546,7 @@ export class AlexaService {
     try {
       await this.auth.logout(envelope, skill);
     } catch (error) {
-      return this.reject(this.classify(error));
+      return this.reject(this.classify(error), skill);
     }
     return this.speak('Listo. Cerré tu acceso a Lynko.', true);
   }
@@ -585,7 +561,7 @@ export class AlexaService {
     const result = await this.resolveActor(envelope, skill);
     if (result.status !== 'active') {
       this.outcome('DENIED_PERMISSION');
-      return this.reject(result);
+      return this.reject(result, skill);
     }
     try {
       return await handler(result.actor);
@@ -642,10 +618,13 @@ export class AlexaService {
       // reporte de Bella Chic" con "quién me debe" obligaría a repetir el
       // nombre en cada frase.
       const remembered = this.rememberedBusinessId(envelope);
+      // Una skill con tenant ES ese negocio: lo decide lo que Amazon firmó, no
+      // lo que se pronuncie ni los negocios que el actor alcance a ver.
       const resolution = await this.scope.resolveBusiness(
         actor,
         spoken,
         remembered,
+        skill.tenantId ?? undefined,
       );
       if (resolution.status !== 'resolved') {
         this.outcome('CLARIFIED');
@@ -754,7 +733,7 @@ export class AlexaService {
 
     const lines = [
       `Ventas (${periodLabel(report.period)}): ${sales.revenueCOP} en ${sales.salesCount} ventas`,
-      `Ticket promedio: ${sales.averageTicketCOP} · Margen: ${sales.marginPct}%`,
+      `Ticket promedio: ${sales.averageTicketCOP}${sales.marginPct === undefined ? '' : ` · Margen: ${sales.marginPct}%`}`,
       '',
       `Por cobrar: ${debt.totalCOP} en ${debt.salesCount} ventas`,
       names(debt.customers, (i) => `: ${debt.customers[i].amountCOP}`),
@@ -765,7 +744,7 @@ export class AlexaService {
       `Stock bajo: ${inventory.lowStockCount} (${inventory.outOfStockCount} agotados)`,
       names(inventory.lowStock, (i) => `: ${inventory.lowStock[i].stock}`),
       '',
-      `Pedidos abiertos: ${purchases.openCount} · ${purchases.estimatedOpenCostCOP} estimados`,
+      `Pedidos abiertos: ${purchases.openCount}${purchases.estimatedOpenCostCOP === undefined ? '' : ` · ${purchases.estimatedOpenCostCOP}`}`,
       `Por entregar: ${delivery.salesCount} ventas · ${delivery.totalCOP}`,
       names(delivery.customers, (i) => `: ${delivery.customers[i].totalCOP}`),
     ];
@@ -805,7 +784,7 @@ export class AlexaService {
   private salesCard(answer: SalesAnswer): ui.Card {
     const lines = [
       `Ventas (${periodLabel(answer.period)}): ${formatCOP(answer.revenueCOP)} en ${answer.salesCount} ${answer.salesCount === 1 ? 'venta' : 'ventas'}`,
-      `Ticket promedio: ${formatCOP(answer.averageTicketCOP)} · Margen: ${answer.marginPct}%`,
+      `Ticket promedio: ${formatCOP(answer.averageTicketCOP)}${answer.marginPct === undefined ? '' : ` · Margen: ${answer.marginPct}%`}`,
       `Unidades: ${answer.unitsSold}`,
       answer.creditedCOP ? `Fiado: ${formatCOP(answer.creditedCOP)}` : '',
       // El flete no está dentro de `revenueCOP`: nombrarlo aparte evita que
@@ -867,7 +846,7 @@ export class AlexaService {
     if (!answer.openCount) {
       return `En ${answer.business.name} no tienes pedidos pendientes por recibir.`;
     }
-    const head = `En ${answer.business.name} tienes ${answer.openCount === 1 ? '1 pedido' : `${answer.openCount} pedidos`} por recibir, por unos ${speakCOP(answer.estimatedOpenCostCOP)}.`;
+    const head = `En ${answer.business.name} tienes ${answer.openCount === 1 ? '1 pedido' : `${answer.openCount} pedidos`} por recibir${answer.estimatedOpenCostCOP === undefined ? '' : `, por ${speakCOP(answer.estimatedOpenCostCOP)}`}.`;
     const first = answer.items
       .slice(0, 3)
       .map((item) => item.name)
@@ -912,21 +891,8 @@ export class AlexaService {
     }.`;
   }
 
-  /**
-   * Valor del slot, prefiriendo el canónico sobre lo que se oyó.
-   *
-   * Cuando el slot es de tipo propio y Alexa acierta un sinónimo, deja el valor
-   * de la lista en `resolutions`. Usar `slot.value` a secas desperdicia esos
-   * sinónimos: el Echo transcribe "Bella Chic" como "bellachi", y solo el
-   * canónico dice que eso era Bella Chic.
-   */
   private slotValue(request: IntentRequest, name: string): string | undefined {
-    const slot = request.intent.slots?.[name];
-    if (!slot) return undefined;
-    const matched = slot.resolutions?.resolutionsPerAuthority?.find(
-      (authority) => authority.status.code === 'ER_SUCCESS_MATCH',
-    );
-    return matched?.values?.[0]?.value?.name ?? slot.value;
+    return slotValueOf(request, name);
   }
 
   private capitalize(text: string): string {
@@ -1141,8 +1107,13 @@ export class AlexaService {
     if (!trackedProducts) {
       return `En ${business.name} no hay productos con control de stock.`;
     }
+    const units = `En ${business.name} tienes ${totalUnits} unidades en ${trackedProducts} productos`;
+    // Se dice por qué falta la cifra: callarla parecería que no existe.
+    if (answer.valueAtCostCOP === undefined) {
+      return `${units}. El valor al costo solo lo puede consultar el dueño.`;
+    }
     // Al costo, no al precio de venta: es la plata que está quieta en la bodega.
-    return `En ${business.name} tienes ${totalUnits} unidades en ${trackedProducts} productos, por ${answer.valueAtCostCOP} pesos al costo.`;
+    return `${units}, por ${answer.valueAtCostCOP} pesos al costo.`;
   }
 
   /**
@@ -1205,34 +1176,6 @@ export class AlexaService {
     return `${head}${detail}${counter}`;
   }
 
-  /** Dos frases como mucho: por voz, un listado largo no se retiene. */
-  private overviewSpeech(answer: PlatformOverviewAnswer): string {
-    const { subscriptions: subs, tenants } = answer;
-    const plural = (n: number, one: string, many: string) =>
-      `${n} ${n === 1 ? one : many}`;
-
-    const detail = [
-      subs.trialing ? `${subs.trialing} en prueba` : null,
-      subs.pastDue ? `${subs.pastDue} en mora` : null,
-    ].filter(Boolean);
-
-    const first = `Tienes ${plural(subs.active, 'suscripción activa', 'suscripciones activas')}${
-      detail.length ? `, ${detail.join(' y ')}` : ''
-    }, sobre ${plural(tenants.total, 'negocio', 'negocios')} en total.`;
-
-    // Pagos cobrados, no MRR. El MRR suma el precio de lista de toda suscripción
-    // activa, incluidas las que nunca pagaron —descuento del 100%, cortesías, el
-    // tenant propio—, así que por voz suena a ingreso y no lo es. `amount` de
-    // SubscriptionPayment es plata recibida neta, y los bonos quedan fuera por
-    // `countsAsRevenue`. Sin separadores de miles: Alexa lee mejor el número crudo.
-    const { count, totalCOP } = answer.payments;
-    const second = count
-      ? `Este mes has recibido ${plural(count, 'pago', 'pagos')} por ${totalCOP} pesos.`
-      : 'Este mes todavía no has recibido pagos.';
-
-    return `${first} ${second}`;
-  }
-
   private async resolveActor(
     envelope: RequestEnvelope,
     skill: AlexaSkill,
@@ -1259,14 +1202,14 @@ export class AlexaService {
     throw error;
   }
 
-  private reject(result: ActorResult): ResponseEnvelope {
+  private reject(result: ActorResult, skill: AlexaSkill): ResponseEnvelope {
     switch (result.status) {
       case 'unconfigured':
         return this.speak(UNCONFIGURED, true);
       case 'denied':
         return this.speak(DENIED, true);
       default:
-        return this.speak(ASK_FOR_CODE, false, ASK_FOR_CODE);
+        return this.speak(askForCode(skill), false, askForCode(skill));
     }
   }
 
@@ -1307,7 +1250,7 @@ export class AlexaService {
   private speak(
     text: string,
     shouldEndSession: boolean,
-    reprompt = 'Puedes preguntarme cuántas suscripciones tienes.',
+    reprompt = '¿Qué quieres consultar?',
     card?: ui.Card,
     sessionAttributes?: Record<string, unknown>,
     directives?: Directive[],

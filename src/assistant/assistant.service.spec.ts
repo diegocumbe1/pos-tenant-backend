@@ -16,6 +16,7 @@ describe('AssistantService', () => {
   let scope: {
     contextFor: jest.Mock;
     assertPermission: jest.Mock;
+    canSeeInternalCosts: jest.Mock;
     branchesOf: jest.Mock;
   };
   let retailSales: {
@@ -50,6 +51,7 @@ describe('AssistantService', () => {
         permissions: new Set(),
       }),
       assertPermission: jest.fn(),
+      canSeeInternalCosts: jest.fn().mockReturnValue(true),
       branchesOf: jest.fn().mockResolvedValue(['b1', 'b2']),
     };
     const shelf = [
@@ -138,7 +140,9 @@ describe('AssistantService', () => {
       retailCatalog as unknown as RetailCatalogService,
       finance as unknown as FinanceService,
       // Plan y cupo: siempre disponibles aquí. Lo que se prueba son las cifras.
-      { assertAvailable: jest.fn().mockResolvedValue(undefined) } as unknown as AssistantQuotaService,
+      {
+        assertAvailable: jest.fn().mockResolvedValue(undefined),
+      } as unknown as AssistantQuotaService,
     );
   });
 
@@ -550,5 +554,36 @@ describe('AssistantService', () => {
       ForbiddenException,
     );
     expect(platform.getOverview).not.toHaveBeenCalled();
+  });
+  describe('costos internos', () => {
+    beforeEach(() => scope.canSeeInternalCosts.mockReturnValue(false));
+
+    it('no viajan si el actor no es dueño ni super-admin', async () => {
+      retailSales.getSummary.mockResolvedValue({
+        revenueCOP: 100,
+        shippingCOP: 0,
+        grossProfitCOP: 40,
+        salesCount: 1,
+        unitsSold: 1,
+        pendingPayment: { amountCOP: 0 },
+      });
+      retailInventory.getSummary.mockResolvedValue({
+        lowStock: [],
+        trackedProducts: 1,
+        totalUnits: 1,
+        stockValueAtCostCOP: 10,
+        stockValueAtPriceCOP: 20,
+      });
+      const business = { id: 't1', name: 'Bella Chic' };
+
+      const sales = await service.sales(cashier, business);
+      const inventory = await service.inventoryStatus(cashier, business);
+
+      expect(sales).not.toHaveProperty('marginPct');
+      // Dos sucursales en el mock: las cifras que no son costo siguen sumando.
+      expect(sales.revenueCOP).toBe(200);
+      expect(inventory).not.toHaveProperty('valueAtCostCOP');
+      expect(inventory.valueAtPriceCOP).toBe(40);
+    });
   });
 });

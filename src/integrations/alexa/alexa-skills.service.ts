@@ -180,7 +180,9 @@ export class AlexaSkillsService {
         'Una skill de plataforma exige un usuario de plataforma.',
       );
     }
-    if (tenantId && !user.isPlatformAdmin && user.tenantId !== tenantId) {
+    // Sin excepción para el super-admin: en el Echo del cliente se saltaría el
+    // cupo del plan y respondería costos con permisos que no son del negocio.
+    if (tenantId && user.tenantId !== tenantId) {
       throw new ForbiddenException('El usuario no pertenece a ese negocio.');
     }
   }

@@ -205,7 +205,7 @@ export function reportDocument(report: BusinessReportAnswer): RenderDocument {
     heroLabel: 'VENTAS',
     hero: formatCOP(sales.revenueCOP),
     heroAccent: sales.revenueCOP > 0 ? GREEN : MUTED,
-    sub: `${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')} · Margen ${sales.marginPct}%`,
+    sub: `${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')}${sales.marginPct === undefined ? '' : ` · Margen ${sales.marginPct}%`}`,
     rows: [
       {
         label: 'Por cobrar',
@@ -278,7 +278,9 @@ export function salesDocument(answer: SalesAnswer): RenderDocument {
     sub: `${answer.salesCount} ${plural(answer.salesCount, 'venta', 'ventas')} · ${answer.unitsSold} und`,
     rows: [
       { label: 'Ticket promedio', value: formatCOP(answer.averageTicketCOP) },
-      { label: 'Margen', value: `${answer.marginPct}%`, accent: GREEN },
+      ...(answer.marginPct === undefined
+        ? []
+        : [{ label: 'Margen', value: `${answer.marginPct}%`, accent: GREEN }]),
       // Lo fiado del período, no la cartera total: son cifras distintas.
       ...(answer.creditedCOP
         ? [

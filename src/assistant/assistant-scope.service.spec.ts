@@ -95,4 +95,47 @@ describe('AssistantScopeService', () => {
     await expect(service.accessibleBusinesses(orphan)).resolves.toEqual([]);
     expect(findMany).not.toHaveBeenCalled();
   });
+  describe('canal atado a un negocio', () => {
+    const member = {
+      id: 'u2',
+      isPlatformAdmin: false,
+      tenantId: 't1',
+    } as AuthenticatedUser;
+
+    it('ignora lo pronunciado y responde por el negocio de la skill', async () => {
+      findMany.mockResolvedValue([businesses[0]]);
+      await expect(
+        service.resolveBusiness(admin, 'otro negocio', undefined, 't1'),
+      ).resolves.toEqual({ status: 'resolved', business: businesses[0] });
+      expect(findMany.mock.calls[0][0].where.id).toBe('t1');
+    });
+
+    it('no deja entrar a un usuario de otro negocio', async () => {
+      findMany.mockClear();
+      await expect(
+        service.resolveBusiness(member, undefined, undefined, 't2'),
+      ).resolves.toMatchObject({ status: 'missing', available: [] });
+      expect(findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('canSeeInternalCosts', () => {
+    const user = (over: Partial<AuthenticatedUser>) =>
+      ({
+        isRoot: false,
+        isPlatformAdmin: false,
+        roleCode: 'ADMIN',
+        ...over,
+      }) as AuthenticatedUser;
+
+    it.each([
+      [{ roleCode: 'OWNER' }, true],
+      [{ isPlatformAdmin: true }, true],
+      [{ isRoot: true }, true],
+      [{ roleCode: 'ADMIN' }, false],
+      [{ roleCode: 'CASHIER' }, false],
+    ])('%j → %s', (over, expected) => {
+      expect(service.canSeeInternalCosts(user(over))).toBe(expected);
+    });
+  });
 });

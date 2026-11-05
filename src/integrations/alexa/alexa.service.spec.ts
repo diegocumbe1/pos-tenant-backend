@@ -417,6 +417,7 @@ describe('AlexaService', () => {
         actor,
         'bella chic',
         undefined,
+        undefined,
       );
       expect(assistant.pendingPayment).toHaveBeenCalledWith(actor, bella);
     });
@@ -510,6 +511,7 @@ describe('AlexaService', () => {
         actor,
         undefined,
         undefined,
+        undefined,
       );
       expect(answered).toBeDefined();
     });
@@ -534,6 +536,7 @@ describe('AlexaService', () => {
         actor,
         undefined,
         't1',
+        undefined,
       );
     });
 
@@ -1050,5 +1053,75 @@ describe('AlexaService', () => {
   it('resolves the tenant from the applicationId Amazon signed', async () => {
     await send(envelope());
     expect(skills.byApplicationId).toHaveBeenCalledWith('test-skill');
+  });
+  describe('skill de un negocio', () => {
+    const bellaSkill = { ...skill, tenantId: 't1' } as AlexaSkill;
+    beforeEach(() => skills.byApplicationId.mockResolvedValue(bellaSkill));
+
+    it('saluda ofreciendo el negocio, no las suscripciones', async () => {
+      const result = await send(envelope());
+      const speech = JSON.stringify(result.response.outputSpeech);
+      expect(speech).toContain('cuánto vendí hoy');
+      expect(speech).not.toContain('suscripciones');
+    });
+
+    it('pide el código hablando de un solo negocio', async () => {
+      auth.actor.mockResolvedValue(null);
+      const result = await send(envelope());
+      expect(JSON.stringify(result.response.outputSpeech)).toContain(
+        'consultar tu negocio',
+      );
+    });
+
+    it('fija el negocio de la skill sin importar lo que se pronuncie', async () => {
+      await send(
+        envelope('IntentRequest', 'pending_payment', {
+          negocio: { name: 'negocio', value: 'malexca' },
+        }),
+      );
+      expect(scope.resolveBusiness).toHaveBeenCalledWith(
+        actor,
+        'malexca',
+        undefined,
+        't1',
+      );
+    });
+
+    it('no responde la cartera de la plataforma', async () => {
+      await send(envelope('IntentRequest', 'GetSubscriptionsIntent'));
+      expect(assistant.platformOverview).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('costos internos', () => {
+    const speech = async (name: string) =>
+      JSON.stringify(
+        (await send(envelope('IntentRequest', name))).response.outputSpeech,
+      );
+
+    it('sin sesión pide el código y no consulta', async () => {
+      auth.actor.mockResolvedValue(null);
+      expect(await speech('inventory_value')).toContain('código de activación');
+      expect(assistant.inventoryStatus).not.toHaveBeenCalled();
+    });
+
+    it('al dueño le da el valor al costo exacto', async () => {
+      expect(await speech('inventory_value')).toContain(
+        '4500000 pesos al costo',
+      );
+    });
+
+    it('a otro rol le explica que no puede, sin la cifra', async () => {
+      assistant.inventoryStatus = jest.fn().mockResolvedValue({
+        business: bella,
+        trackedProducts: 40,
+        totalUnits: 320,
+        valueAtPriceCOP: 7200000,
+      });
+      build();
+      const said = await speech('inventory_value');
+      expect(said).toContain('solo lo puede consultar el dueño');
+      expect(said).not.toContain('undefined');
+    });
   });
 });

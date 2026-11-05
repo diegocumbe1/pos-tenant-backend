@@ -58,7 +58,8 @@ export interface SalesFigures {
   shippingCOP: number;
   unitsSold: number;
   averageTicketCOP: number;
-  marginPct: number;
+  /** Costo interno: ausente si el actor no es dueño ni super-admin. */
+  marginPct?: number;
   /** Lo que quedó debiendo el período consultado, no la cartera total. */
   creditedCOP: number;
 }
@@ -75,7 +76,8 @@ export interface DebtFigures {
 export interface InventoryFigures {
   trackedProducts: number;
   totalUnits: number;
-  valueAtCostCOP: number;
+  /** Costo interno: ausente si el actor no es dueño ni super-admin. */
+  valueAtCostCOP?: number;
   valueAtPriceCOP: number;
   /** Por debajo del mínimo, agotados incluidos. De menor a mayor stock. */
   lowStock: { name: string; stock: number; minStock: number }[];
@@ -93,7 +95,8 @@ export interface DeliveryFigures {
 export interface PurchaseFigures {
   /** Pendientes + pedidos + recibidos a medias: lo que sigue abierto. */
   openCount: number;
-  estimatedOpenCostCOP: number;
+  /** Costo interno: ausente si el actor no es dueño ni super-admin. */
+  estimatedOpenCostCOP?: number;
   /** Apuntados y todavía sin pedir al proveedor. */
   pendingCount: number;
   /** Ya pedidos, en camino. Son los que de verdad "faltan por recibir". */

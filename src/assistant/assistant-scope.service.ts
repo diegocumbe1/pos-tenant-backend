@@ -5,6 +5,7 @@ import {
   TenantContext,
 } from '../auth/types/tenant-context.interface';
 import { PrismaService } from '../prisma/prisma.service';
+import { matchBusinessName } from './spoken-name';
 
 export interface BusinessRef {
   id: string;
@@ -17,17 +18,6 @@ export type BusinessResolution =
   | { status: 'missing'; available: BusinessRef[] }
   | { status: 'unknown'; available: BusinessRef[] }
   | { status: 'ambiguous'; matches: BusinessRef[] };
-
-/** Alexa transcribe distinto cada vez: se compara sin tildes ni puntuación. */
-function normalize(value: string): string {
-  return value
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
 
 /**
  * De un nombre hablado al tenant, y del tenant al contexto que esperan los
@@ -45,8 +35,19 @@ export class AssistantScopeService {
     private readonly permissionsCache: PermissionsCacheService,
   ) {}
 
-  async accessibleBusinesses(actor: AuthenticatedUser): Promise<BusinessRef[]> {
-    const listed = { deletedAt: null, status: 'ACTIVE' as const };
+  /**
+   * @param onlyTenantId Canal atado a un negocio (la skill de Bella Chic): acota
+   * la lista a ese negocio aunque el actor pueda ver más. Nunca la amplía.
+   */
+  async accessibleBusinesses(
+    actor: AuthenticatedUser,
+    onlyTenantId?: string,
+  ): Promise<BusinessRef[]> {
+    const listed = {
+      deletedAt: null,
+      status: 'ACTIVE' as const,
+      ...(onlyTenantId && { id: onlyTenantId }),
+    };
     const query = {
       select: { id: true, name: true, vertical: { select: { code: true } } },
       orderBy: { name: 'asc' as const },
@@ -54,8 +55,8 @@ export class AssistantScopeService {
     const rows = actor.isPlatformAdmin
       ? await this.prisma.tenant.findMany({ where: listed, ...query })
       : // Un admin de plataforma puede no tener tenant propio; un usuario normal
-        // sin tenant no tiene nada que consultar.
-        actor.tenantId
+        // sin tenant, o en un canal atado a otro negocio, no tiene qué consultar.
+        actor.tenantId && (!onlyTenantId || onlyTenantId === actor.tenantId)
         ? await this.prisma.tenant.findMany({
             where: { ...listed, id: actor.tenantId },
             ...query,
@@ -72,13 +73,21 @@ export class AssistantScopeService {
    * @param rememberedId Negocio de la pregunta anterior en esta misma
    * conversación. Se usa solo si no dijeron uno, y se valida igual contra los
    * autorizados: un id recordado no es permiso, es una comodidad.
+   * @param onlyTenantId Ver `accessibleBusinesses`. Con él, lo hablado se ignora:
+   * la skill ya dijo cuál negocio es.
    */
   async resolveBusiness(
     actor: AuthenticatedUser,
     spoken: string | undefined,
     rememberedId?: string,
+    onlyTenantId?: string,
   ): Promise<BusinessResolution> {
-    const available = await this.accessibleBusinesses(actor);
+    const available = await this.accessibleBusinesses(actor, onlyTenantId);
+    if (onlyTenantId) {
+      return available.length === 1
+        ? { status: 'resolved', business: available[0] }
+        : { status: 'missing', available };
+    }
     if (!spoken?.trim()) {
       const remembered =
         rememberedId && available.find((b) => b.id === rememberedId);
@@ -89,29 +98,10 @@ export class AssistantScopeService {
         : { status: 'missing', available };
     }
 
-    const said = normalize(spoken);
-    const exact = available.filter((b) => normalize(b.name) === said);
-    if (exact.length === 1) return { status: 'resolved', business: exact[0] };
-
-    // Sin espacios también: el Echo transcribe "Bella Chic" como "bellachi",
-    // pegando las palabras y comiéndose el final. Comparar así lo resuelve por
-    // prefijo, que con los espacios en medio no coincidiría con nada.
-    const tight = said.replace(/\s/g, '');
-    const partial = available.filter((b) => {
-      const name = normalize(b.name);
-      const nameTight = name.replace(/\s/g, '');
-      return (
-        name.startsWith(said) ||
-        said.startsWith(name) ||
-        name.includes(said) ||
-        nameTight.startsWith(tight) ||
-        tight.startsWith(nameTight)
-      );
-    });
-    if (partial.length === 1)
-      return { status: 'resolved', business: partial[0] };
-    if (partial.length > 1) return { status: 'ambiguous', matches: partial };
-    return { status: 'unknown', available };
+    const match = matchBusinessName(available, spoken);
+    return match.status === 'unknown'
+      ? { status: 'unknown', available }
+      : match;
   }
 
   /**
@@ -159,6 +149,15 @@ export class AssistantScopeService {
       permissions,
       accessibleBranches: actor.accessibleBranches,
     };
+  }
+
+  /**
+   * Costos internos (margen, inventario al costo, costo de pedidos): solo el
+   * dueño y el super-admin. No es un permiso porque `retail:sales:read` lo tienen
+   * roles que atienden el negocio y no deben oír cuánto se gana.
+   */
+  canSeeInternalCosts(actor: AuthenticatedUser): boolean {
+    return actor.isRoot || actor.isPlatformAdmin || actor.roleCode === 'OWNER';
   }
 
   /** Misma regla que `@RequirePermissions` en los controladores. */

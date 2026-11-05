@@ -1,0 +1,790 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "mi panel de negocios",
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "DespedidaIntent",
+          "slots": [],
+          "samples": [
+            "ya es todo gracias",
+            "eso es todo gracias",
+            "gracias por la info",
+            "gracias por el dato",
+            "gracias por la información",
+            "hablamos luego",
+            "nos vemos",
+            "listo gracias"
+          ]
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": [
+            "fin de conversación",
+            "fin de la conversación",
+            "terminar",
+            "ya no necesito nada más"
+          ]
+        },
+        {
+          "name": "ActivarLynkoIntent",
+          "slots": [
+            {
+              "name": "codigo",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "mi código es {codigo}",
+            "mi codigo es {codigo}",
+            "mi clave es {codigo}",
+            "activar con {codigo}",
+            "activa mi acceso con {codigo}"
+          ]
+        },
+        {
+          "name": "CerrarAccesoIntent",
+          "slots": [],
+          "samples": [
+            "cierra mi acceso",
+            "cierra mi acceso a lynko",
+            "cierra mi acceso a linco",
+            "revoca mi acceso",
+            "olvida mi código"
+          ]
+        },
+        {
+          "name": "GetSubscriptionsIntent",
+          "slots": [],
+          "samples": [
+            "cuántas suscripciones activas tengo",
+            "cuántas suscripciones tengo",
+            "cuántas suscripciones activas hay",
+            "cuántos negocios hay en la plataforma",
+            "cuántos clientes activos tengo",
+            "cuántos clientes tengo"
+          ]
+        },
+        {
+          "name": "list_businesses",
+          "slots": [],
+          "samples": [
+            "lista mis negocios",
+            "lístame los negocios disponibles",
+            "cuáles negocios tengo",
+            "qué negocios puedo consultar",
+            "qué negocios tengo"
+          ]
+        },
+        {
+          "name": "business_report",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "dame el reporte",
+            "dame el reporte general",
+            "dame el reporte completo",
+            "dame el reporte general de {negocio}",
+            "dame el reporte del {periodo}",
+            "dame el reporte de {periodo}",
+            "reporte del {periodo}",
+            "reporte de {periodo}",
+            "reporte general de {periodo}",
+            "reporte del {periodo} de {negocio}",
+            "reporte general de {negocio}",
+            "cómo vamos",
+            "cómo vamos en el {periodo}",
+            "cómo nos fue {periodo}",
+            "cómo va el negocio",
+            "cómo va el negocio {periodo}",
+            "resumen del {periodo}",
+            "resumen de {periodo}",
+            "resumen general",
+            "resumen general de {negocio}",
+            "ponme al día",
+            "ponme al día en {negocio}",
+            "ponme al día del {periodo}",
+            "ponme al día del {periodo} en {negocio}",
+            "cómo va {negocio}",
+            "cómo nos fue {periodo} en {negocio}"
+          ]
+        },
+        {
+          "name": "sales_summary",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuánto vendí hoy",
+            "cuánto vendí hoy en {negocio}",
+            "cuánto vendí {periodo}",
+            "cuánto vendí {periodo} en {negocio}",
+            "cuánto he vendido en {negocio}",
+            "cuánto vendí en el {periodo}",
+            "cuánto vendí en el {periodo} en {negocio}",
+            "cuánto facturé {periodo}",
+            "cuánta plata entró {periodo}",
+            "cómo van las ventas de {negocio}",
+            "cómo van las ventas hoy",
+            "cómo van las ventas {periodo}",
+            "dame el reporte de ventas",
+            "dame el reporte de ventas de {periodo}",
+            "dame el reporte de ventas de {negocio}",
+            "reporte de ventas",
+            "reporte de ventas del {periodo}",
+            "solo las ventas",
+            "solo las ventas de {periodo}",
+            "ventas de {periodo}",
+            "ventas de {negocio}",
+            "ventas de {periodo} en {negocio}"
+          ]
+        },
+        {
+          "name": "units_sold",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuántos productos he vendido",
+            "cuántos productos he vendido {periodo}",
+            "cuántos productos he vendido en {negocio}",
+            "cuántos productos vendí {periodo}",
+            "cuántas unidades he vendido",
+            "cuántas unidades vendí {periodo}",
+            "cuántas unidades vendí en {negocio}",
+            "cuántas unidades salieron {periodo}",
+            "cuántos artículos vendí {periodo}",
+            "cuántas cosas he vendido {periodo}"
+          ]
+        },
+        {
+          "name": "expenses_summary",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuánto he gastado",
+            "cuánto he gastado {periodo}",
+            "cuánto he gastado en {negocio}",
+            "cuánto gasté {periodo}",
+            "cuánto gasté {periodo} en {negocio}",
+            "cuáles son mis gastos",
+            "cuáles son mis gastos de {periodo}",
+            "dame el reporte de gastos",
+            "dame el reporte de gastos de {periodo}",
+            "dame el reporte de gastos de {negocio}",
+            "reporte de gastos",
+            "reporte de gastos del {periodo}",
+            "solo los gastos",
+            "solo los gastos de {periodo}",
+            "gastos de {periodo}",
+            "gastos de {negocio}",
+            "en qué se me va la plata",
+            "en qué se me va la plata {periodo}",
+            "cuánto pagué {periodo}",
+            "cuáles fueron mis egresos de {periodo}"
+          ]
+        },
+        {
+          "name": "pending_payment",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "quién me debe",
+            "quién me debe en {negocio}",
+            "quien me debe en {negocio}",
+            "cuánto me deben",
+            "cuánto me deben en {negocio}",
+            "qué saldos tengo pendientes en {negocio}",
+            "cómo va la cartera",
+            "cómo va la cartera de {negocio}",
+            "cuánto tengo fiado",
+            "cuánto tengo por cobrar",
+            "cuánto tengo por cobrar en {negocio}"
+          ]
+        },
+        {
+          "name": "pending_delivery",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "qué tengo por entregar",
+            "qué tengo por entregar en {negocio}",
+            "qué falta por entregar en {negocio}",
+            "cuántos pedidos faltan por entregar en {negocio}",
+            "cuántos pedidos faltan por entregar",
+            "qué me falta despachar",
+            "qué me falta despachar en {negocio}",
+            "qué encargos tengo pendientes",
+            "qué pedidos tengo por entregar"
+          ]
+        },
+        {
+          "name": "pending_purchase",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "qué pedidos tengo por recibir",
+            "qué pedidos tengo por recibir en {negocio}",
+            "qué pedidos tengo pendientes por recibir",
+            "qué pedidos tengo pendientes por recibir en {negocio}",
+            "qué me falta recibir",
+            "qué me falta recibir en {negocio}",
+            "qué falta que llegue",
+            "qué le pedí al proveedor",
+            "qué le pedí al proveedor en {negocio}",
+            "qué compras tengo pendientes",
+            "qué compras tengo pendientes en {negocio}",
+            "qué órdenes de compra están abiertas",
+            "qué mercancía está en camino"
+          ]
+        },
+        {
+          "name": "low_stock",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "qué se está acabando",
+            "qué se está acabando en {negocio}",
+            "qué productos tienen stock bajo",
+            "qué productos tienen stock bajo en {negocio}",
+            "qué me falta en {negocio}",
+            "qué debería reponer",
+            "qué debería reponer en {negocio}",
+            "de qué queda poco",
+            "qué está por acabarse"
+          ]
+        },
+        {
+          "name": "out_of_stock",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "qué está agotado",
+            "qué está agotado en {negocio}",
+            "qué productos están agotados",
+            "qué productos están agotados en {negocio}",
+            "qué productos están en cero",
+            "qué productos están en cero en {negocio}",
+            "qué productos no tengo",
+            "qué productos no tengo en {negocio}",
+            "qué se me acabó"
+          ]
+        },
+        {
+          "name": "inventory_value",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "cuánto vale mi inventario",
+            "cuánto vale el inventario de {negocio}",
+            "cuánto tengo en mercancía",
+            "cuánto tengo en mercancía en {negocio}",
+            "cuánto inventario tengo en {negocio}",
+            "cómo está mi inventario",
+            "cómo está el inventario de {negocio}"
+          ]
+        },
+        {
+          "name": "top_products",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuál es el producto más vendido",
+            "qué es lo más vendido",
+            "qué es lo que más vendo",
+            "qué se vende más en {negocio}",
+            "cuál fue el producto más vendido del {periodo}",
+            "qué aroma se vende más",
+            "qué se vendió más {periodo}",
+            "qué se vendió más {periodo} en {negocio}"
+          ]
+        },
+        {
+          "name": "worst_products",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuál es el producto menos vendido",
+            "qué es lo que menos se vende",
+            "qué no se está vendiendo en {negocio}",
+            "qué productos están quietos",
+            "qué productos están quietos en {negocio}",
+            "qué no se vendió el {periodo}",
+            "qué no se vendió {periodo}",
+            "qué no se ha vendido"
+          ]
+        },
+        {
+          "name": "top_customers",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            },
+            {
+              "name": "periodo",
+              "type": "REPORT_PERIOD"
+            }
+          ],
+          "samples": [
+            "cuál es mi mejor cliente",
+            "quién me compra más",
+            "quién compró más en {negocio}",
+            "cuál cliente me compró más el {periodo}",
+            "quién compró más {periodo}",
+            "quién compró más {periodo} en {negocio}",
+            "dame el reporte de clientes",
+            "dame el reporte de clientes de {negocio}",
+            "reporte de clientes",
+            "reporte de clientes de {periodo}",
+            "cuáles son mis mejores clientes"
+          ]
+        },
+        {
+          "name": "catalog_overview",
+          "slots": [
+            {
+              "name": "negocio",
+              "type": "BUSINESS"
+            }
+          ],
+          "samples": [
+            "qué productos tienes",
+            "qué productos hay en {negocio}",
+            "qué categorías tienes",
+            "qué vendo en {negocio}"
+          ]
+        },
+        {
+          "name": "catalog_category",
+          "slots": [
+            {
+              "name": "categoria",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "qué hay en {categoria}",
+            "muéstrame {categoria}",
+            "productos de {categoria}",
+            "qué tengo de {categoria}"
+          ]
+        },
+        {
+          "name": "product_lookup",
+          "slots": [
+            {
+              "name": "producto",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "cuántos quedan de {producto}",
+            "cuánto stock tengo de {producto}",
+            "a cuánto tengo el {producto}",
+            "qué precio tiene el {producto}"
+          ]
+        }
+      ],
+      "types": [
+        {
+          "name": "BUSINESS",
+          "values": [
+            {
+              "name": {
+                "value": "Malexca",
+                "synonyms": [
+                  "malexca",
+                  "malesca",
+                  "malexa",
+                  "malexka",
+                  "malaxca",
+                  "male sca"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "Lynko",
+                "synonyms": [
+                  "global",
+                  "admin",
+                  "superadmin",
+                  "lynko",
+                  "admin lynko",
+                  "linco",
+                  "linko",
+                  "lingo",
+                  "lincoln",
+                  "lynco",
+                  "link o"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "Bella Chic",
+                "synonyms": [
+                  "bella chic",
+                  "bellachic",
+                  "bellachi",
+                  "bella",
+                  "bella chi",
+                  "bella shic",
+                  "bella shi",
+                  "vella chic",
+                  "vella chi",
+                  "vellachi",
+                  "bella chica"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "DC Tech",
+                "synonyms": [
+                  "dc tech",
+                  "dc tecnología",
+                  "de ce tech",
+                  "de ce tec",
+                  "de se tech",
+                  "dc tec",
+                  "dese tech",
+                  "decetec"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "REPORT_PERIOD",
+          "values": [
+            {
+              "name": {
+                "value": "día",
+                "synonyms": [
+                  "dia",
+                  "hoy",
+                  "de hoy",
+                  "del día de hoy",
+                  "del día",
+                  "de la jornada"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "ayer",
+                "synonyms": [
+                  "de ayer",
+                  "el día de ayer",
+                  "día de ayer"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "semana",
+                "synonyms": [
+                  "esta semana",
+                  "de la semana",
+                  "semanal"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "semana pasada",
+                "synonyms": [
+                  "la semana pasada",
+                  "de la semana pasada",
+                  "semana anterior",
+                  "la semana anterior"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "mes",
+                "synonyms": [
+                  "este mes",
+                  "del mes",
+                  "mensual"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "mes pasado",
+                "synonyms": [
+                  "el mes pasado",
+                  "del mes pasado",
+                  "mes anterior",
+                  "el mes anterior"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "año",
+                "synonyms": [
+                  "este año",
+                  "del año",
+                  "anual",
+                  "en el año"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "últimos 7 días",
+                "synonyms": [
+                  "ultimos 7 dias",
+                  "los últimos 7 días",
+                  "últimos siete días",
+                  "la última semana"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "últimos 15 días",
+                "synonyms": [
+                  "ultimos 15 dias",
+                  "los últimos 15 días",
+                  "últimos quince días"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "últimos 30 días",
+                "synonyms": [
+                  "ultimos 30 dias",
+                  "los últimos 30 días",
+                  "últimos treinta días"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "últimos 90 días",
+                "synonyms": [
+                  "ultimos 90 dias",
+                  "los últimos 90 días",
+                  "últimos noventa días",
+                  "últimos 3 meses",
+                  "últimos tres meses"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "enero",
+                "synonyms": [
+                  "en enero",
+                  "de enero"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "febrero",
+                "synonyms": [
+                  "en febrero",
+                  "de febrero"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "marzo",
+                "synonyms": [
+                  "en marzo",
+                  "de marzo"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "abril",
+                "synonyms": [
+                  "en abril",
+                  "de abril"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "mayo",
+                "synonyms": [
+                  "en mayo",
+                  "de mayo"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "junio",
+                "synonyms": [
+                  "en junio",
+                  "de junio"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "julio",
+                "synonyms": [
+                  "en julio",
+                  "de julio"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "agosto",
+                "synonyms": [
+                  "en agosto",
+                  "de agosto"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "septiembre",
+                "synonyms": [
+                  "en septiembre",
+                  "de septiembre",
+                  "setiembre",
+                  "en setiembre"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "octubre",
+                "synonyms": [
+                  "en octubre",
+                  "de octubre"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "noviembre",
+                "synonyms": [
+                  "en noviembre",
+                  "de noviembre"
+                ]
+              }
+            },
+            {
+              "name": {
+                "value": "diciembre",
+                "synonyms": [
+                  "en diciembre",
+                  "de diciembre"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

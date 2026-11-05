@@ -25,6 +25,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "alexa:hash": "ts-node scripts/alexa-activation-hash.ts",
     "alexa:import-env": "ts-node scripts/alexa-import-env-skill.ts",
+    "alexa:model": "ts-node scripts/alexa-model.ts",
     "bootstrap:root": "ts-node scripts/bootstrap-root.ts",
     "backfill:subscriptions": "ts-node scripts/backfill-subscriptions.ts",
     "migrate:wa-session": "ts-node scripts/migrate-wa-session-to-storage.ts",

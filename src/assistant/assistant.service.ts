@@ -60,6 +60,8 @@ function normalizeName(value: string): string {
 interface Scope {
   ctx: TenantContext;
   branchIds: string[];
+  /** Se resuelve acá y no en el canal: lo que no viaja no se puede filtrar. */
+  seesCosts: boolean;
 }
 
 /**
@@ -94,7 +96,11 @@ export class AssistantService {
     // Plan y cupo del mes. El super-admin consultando la cartera no gasta el
     // cupo del negocio: no es el negocio el que pregunta.
     if (!actor.isPlatformAdmin) await this.quota.assertAvailable(business.id, business.name);
-    return { ctx, branchIds: await this.scope.branchesOf(business.id) };
+    return {
+      ctx,
+      branchIds: await this.scope.branchesOf(business.id),
+      seesCosts: this.scope.canSeeInternalCosts(actor),
+    };
   }
 
   /**
@@ -431,7 +437,7 @@ export class AssistantService {
    * corresponde a ninguna venta real.
    */
   private async salesFigures(
-    { ctx, branchIds }: Scope,
+    { ctx, branchIds, seesCosts }: Scope,
     period: ReportPeriod,
   ): Promise<SalesFigures> {
     const { from, to } = periodRange(period);
@@ -478,9 +484,11 @@ export class AssistantService {
       // El margen se mide contra la MISMA base que el resumen del backend
       // (`marginPct(revenueCOP, costCOP + shippingCOP)`), o el asistente diría
       // un porcentaje y la pantalla otro.
-      marginPct: cashInCOP
-        ? Math.round((grossProfitCOP / cashInCOP) * 1000) / 10
-        : 0,
+      ...(seesCosts && {
+        marginPct: cashInCOP
+          ? Math.round((grossProfitCOP / cashInCOP) * 1000) / 10
+          : 0,
+      }),
       creditedCOP: sum((p) => p.pendingPayment.amountCOP),
     };
   }
@@ -493,6 +501,7 @@ export class AssistantService {
   private async inventoryFigures({
     ctx,
     branchIds,
+    seesCosts,
   }: Scope): Promise<InventoryFigures> {
     const parts = await Promise.all(
       branchIds.map((branchId) =>
@@ -507,7 +516,9 @@ export class AssistantService {
     return {
       trackedProducts: parts.reduce((n, p) => n + p.trackedProducts, 0),
       totalUnits: parts.reduce((n, p) => n + p.totalUnits, 0),
-      valueAtCostCOP: parts.reduce((n, p) => n + p.stockValueAtCostCOP, 0),
+      ...(seesCosts && {
+        valueAtCostCOP: parts.reduce((n, p) => n + p.stockValueAtCostCOP, 0),
+      }),
       valueAtPriceCOP: parts.reduce((n, p) => n + p.stockValueAtPriceCOP, 0),
       lowStock,
       lowStockCount: lowStock.length,
@@ -518,6 +529,7 @@ export class AssistantService {
   private async purchaseFigures({
     ctx,
     branchIds,
+    seesCosts,
   }: Scope): Promise<PurchaseFigures> {
     const parts = await Promise.all(
       branchIds.map((branchId) =>
@@ -530,7 +542,9 @@ export class AssistantService {
       parts.reduce((n, p) => n + (pick(p) ?? 0), 0);
     return {
       openCount: sum((p) => p.openCount),
-      estimatedOpenCostCOP: sum((p) => p.estimatedOpenCostCOP),
+      ...(seesCosts && {
+        estimatedOpenCostCOP: sum((p) => p.estimatedOpenCostCOP),
+      }),
       pendingCount: sum((p) => p.pendingCount),
       orderedCount: sum((p) => p.orderedCount),
       partiallyReceivedCount: sum((p) => p.partiallyReceivedCount),

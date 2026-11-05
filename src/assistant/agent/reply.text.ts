@@ -34,7 +34,7 @@ export function salesText(sales: SalesAnswer): string {
   }
   const lines = [
     `${capitalize(label)} ${sales.business.name} lleva *${formatCOP(sales.revenueCOP)}* en ${sales.salesCount} ${plural(sales.salesCount, 'venta', 'ventas')}.`,
-    `Ticket promedio: ${formatCOP(sales.averageTicketCOP)} · Margen: ${sales.marginPct}%`,
+    `Ticket promedio: ${formatCOP(sales.averageTicketCOP)}${sales.marginPct === undefined ? '' : ` · Margen: ${sales.marginPct}%`}`,
   ];
   // El flete entra a la caja pero no es mercancía vendida: se nombra aparte
   // para que nadie lo sume al ingreso. Ver SalesFigures en assistant.types.ts.
@@ -102,7 +102,9 @@ export function lowStockText(inventory: InventoryStatusAnswer): string {
 export function inventoryValueText(inventory: InventoryStatusAnswer): string {
   return [
     `${inventory.business.name} tiene ${inventory.totalUnits} unidades en ${inventory.trackedProducts} productos.`,
-    `Valor al costo: *${formatCOP(inventory.valueAtCostCOP)}* · a precio de venta: ${formatCOP(inventory.valueAtPriceCOP)}`,
+    inventory.valueAtCostCOP === undefined
+      ? `Valor a precio de venta: ${formatCOP(inventory.valueAtPriceCOP)}`
+      : `Valor al costo: *${formatCOP(inventory.valueAtCostCOP)}* · a precio de venta: ${formatCOP(inventory.valueAtPriceCOP)}`,
   ].join('\n');
 }
 
@@ -153,7 +155,7 @@ export function pendingPurchaseText(purchase: PendingPurchaseAnswer): string {
     return `${purchase.business.name} no tiene pedidos pendientes por recibir del proveedor.`;
   }
   const lines = [
-    `${purchase.business.name} tiene *${purchase.openCount}* ${plural(purchase.openCount, 'pedido', 'pedidos')} sin recibir, por unos ${formatCOP(purchase.estimatedOpenCostCOP)}.`,
+    `${purchase.business.name} tiene *${purchase.openCount}* ${plural(purchase.openCount, 'pedido', 'pedidos')} sin recibir${purchase.estimatedOpenCostCOP === undefined ? '' : `, por ${formatCOP(purchase.estimatedOpenCostCOP)}`}.`,
     // El desglose importa: "sin pedir" depende de uno, "en camino" del
     // proveedor, y son dos acciones distintas.
     `${purchase.pendingCount} sin pedir · ${purchase.orderedCount} en camino · ${purchase.partiallyReceivedCount} a medias`,
