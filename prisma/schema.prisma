@@ -5282,6 +5282,47 @@ model AgentProposal {
   @@map("agent_proposals")
 }
 
+/// Dispositivos del super-admin. Va aparte de `WebPushSubscription` porque esa
+/// exige un negocio, y la plataforma no opera dentro de ninguno.
+model PlatformPushSubscription {
+  id          String   @id @default(cuid())
+  userId      String
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  deviceLabel String?
+  isActive    Boolean  @default(true)
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, isActive])
+  @@map("platform_push_subscriptions")
+}
+
+/// Un aviso para el super-admin. El unique es lo que impide repetirlo: se reclama
+/// insertando la fila antes de enviar. Si el cliente paga, el vencimiento cambia y
+/// el siguiente ciclo tiene su propio `dueDay`.
+model PlatformAlert {
+  id        String    @id @default(cuid())
+  /// `billing.due_soon` · `billing.due` · `billing.grace_ended`
+  type      String
+  tenantId  String
+  /// Día de vencimiento al que corresponde (AAAA-MM-DD, hora Colombia).
+  dueDay    String
+  title     String
+  body      String
+  url       String
+  pushedAt  DateTime?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([type, tenantId, dueDay])
+  @@index([createdAt])
+  @@map("platform_alerts")
+}
+
 // ─── QR permanentes (tarjeta de presentación) ─────────────────────────────────
 
 /// Para qué se imprimió el QR. Hoy solo hay dos; el enum existe para que mañana

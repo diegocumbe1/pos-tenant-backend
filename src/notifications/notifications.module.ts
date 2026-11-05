@@ -13,6 +13,10 @@ import { WebPushProvider } from './web-push.provider';
     NotificationDispatcherService,
     WebPushProvider,
   ],
-  exports: [NotificationsService, NotificationDispatcherService],
+  exports: [
+    NotificationsService,
+    NotificationDispatcherService,
+    WebPushProvider,
+  ],
 })
 export class NotificationsModule {}
