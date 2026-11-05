@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { FinanceModule } from '../finance/finance.module';
 import { PlatformModule } from '../platform/platform.module';
 import { RetailCatalogModule } from '../retail/modules/catalog/retail-catalog.module';
+import { RetailCustomersModule } from '../retail/modules/customers/retail-customers.module';
 import { RetailInventoryModule } from '../retail/modules/inventory/retail-inventory.module';
 import { RetailPurchasesModule } from '../retail/modules/purchases/retail-purchases.module';
 import { RetailSalesModule } from '../retail/modules/sales/retail-sales.module';
@@ -18,6 +19,9 @@ import { WhatsAppInboundService } from './channels/whatsapp-inbound.service';
 import { ConversationService } from './conversation/conversation.service';
 import { IdentityResolverService } from './identity/identity-resolver.service';
 import { IntentResolverService } from './intents/intent-resolver.service';
+import { AgentProposalsService } from './proposals/agent-proposals.service';
+import { ExpenseFlow } from './proposals/expense.flow';
+import { RetailSaleFlow } from './proposals/retail-sale.flow';
 
 @Module({
   imports: [
@@ -26,6 +30,8 @@ import { IntentResolverService } from './intents/intent-resolver.service';
     RetailSalesModule,
     RetailInventoryModule,
     RetailCatalogModule,
+    // Para registrar ventas por WhatsApp: el cliente se resuelve contra los reales.
+    RetailCustomersModule,
     RetailPurchasesModule,
     // Para la capacidad de gastos. Ver `AssistantService.expenses`.
     FinanceModule,
@@ -48,6 +54,9 @@ import { IntentResolverService } from './intents/intent-resolver.service';
     IdentityResolverService,
     ConversationService,
     IntentResolverService,
+    ExpenseFlow,
+    RetailSaleFlow,
+    AgentProposalsService,
     LynkoAgentService,
     WhatsAppInboundService,
   ],

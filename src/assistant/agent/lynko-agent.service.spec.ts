@@ -29,6 +29,7 @@ function build(overrides: {
   conversation?: unknown;
   businesses?: unknown[];
   assistant?: Record<string, unknown>;
+  proposals?: Record<string, unknown>;
 }) {
   const remembered = {
     row: null as Record<string, unknown> | null,
@@ -74,14 +75,21 @@ function build(overrides: {
     }),
     ...overrides.assistant,
   };
+  const proposals = {
+    enabled: jest.fn().mockResolvedValue(false),
+    handle: jest.fn().mockResolvedValue(null),
+    start: jest.fn(),
+    ...overrides.proposals,
+  };
   const agent = new LynkoAgentService(
     identity as never,
     conversations as never,
     new IntentResolverService(),
     scope as never,
     assistant as never,
+    proposals as never,
   );
-  return { agent, conversations, assistant, scope };
+  return { agent, conversations, assistant, scope, proposals };
 }
 
 const ask = (agent: LynkoAgentService, message: string) =>
@@ -92,6 +100,81 @@ const ask = (agent: LynkoAgentService, message: string) =>
   });
 
 describe('LynkoAgentService', () => {
+  describe('registrar por WhatsApp', () => {
+    const reply = {
+      reply: 'borrador',
+      action: 'CLARIFY' as const,
+      intent: 'capture_expense' as const,
+    };
+
+    it('con el interruptor apagado, "gasté 50 mil" no arma ningún borrador', async () => {
+      const { agent, proposals } = build({});
+      await ask(agent, 'gasté 50 mil en domicilios');
+      expect(proposals.handle).not.toHaveBeenCalled();
+      expect(proposals.start).not.toHaveBeenCalled();
+    });
+
+    it('encendido, arranca el borrador en el negocio de la conversación', async () => {
+      const start = jest.fn().mockResolvedValue(reply);
+      const { agent } = build({
+        proposals: { enabled: jest.fn().mockResolvedValue(true), start },
+      });
+      const result = await ask(agent, 'gasté 50 mil en domicilios');
+      expect(result.reply).toBe('borrador');
+      expect(start.mock.calls[0][0]).toBe('expense');
+      expect(start.mock.calls[0][2].business.id).toBe('t1');
+    });
+
+    it('con varios negocios pregunta cuál antes de armar nada', async () => {
+      const start = jest.fn();
+      const { agent } = build({
+        businesses: [BELLA, DC],
+        proposals: { enabled: jest.fn().mockResolvedValue(true), start },
+      });
+      const result = await ask(agent, 'gasté 50 mil en domicilios');
+      expect(start).not.toHaveBeenCalled();
+      expect(result.reply).toContain('cuál negocio');
+    });
+
+    it('"vendí" arranca una venta y "¿cuánto vendí?" sigue siendo una consulta', async () => {
+      const start = jest.fn().mockResolvedValue(reply);
+      const { agent } = build({
+        proposals: { enabled: jest.fn().mockResolvedValue(true), start },
+      });
+      await ask(agent, '¿cuánto vendí hoy?');
+      expect(start).not.toHaveBeenCalled();
+      await ask(agent, 'vendí 2 mantequillas de coco');
+      expect(start.mock.calls[0][0]).toBe('retail_sale');
+    });
+
+    it('"¿cuánto gasté?" sigue siendo una consulta', async () => {
+      const start = jest.fn();
+      const { agent } = build({
+        proposals: { enabled: jest.fn().mockResolvedValue(true), start },
+        assistant: {
+          expenses: jest.fn().mockResolvedValue({
+            business: BELLA,
+            period: 'month',
+            totalCOP: 0,
+            byCategory: [],
+          }),
+        },
+      });
+      await ask(agent, '¿cuánto gasté este mes?');
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('un desconocido nunca llega a los borradores', async () => {
+      const handle = jest.fn();
+      const { agent } = build({
+        identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },
+        proposals: { enabled: jest.fn().mockResolvedValue(true), handle },
+      });
+      await ask(agent, 'SI 4821');
+      expect(handle).not.toHaveBeenCalled();
+    });
+  });
+
   it('a un número desconocido no le nombra ningún negocio', async () => {
     const { agent } = build({
       identity: { known: false, kind: 'UNKNOWN', firstName: null, actors: [] },

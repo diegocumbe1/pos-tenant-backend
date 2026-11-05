@@ -143,6 +143,14 @@ export class UpdateMessagingSettingsDto {
   @IsBoolean()
   agentEnabled?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'El agente puede registrar datos en los negocios, siempre con borrador y confirmación.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  agentCaptureEnabled?: boolean;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()

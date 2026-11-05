@@ -19,6 +19,7 @@ export interface ExpenseRow {
   discountCOP?: number | null;
   moneyAccountId?: string | null;
   paidOutsideBusiness?: boolean | null;
+  capturedVia?: string | null;
 }
 
 /**
@@ -50,5 +51,7 @@ export function toExpenseDto(e: ExpenseRow) {
     listAmountCOP: e.amountCOP + (e.discountCOP ?? 0),
     moneyAccountId: e.moneyAccountId ?? null,
     paidOutsideBusiness: e.paidOutsideBusiness === true,
+    /** Por qué canal del agente entró. Null = se registró en la pantalla. */
+    capturedVia: e.capturedVia ?? null,
   };
 }

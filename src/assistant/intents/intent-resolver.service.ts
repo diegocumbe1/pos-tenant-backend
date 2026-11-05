@@ -35,6 +35,9 @@ export type AgentIntent =
   | 'demo_request'
   | 'existing_customer'
   | 'goodbye'
+  | 'capture_expense'
+  | 'capture_sale'
+  | 'proposal_command'
   | 'unknown';
 
 export interface IntentMatch {

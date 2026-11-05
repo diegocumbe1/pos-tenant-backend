@@ -24,6 +24,7 @@ import { ExpenseRow, toExpenseDto } from './expense-dto';
 import { resolveNature } from './expense-nature';
 import { Period, PeriodQueryDto } from './dto/period-query.dto';
 import { PayrollQueryDto } from './dto/payroll-query.dto';
+import { CaptureOrigin } from '../common/capture-origin';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
 import { CreatePayrollDto, UpdatePayrollDto } from './dto/payroll.dto';
 import {
@@ -1896,9 +1897,19 @@ export class FinanceService {
 
   // ─── Gastos (write) ──────────────────────────────────────────────────────
 
-  async createExpense(ctx: TenantContext, dto: CreateExpenseDto) {
+  /**
+   * @param origin Solo lo pasa el agente. No va en el DTO a propósito: por HTTP
+   * nadie puede declarar que un gasto entró por otro canal.
+   */
+  async createExpense(
+    ctx: TenantContext,
+    dto: CreateExpenseDto,
+    origin?: CaptureOrigin,
+  ) {
     const expense = await this.prisma.expense.create({
       data: {
+        capturedVia: origin?.channel,
+        agentProposalId: origin?.proposalId,
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         category: dto.category,

@@ -15,6 +15,10 @@ import { RetailSalesService } from './retail-sales.service';
     RetailSaleReturnsService,
     RetailPaymentCommitmentsService,
   ],
-  exports: [RetailSalesService, RetailSaleReturnsService],
+  exports: [
+    RetailSalesService,
+    RetailSaleReturnsService,
+    RetailPaymentCommitmentsService,
+  ],
 })
 export class RetailSalesModule {}

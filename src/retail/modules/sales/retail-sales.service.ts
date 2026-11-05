@@ -52,6 +52,10 @@ import {
   VoidRetailSaleDto,
   VoidRetailSaleReturnDto,
 } from './dto/retail-sale.dto';
+import {
+  CAPTURE_CHANNEL_LABEL,
+  CaptureOrigin,
+} from '../../../common/capture-origin';
 
 /** 'YYYY-MM-DD' suelto, sin hora. */
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -792,7 +796,15 @@ export class RetailSalesService {
    * valida stock → descuenta → deja kardex → congela costo → numera la venta.
    * Si algo falla, no queda ni stock movido ni venta a medias.
    */
-  async createSale(ctx: TenantContext, dto: CreateRetailSaleDto) {
+  /**
+   * @param origin Solo lo pasa el agente. No va en el DTO a propósito: por HTTP
+   * nadie puede declarar que una venta entró por otro canal.
+   */
+  async createSale(
+    ctx: TenantContext,
+    dto: CreateRetailSaleDto,
+    origin?: CaptureOrigin,
+  ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
     if (dto.customerId) {
       await this.tenantHelper.assertScopedRecord(
@@ -1068,6 +1080,8 @@ export class RetailSalesService {
           // que adivinar cuándo se entregó lo que nunca estuvo pendiente.
           deliveredAt: dto.deliveryStatus === 'PENDING' ? null : soldAt,
           deliveryNote: dto.deliveryNote,
+          capturedVia: origin?.channel,
+          agentProposalId: origin?.proposalId,
           receivedCOP: dto.receivedCOP,
           changeCOP:
             dto.receivedCOP !== undefined ? dto.receivedCOP - totalCOP : null,
@@ -1197,17 +1211,26 @@ export class RetailSalesService {
         await this.syncSalePayment(tx, created.id);
       }
 
+      const summary = financing
+        ? `Venta registrada por ${formatCOP(totalCOP)}, financiada con ${financing.terms.financingProviderName} · comisión ${formatFeePct(financing.terms.financingFeeBps)} (${formatCOP(financing.terms.financingFeeCOP)}) · quedan ${formatCOP(totalCOP - financing.terms.financingFeeCOP)} por desembolsar`
+        : paidInFull
+          ? `Venta registrada por ${formatCOP(totalCOP)}, cobrada (${PAYMENT_METHOD_LABEL[dto.paymentMethod ?? 'CASH']})`
+          : depositCOP > 0
+            ? `Venta registrada por ${formatCOP(totalCOP)} · abonó ${formatCOP(depositCOP)} (${PAYMENT_METHOD_LABEL[depositMethod]}) · quedan ${formatCOP(totalCOP - depositCOP)}`
+            : `Venta registrada por ${formatCOP(totalCOP)}, sin cobrar`;
       await this.logSaleEvent(tx, ctx, created.id, {
         kind: 'CREATED',
-        summary: financing
-          ? `Venta registrada por ${formatCOP(totalCOP)}, financiada con ${financing.terms.financingProviderName} · comisión ${formatFeePct(financing.terms.financingFeeBps)} (${formatCOP(financing.terms.financingFeeCOP)}) · quedan ${formatCOP(totalCOP - financing.terms.financingFeeCOP)} por desembolsar`
-          : paidInFull
-            ? `Venta registrada por ${formatCOP(totalCOP)}, cobrada (${PAYMENT_METHOD_LABEL[dto.paymentMethod ?? 'CASH']})`
-            : depositCOP > 0
-              ? `Venta registrada por ${formatCOP(totalCOP)} · abonó ${formatCOP(depositCOP)} (${PAYMENT_METHOD_LABEL[depositMethod]}) · quedan ${formatCOP(totalCOP - depositCOP)}`
-              : `Venta registrada por ${formatCOP(totalCOP)}, sin cobrar`,
+        summary: origin
+          ? `${summary} · entró por ${CAPTURE_CHANNEL_LABEL[origin.channel]}`
+          : summary,
         note: dto.note,
         detail: {
+          ...(origin
+            ? {
+                capturedVia: origin.channel,
+                agentProposalId: origin.proposalId,
+              }
+            : {}),
           totalCOP,
           discountCOP: saleDiscountCOP,
           units: items.reduce((sum, item) => sum + item.quantity, 0),
@@ -3754,6 +3777,7 @@ export class RetailSalesService {
       paidAt: sale.paidAt,
       deliveredAt: sale.deliveredAt,
       deliveryNote: sale.deliveryNote,
+      capturedVia: sale.capturedVia,
       customerId: sale.customerId,
       customerName: sale.customer?.name ?? null,
       customerPhone: sale.customer?.phone ?? null,

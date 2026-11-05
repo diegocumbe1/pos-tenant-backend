@@ -283,8 +283,9 @@ export class WhatsAppInboundService {
       // Mientras se resolvía la consulta pudo llegar otro mensaje (hay una
       // entrada nueva en `pending`) o pudo entrar un asesor. En los dos casos
       // esta respuesta ya no corresponde: se descarta y la nueva ráfaga la
-      // recalculará con el contexto completo.
-      if (this.pending.has(chatId)) {
+      // recalculará con el contexto completo. Salvo si ya se registró algo: eso
+      // no se recalcula, y la persona tiene que saber que quedó hecho.
+      if (this.pending.has(chatId) && result.context.level !== 'EXECUTE') {
         this.trace(event, 'descartada: llegó otro mensaje');
         return;
       }
@@ -503,7 +504,7 @@ export class WhatsAppInboundService {
                 ? 'CLARIFIED'
                 : 'FALLBACK',
           confidence: result.action === 'RESPOND' ? 'HIGH' : 'MEDIUM',
-          level: 'READ',
+          level: result.context.level ?? 'READ',
           resolvedTo: null,
           latencyMs: Date.now() - started,
         },

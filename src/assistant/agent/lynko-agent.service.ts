@@ -22,6 +22,11 @@ import {
   IdentityResolverService,
   ResolvedIdentity,
 } from '../identity/identity-resolver.service';
+import {
+  AgentProposalsService,
+  ProposalReply,
+} from '../proposals/agent-proposals.service';
+import { captureKindOf } from '../proposals/capture-kind';
 import { AssistantQuotaException } from '../telemetry/assistant-quota.service';
 import { AgentRequest, AgentResult } from './agent.types';
 import { handoffTiming } from './business-hours';
@@ -102,6 +107,7 @@ export class LynkoAgentService {
     private readonly intents: IntentResolverService,
     private readonly scope: AssistantScopeService,
     private readonly assistant: AssistantService,
+    private readonly proposals: AgentProposalsService,
   ) {}
 
   async process(request: AgentRequest): Promise<AgentResult> {
@@ -292,6 +298,21 @@ export class LynkoAgentService {
 
     const intent = this.effectiveIntent(match, remembered);
 
+    // Los borradores van antes que todo lo demás: un "SI 4821" o la respuesta a
+    // lo que Lynko acaba de preguntar no son una consulta. Traen su propio
+    // negocio y se validan contra `scopes`, sin importar cuál esté recordado.
+    const captureOn = await this.proposals.enabled(channel);
+    if (captureOn) {
+      const handled = await this.proposals.handle({
+        channel,
+        externalUserId,
+        message: request.message,
+        intent,
+        scopes,
+      });
+      if (handled) return this.proposalResult(request, personId, handled);
+    }
+
     if (intent === 'human_handoff') {
       await this.conversations.remember(channel, externalUserId, {
         personId,
@@ -355,10 +376,16 @@ export class LynkoAgentService {
         scope = scopes[0];
     }
 
+    const captureKind = captureOn ? captureKindOf(request.message) : null;
+
     if (!scope) {
-      const greeting = state.stale
-        ? `¡Hola${identity.firstName ? `, ${identity.firstName}` : ''}! 👋`
-        : null;
+      // La frase no se guarda (ver ConversationService): elegido el negocio, hay
+      // que volver a escribirla.
+      const greeting = captureKind
+        ? 'Para registrarlo, dime primero en cuál negocio y luego me lo vuelves a escribir.'
+        : state.stale
+          ? `¡Hola${identity.firstName ? `, ${identity.firstName}` : ''}! 👋`
+          : null;
       return this.askForBusiness(
         request,
         personId,
@@ -367,6 +394,25 @@ export class LynkoAgentService {
         intent,
         state.stale,
       );
+    }
+
+    if (captureKind) {
+      try {
+        const reply = await this.proposals.start(
+          captureKind,
+          { channel, externalUserId, message: request.message },
+          scope,
+        );
+        return this.proposalResult(request, personId, reply);
+      } catch (error) {
+        return this.explainFailure(
+          request,
+          personId,
+          scope,
+          captureKind === 'expense' ? 'capture_expense' : 'capture_sale',
+          error,
+        );
+      }
     }
 
     // ── Qué se pregunta ──────────────────────────────────────────────────────
@@ -433,6 +479,34 @@ export class LynkoAgentService {
       match.period,
       state.stale ? identity.firstName : null,
     );
+  }
+
+  private async proposalResult(
+    request: AgentRequest,
+    personId: string,
+    handled: ProposalReply,
+  ): Promise<AgentResult> {
+    const { channel, externalUserId } = request;
+    await this.conversations.remember(channel, externalUserId, {
+      personId,
+      ...(handled.scope ? { tenantId: handled.scope.business.id } : {}),
+      lastIntent: handled.intent,
+      // Las opciones numeradas de un borrador viven en el borrador: un "2" lo
+      // resuelve él, no el menú de la conversación.
+      lastOptions: null,
+      greeted: true,
+      repliedByAgent: true,
+    });
+    return {
+      action: handled.action,
+      reply: handled.reply,
+      context: {
+        ...(handled.scope
+          ? this.contextOf(personId, handled.scope, handled.intent)
+          : { personId, tenantId: null, intent: handled.intent }),
+        level: handled.level,
+      },
+    };
   }
 
   // ─── Ejecución de una capacidad ───────────────────────────────────────────

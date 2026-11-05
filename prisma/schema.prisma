@@ -1709,6 +1709,11 @@ model Expense {
   /// Lo pagó el dueño de su bolsillo: no tocó ninguna cuenta del negocio.
   paidOutsideBusiness Boolean?
 
+  /// Por qué canal del agente entró. NULL = se registró en la pantalla.
+  capturedVia     AssistantChannel?
+  /// El borrador que lo originó: quién lo pidió, qué se le mostró y cuándo aprobó.
+  agentProposalId String?
+
   createdAt DateTime @default(now())
 
   @@unique([templateId, templateOccurrence])
@@ -2951,6 +2956,10 @@ model PlatformMessagingSettings {
   // apagar un agente que le habla a los clientes no puede exigir un redeploy:
   // cuando algo salga mal, se apaga desde la consola en diez segundos.
   agentEnabled Boolean  @default(false)
+  // ¿El agente puede REGISTRAR (siempre con borrador y confirmación)? Es otro
+  // interruptor a propósito: encender el agente que consulta no debe habilitar
+  // que escriba en los libros de un negocio.
+  agentCaptureEnabled Boolean @default(false)
   fromEmail    String?
   fromName     String?
   replyTo      String?
@@ -4012,6 +4021,10 @@ model RetailSale {
   deliveredAt           DateTime?
   // Nota de la entrega: dirección, a quién se le deja, cuándo pasa a recoger.
   deliveryNote          String?
+  /// Por qué canal del agente entró. NULL = se registró en la pantalla.
+  capturedVia     AssistantChannel?
+  /// El borrador que lo originó: quién lo pidió, qué se le mostró y cuándo aprobó.
+  agentProposalId String?
   subtotalCOP           Int
   discountCOP           Int                  @default(0)
   // Flete que se le traslada al cliente. Lo pone el envío, no el mostrador: el
@@ -5212,6 +5225,61 @@ model AssistantConversation {
   @@index([personId])
   @@index([tenantId])
   @@map("assistant_conversations")
+}
+
+/// En qué va un borrador del agente.
+enum AgentProposalStatus {
+  /// Faltan datos: Lynko sigue preguntando. Todavía no tiene código.
+  COLLECTING
+  /// Completo y con código: espera que la persona lo confirme.
+  PENDING
+  /// Se reclamó el código y se ejecutó (o se está ejecutando).
+  CONFIRMED
+  REJECTED
+  EXPIRED
+  /// Se reclamó el código pero el servicio lo rechazó: no se registró nada.
+  FAILED
+}
+
+/// Lo que el agente propone y una persona aprueba. No ejecuta nada por sí sola:
+/// `payload` son los datos ya resueltos que recibirá el servicio de siempre.
+///
+/// `tenantId` no es un permiso: al confirmar se revalida contra los negocios y
+/// los permisos del actor. El código solo identifica el borrador.
+model AgentProposal {
+  id             String              @id @default(cuid())
+  tenantId       String
+  /// Null mientras no se sepa en qué sede (negocio con varias).
+  branchId       String?
+  channel        AssistantChannel
+  externalUserId String
+  /// La cuenta que lo pidió: la única que puede aprobarlo.
+  requestedById  String
+  /// Qué lo originó: hoy `capture`; después resumen, cobro, reposición…
+  source         String              @default("capture")
+  /// Qué operación es: hoy `expense`.
+  kind           String
+  /// Valores resueltos, nunca la frase original del mensaje.
+  payload        Json
+  /// Exactamente lo que se le mostró a la persona.
+  preview        String?
+  status         AgentProposalStatus @default(COLLECTING)
+  /// Identifica este borrador y nada más. Null mientras se recogen los datos.
+  confirmCode    String?
+  expiresAt      DateTime
+  decidedById    String?
+  decidedAt      DateTime?
+  /// Id del registro creado (el gasto, la venta…).
+  resultRef      String?
+  /// Mensaje real del servicio cuando no se pudo registrar.
+  errorMessage   String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([channel, externalUserId, status])
+  @@index([channel, externalUserId, confirmCode])
+  @@index([tenantId, status])
+  @@map("agent_proposals")
 }
 
 // ─── QR permanentes (tarjeta de presentación) ─────────────────────────────────
