@@ -10,6 +10,9 @@ import { PrismaService } from '../../prisma/prisma.service';
  * respuesta hablada. El caché es corto a propósito: registrar una skill desde
  * el super-admin debe surtir efecto sin reiniciar, y un minuto de espera es
  * aceptable. `invalidate()` lo vacía cuando la escritura pasa por este proceso.
+ *
+ * Solo sirve para saber qué skill es. La sesión y la cuenta fijada se leen frescas
+ * en `AlexaAuthService`: de este caché saldrían vencidas.
  */
 export type TelemetryAlexaSkill = AlexaSkill & {
   tenant?: { vertical: { code: string } | null } | null;

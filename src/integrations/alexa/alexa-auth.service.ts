@@ -12,6 +12,9 @@ import { isActivationHash, verifyActivationPhrase } from './activation-secret';
 
 const WINDOW_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 5;
+const DAY_MS = 86_400_000;
+/** Renovar en cada frase sería una escritura por turno, sin ganar nada. */
+const RENEW_EVERY_MS = 60 * 60_000;
 
 @Injectable()
 export class AlexaAuthService {
@@ -60,16 +63,56 @@ export class AlexaAuthService {
     return `expired at ${skill.expiresAt.toISOString()}`;
   }
 
+  /**
+   * La fila vigente, nunca la del caché.
+   *
+   * `AlexaSkillRepository` guarda la skill un minuto, y sirve para enrutar. La
+   * sesión no puede salir de ahí: tras activar, Alexa siguió pidiendo el código
+   * hasta que el caché venció, y tras "cierra mi acceso" la sesión seguía viva
+   * ese mismo minuto. Se paga con una consulta por llave primaria en cada turno.
+   */
+  private async current(skill: AlexaSkill): Promise<AlexaSkill> {
+    const row = await this.prisma.alexaSkill.findUnique({
+      where: { id: skill.id },
+    });
+    if (!row?.isActive) throw new ForbiddenException('Skill is not active');
+    return row;
+  }
+
   async actor(
     envelope: RequestEnvelope,
-    skill: AlexaSkill,
+    cached: AlexaSkill,
   ): Promise<AuthenticatedUser | null> {
+    const skill = await this.current(cached);
     this.assertAllowed(envelope, skill);
     if (!skill.expiresAt || skill.expiresAt.getTime() <= Date.now()) {
       this.logger.warn(`No active grant: ${this.explainMissingGrant(skill)}`);
       return null;
     }
-    return this.loadActor(skill.actingUserId);
+    const actor = await this.loadActor(skill.actingUserId);
+    await this.renew(skill, skill.expiresAt);
+    return actor;
+  }
+
+  /**
+   * Los días se cuentan desde el último uso: el código solo se pide tras
+   * `ttlDays` sin usar la skill.
+   *
+   * `expiresAt` en el where: si "cierra mi acceso" entró mientras tanto, esto no
+   * reabre la sesión. Un fallo aquí no le niega la respuesta a nadie, porque la
+   * sesión sigue vigente.
+   */
+  private async renew(skill: AlexaSkill, expiresAt: Date): Promise<void> {
+    const renewed = Date.now() + skill.ttlDays * DAY_MS;
+    if (renewed - expiresAt.getTime() < RENEW_EVERY_MS) return;
+    try {
+      await this.prisma.alexaSkill.updateMany({
+        where: { id: skill.id, expiresAt },
+        data: { expiresAt: new Date(renewed) },
+      });
+    } catch {
+      this.logger.warn('Could not renew the voice session');
+    }
   }
 
   private async loadActor(id: string): Promise<AuthenticatedUser> {
@@ -95,9 +138,10 @@ export class AlexaAuthService {
 
   async activate(
     envelope: RequestEnvelope,
-    skill: AlexaSkill,
+    cached: AlexaSkill,
     phrase: string,
   ): Promise<'active' | 'invalid' | 'locked'> {
+    const skill = await this.current(cached);
     const alexaUser = this.assertAllowed(envelope, skill);
     await this.loadActor(skill.actingUserId);
 
@@ -134,7 +178,10 @@ export class AlexaAuthService {
       // mientras verificábamos, este intento ya no vale.
       where: { id: skill.id, windowStartedAt: ticket },
       data: {
-        expiresAt: new Date(Date.now() + skill.ttlDays * 86_400_000),
+        // Quien acierta no acumula intentos: si no, repetir la frase correcta
+        // terminaría bloqueándolo quince minutos.
+        attempts: 0,
+        expiresAt: new Date(Date.now() + skill.ttlDays * DAY_MS),
         // Primera activación: la cuenta queda pegada a la skill.
         ...(skill.alexaUserId ? {} : { alexaUserId: alexaUser }),
       },
@@ -151,7 +198,8 @@ export class AlexaAuthService {
    * reiniciar el contador y seguir probando frases sin límite. Revocar no es un
    * intento de autenticación.
    */
-  async logout(envelope: RequestEnvelope, skill: AlexaSkill): Promise<void> {
+  async logout(envelope: RequestEnvelope, cached: AlexaSkill): Promise<void> {
+    const skill = await this.current(cached);
     this.assertAllowed(envelope, skill);
     await this.prisma.alexaSkill.update({
       where: { id: skill.id },
