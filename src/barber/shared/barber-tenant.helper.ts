@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TRAINER_ROLE_CODE } from '../../auth/trainer-role';
 import { TenantContext } from '../../auth/types/tenant-context.interface';
 
 export type BarberScopedModel =
@@ -15,6 +16,19 @@ export type BarberScopedModel =
 @Injectable()
 export class BarberTenantHelper {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Quién es el entrenador en sesión: su ficha, o un id imposible si no está
+   * enlazado (no ve nada). `null` para los demás roles, que no se filtran.
+   */
+  async trainerStaffId(ctx: TenantContext): Promise<string | null> {
+    if (ctx.roleCode !== TRAINER_ROLE_CODE) return null;
+    const staff = await this.prisma.barberStaff.findFirst({
+      where: { tenantId: ctx.tenantId, userId: ctx.userId, isActive: true },
+      select: { id: true },
+    });
+    return staff?.id ?? '__sin_ficha__';
+  }
 
   async assertBarberTenant(tenantId: string): Promise<void> {
     const tenant = await this.prisma.tenant.findUnique({

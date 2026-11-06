@@ -3,6 +3,8 @@
  * eventos de la agenda decidan exactamente igual.
  * Docs: docs/PLAN_RECORDATORIOS_AGENDA.md
  */
+import { TRAINER_ROLE_CODE } from '../auth/trainer-role';
+
 export const AGENDA_PERMISSION = 'barber:appointments:read';
 export const AGENDA_REMINDER_TYPE = 'barber.appointment.reminder';
 
@@ -159,6 +161,13 @@ export function wantsNotification(
   context: NotificationContext | null,
   byDefault: boolean,
 ): boolean {
+  // Fijo, sin importar lo que diga la regla: pagos e inscripciones no le llegan.
+  if (
+    subject.roleCode === TRAINER_ROLE_CODE &&
+    (type !== AGENDA_REMINDER_TYPE || context?.staffUserId !== subject.id)
+  ) {
+    return false;
+  }
   if (!rule) return byDefault;
   const mode = rule.mode ?? 'ALL';
   if (mode === 'NONE') return false;

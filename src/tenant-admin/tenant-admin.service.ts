@@ -20,6 +20,7 @@ import {
 } from './dto/role.dto';
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
 import { UpdateTenantDto } from './dto/tenant.dto';
+import { TRAINER_ROLE_CODE } from '../auth/trainer-role';
 
 @Injectable()
 export class TenantAdminService {
@@ -125,7 +126,11 @@ export class TenantAdminService {
     }));
   }
 
-  async inviteUser(tenantId: string, dto: TenantInviteUserDto) {
+  async inviteUser(
+    tenantId: string,
+    dto: TenantInviteUserDto,
+    options: { fromTrainerAccess?: boolean } = {},
+  ) {
     // Validar rol pertenece al tenant (acepta id o code, ej. "WAITER")
     const role = await this.prisma.role.findFirst({
       where: { tenantId, OR: [{ id: dto.roleId }, { code: dto.roleId }] },
@@ -135,6 +140,10 @@ export class TenantAdminService {
     }
     if (role.code === 'ROOT') {
       throw new ForbiddenException('Cannot assign ROOT role from tenant scope');
+    }
+    // Un entrenador siempre va enlazado a su ficha: se crea desde ahí.
+    if (role.code === TRAINER_ROLE_CODE && !options.fromTrainerAccess) {
+      throw new BadRequestException('El acceso de entrenador se da desde su ficha');
     }
 
     // Validar branches pertenecen al tenant
@@ -197,6 +206,9 @@ export class TenantAdminService {
       if (role.code === 'ROOT') {
         throw new ForbiddenException('Cannot assign ROOT role from tenant scope');
       }
+      if (role.code === TRAINER_ROLE_CODE) {
+        throw new BadRequestException('El acceso de entrenador se da desde su ficha');
+      }
     }
 
     if (dto.branchIds) {
@@ -258,6 +270,28 @@ export class TenantAdminService {
       where: { id: userId },
       include: { role: true, userBranches: true },
     });
+  }
+
+  /** Devuelve el acceso a un entrenador que ya lo tuvo, con su mismo usuario. */
+  async reactivateTrainer(tenantId: string, userId: string, password?: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+    });
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+    if (!password && !user.passwordSetAt) {
+      throw new BadRequestException(
+        'Nunca activó su cuenta: ponle una contraseña temporal',
+      );
+    }
+    if (password) await this.supabase.setPassword(user.id, password);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        isActive: true,
+        passwordSetAt: password ? new Date() : user.passwordSetAt,
+      },
+    });
+    return { id: user.id };
   }
 
   async deactivateUser(tenantId: string, userId: string) {

@@ -24,6 +24,7 @@ import {
 import { CurrentTenant } from '../../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../../auth/guards/jwt-auth.guard';
+import { NotTrainerGuard } from '../../../../auth/guards/not-trainer.guard';
 import { PasswordSetGuard } from '../../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../../auth/guards/tenant.guard';
@@ -118,6 +119,7 @@ export class GoogleCalendarController {
 
   // Bloques "Ocupado (Google)" de la agenda.
   @Get('busy')
+  @UseGuards(NotTrainerGuard)
   @RequirePermissions('barber:appointments:read')
   busy(@CurrentTenant() ctx: TenantContext, @Query() query: BusyQueryDto) {
     return this.calendar.busyForBranch(ctx, query.from, query.to);

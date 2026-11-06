@@ -7,7 +7,10 @@ import {
   type ReminderRecipient,
   type ReminderRule,
 } from './appointment-reminders.calc';
-import { wantsNotification } from '../../../notifications/notification-rules';
+import {
+  AGENDA_REMINDER_TYPE,
+  wantsNotification,
+} from '../../../notifications/notification-rules';
 import { NOTIFICATION_EVENT_ROLES } from '../../../notifications/notification-events.config';
 
 const start = new Date('2026-11-05T20:00:00Z');
@@ -274,5 +277,42 @@ describe('eventos de agenda', () => {
       wantsNotification(subject, rule, 'barber.signup.received', null, true),
     ).toBe(true);
     expect(wantsNotification(subject, rule, type, null, true)).toBe(false);
+  });
+});
+
+describe('entrenador', () => {
+  const trainer = { id: 'carlos', roleCode: 'TRAINER' };
+  const permissive = {
+    roleCode: null,
+    userId: 'carlos',
+    offsetsMinutes: [60],
+    scope: 'ALL',
+    mode: 'ALL',
+    filters: null,
+    locked: false,
+  };
+
+  it('recibe el recordatorio de su clase', () => {
+    expect(
+      wantsNotification(trainer, permissive, AGENDA_REMINDER_TYPE, { staffUserId: 'carlos' }, true),
+    ).toBe(true);
+  });
+
+  it('no recibe el de la clase de otro aunque su regla diga todas', () => {
+    expect(
+      wantsNotification(trainer, permissive, AGENDA_REMINDER_TYPE, { staffUserId: 'andrea' }, true),
+    ).toBe(false);
+    expect(wantsNotification(trainer, permissive, AGENDA_REMINDER_TYPE, null, true)).toBe(false);
+  });
+
+  it('no recibe avisos de pagos ni inscripciones', () => {
+    for (const type of ['barber.payment.due', 'barber.payment.missed', 'barber.signup.received']) {
+      expect(wantsNotification(trainer, permissive, type, { staffUserId: 'carlos' }, true)).toBe(false);
+      expect(wantsNotification(trainer, permissive, type, null, true)).toBe(false);
+    }
+  });
+
+  it('a los demás roles no les cambia nada', () => {
+    expect(wantsNotification({ id: 'ana', roleCode: 'OWNER' }, permissive, 'barber.payment.due', null, true)).toBe(true);
   });
 });

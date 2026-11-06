@@ -109,12 +109,14 @@ export class BarberClassesService {
    */
   async listSchedules(ctx: TenantContext, includeHistory = false) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
+    const own = await this.tenantHelper.trainerStaffId(ctx);
     const today = calendarDayCO(new Date());
     const rows = await this.prisma.barberClassSchedule.findMany({
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         deletedAt: null,
+        ...(own ? { staffId: own } : {}),
         ...(includeHistory
           ? {}
           : {
@@ -179,7 +181,7 @@ export class BarberClassesService {
           id: e.id,
           customerId: e.customerId,
           customerName: e.customer.name,
-          customerPhone: e.customer.phone,
+          customerPhone: own ? '' : e.customer.phone,
           activeFrom: dayOf(e.activeFrom),
         })),
       };
@@ -742,7 +744,12 @@ export class BarberClassesService {
    * Las clases de un rango: las guardadas (con gente) más las que salen de los
    * horarios y todavía no tienen a nadie. Cada una con su cupo ocupado.
    */
-  async listSessions(ctx: TenantContext, from: string, to: string) {
+  async listSessions(
+    ctx: TenantContext,
+    from: string,
+    to: string,
+    customerId?: string,
+  ) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
     if (to < from) throw new BadRequestException('Rango inválido');
     if (diffCalendarDaysCO(from, to) > MAX_RANGE_DAYS) {
@@ -817,6 +824,8 @@ export class BarberClassesService {
       spotsLeft: number;
       /** Cuántos van por encima del cupo (el cupo es guía, no tope). */
       overBy: number;
+      /** Con filtro por cliente: si va por inscripción fija o reserva puntual. */
+      customerMatch?: 'FIXED' | 'BOOKED';
     };
     const rows: Row[] = [];
 
@@ -836,9 +845,32 @@ export class BarberClassesService {
       ).length;
     };
 
+    // Sin filtro: undefined. Con filtro: cómo va el cliente, o null si no va.
+    const matchOf = (
+      scheduleId: string | null,
+      day: string,
+      booked: Set<string>,
+    ): 'FIXED' | 'BOOKED' | null | undefined => {
+      if (!customerId) return undefined;
+      const enrolled = scheduleId
+        ? scheduleById
+            .get(scheduleId)
+            ?.enrollments.some(
+              (e) =>
+                e.customerId === customerId &&
+                dayOf(e.activeFrom)! <= day &&
+                (!e.activeUntil || dayOf(e.activeUntil)! >= day),
+            )
+        : false;
+      if (enrolled) return 'FIXED';
+      return booked.has(customerId) ? 'BOOKED' : null;
+    };
+
     for (const session of stored) {
       const day = calendarDayCO(session.startsAt);
       const booked = new Set(session.attendees.map((a) => a.customerId));
+      const match = matchOf(session.scheduleId, day, booked);
+      if (match === null) continue;
       const expected = expectedFor(session.scheduleId, day, booked);
       rows.push({
         key: session.id,
@@ -857,6 +889,7 @@ export class BarberClassesService {
         expectedCount: expected,
         spotsLeft: Math.max(0, session.capacity - booked.size - expected),
         overBy: Math.max(0, booked.size + expected - session.capacity),
+        customerMatch: match,
       });
     }
 
@@ -869,6 +902,8 @@ export class BarberClassesService {
           continue;
         const startsAt = instantOf(day, schedule.startTime);
         if (storedKey.has(`${schedule.id}|${startsAt.toISOString()}`)) continue;
+        const match = matchOf(schedule.id, day, new Set());
+        if (match === null) continue;
         const expected = expectedFor(schedule.id, day, new Set());
         rows.push({
           key: `${schedule.id}|${startsAt.toISOString()}`,
@@ -889,11 +924,17 @@ export class BarberClassesService {
           expectedCount: expected,
           spotsLeft: Math.max(0, schedule.capacity - expected),
           overBy: Math.max(0, expected - schedule.capacity),
+          customerMatch: match,
         });
       }
     }
 
-    return rows.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    // Un entrenador ve la clase si le toca a él, también cuando lo cambiaron solo
+    // para ese día: manda el entrenador de la clase, no el del horario.
+    const own = await this.tenantHelper.trainerStaffId(ctx);
+    return (own ? rows.filter((row) => row.staffId === own) : rows).sort((a, b) =>
+      a.startsAt.localeCompare(b.startsAt),
+    );
   }
 
   /**
@@ -902,6 +943,7 @@ export class BarberClassesService {
    */
   async roster(ctx: TenantContext, ref: BarberClassSessionRefDto) {
     const session = await this.resolveSession(ctx, ref);
+    const own = await this.assertOwnClass(ctx, session.staffId);
     const day = calendarDayCO(session.startsAt);
 
     const [attendees, enrollments, service, staff] = await Promise.all([
@@ -1003,7 +1045,7 @@ export class BarberClassesService {
       })),
     );
 
-    return {
+    const result = {
       sessionId: session.sessionId,
       scheduleId: session.scheduleId,
       serviceId: session.serviceId,
@@ -1029,6 +1071,26 @@ export class BarberClassesService {
       attendees: attendeeRows,
       expected: expectedRows,
     };
+    if (!own) return result;
+    // El entrenador ve quién va y quién vino: nada de planes, saldos ni teléfonos.
+    return {
+      ...result,
+      priceCOP: 0,
+      attendees: attendeeRows.map((row) => ({
+        ...row,
+        customerPhone: '',
+        coverage: null,
+        isCovered: false,
+        chargeId: null,
+        check: undefined,
+      })),
+      expected: expectedRows.map((row) => ({
+        ...row,
+        customerPhone: '',
+        coverage: null,
+        check: undefined,
+      })),
+    };
   }
 
   /**
@@ -1050,6 +1112,9 @@ export class BarberClassesService {
     if (resolved.status === 'CANCELLED') {
       throw new BadRequestException('La clase está cancelada');
     }
+    // El entrenador no inscribe: solo marca que llegó quien ya tiene inscripción fija.
+    const own = await this.assertOwnClass(ctx, resolved.staffId);
+    if (own) await this.assertEnrolled(resolved, [dto.customerId]);
 
     const sessionId = await this.prisma.$transaction(async (tx) => {
       const id = await this.materialize(tx, ctx, resolved);
@@ -1069,7 +1134,7 @@ export class BarberClassesService {
       // marca ("excede cupo +N") para decidir si abrir otro horario.
 
       await this.createAttendance(tx, ctx, id, resolved, dto.customerId, {
-        attended: !!dto.attended,
+        attended: own ? true : !!dto.attended,
       });
       return id;
     });
@@ -1096,6 +1161,7 @@ export class BarberClassesService {
     if (!appt || !appt.classSession) {
       throw new NotFoundException(`Attendee ${appointmentId} not found`);
     }
+    await this.assertOwnClass(ctx, appt.classSession.staffId);
     await this.prisma.$transaction((tx) =>
       this.applyAttendance(tx, ctx, appt, attended),
     );
@@ -1132,6 +1198,7 @@ export class BarberClassesService {
   async markAttendance(ctx: TenantContext, dto: MarkBarberClassAttendanceDto) {
     const resolved = await this.resolveSession(ctx, dto);
     const present = new Set(dto.presentCustomerIds);
+    const own = await this.assertOwnClass(ctx, resolved.staffId);
 
     const touched = new Set<string>();
     const sessionId = await this.prisma.$transaction(async (tx) => {
@@ -1145,6 +1212,12 @@ export class BarberClassesService {
       for (const appt of attendees) {
         await this.applyAttendance(tx, ctx, appt, present.has(appt.customerId));
         touched.add(appt.customerId);
+      }
+      if (own) {
+        await this.assertEnrolled(
+          resolved,
+          [...present].filter((customerId) => !booked.has(customerId)),
+        );
       }
       for (const customerId of present) {
         if (booked.has(customerId)) continue;
@@ -1167,6 +1240,35 @@ export class BarberClassesService {
   }
 
   // ─── Internos ──────────────────────────────────────────────────────────────
+
+  /** Un entrenador solo entra a sus clases. Devuelve su ficha; `null` si no es entrenador. */
+  private async assertOwnClass(ctx: TenantContext, staffId: string | null) {
+    const own = await this.tenantHelper.trainerStaffId(ctx);
+    if (own && own !== staffId) {
+      throw new NotFoundException('Esa clase no es tuya');
+    }
+    return own;
+  }
+
+  private async assertEnrolled(
+    session: { scheduleId: string | null; startsAt: Date },
+    customerIds: string[],
+  ) {
+    if (customerIds.length === 0) return;
+    const day = dateOf(calendarDayCO(session.startsAt));
+    const enrolled = await this.prisma.barberClassEnrollment.findMany({
+      where: {
+        scheduleId: session.scheduleId ?? '__none__',
+        customerId: { in: customerIds },
+        activeFrom: { lte: day },
+        OR: [{ activeUntil: null }, { activeUntil: { gte: day } }],
+      },
+      select: { customerId: true },
+    });
+    if (new Set(enrolled.map((e) => e.customerId)).size !== new Set(customerIds).size) {
+      throw new BadRequestException('Solo puedes marcar a quienes están inscritos');
+    }
+  }
 
   /** Escribe un hecho en el historial del horario. La frase se congela. */
   private logEvent(

@@ -5,5 +5,6 @@ import { TenantAdminService } from './tenant-admin.service';
 @Module({
   controllers: [TenantAdminController],
   providers: [TenantAdminService],
+  exports: [TenantAdminService],
 })
 export class TenantAdminModule {}

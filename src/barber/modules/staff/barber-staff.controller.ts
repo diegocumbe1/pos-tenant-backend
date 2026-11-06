@@ -19,6 +19,7 @@ import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberStaffService } from './barber-staff.service';
 import {
   CreateBarberStaffDto,
+  GrantBarberStaffAccessDto,
   UpdateBarberStaffDto,
 } from './dto/barber-staff.dto';
 
@@ -54,6 +55,23 @@ export class BarberStaffController {
     @Body() dto: UpdateBarberStaffDto,
   ) {
     return this.staffService.updateStaff(ctx, id, dto);
+  }
+
+  // Usuario propio del entrenador. Solo en gimnasios: lo valida el servicio.
+  @Post(':id/access')
+  @RequirePermissions('barber:staff:write', 'admin:users:invite')
+  grantAccess(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: GrantBarberStaffAccessDto,
+  ) {
+    return this.staffService.grantAccess(ctx, id, dto);
+  }
+
+  @Delete(':id/access')
+  @RequirePermissions('barber:staff:write', 'admin:users:invite')
+  revokeAccess(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+    return this.staffService.revokeAccess(ctx, id);
   }
 
   @Delete(':id')

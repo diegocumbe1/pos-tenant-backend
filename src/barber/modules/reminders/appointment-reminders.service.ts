@@ -7,6 +7,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { TRAINER_ROLE_CODE } from '../../../auth/trainer-role';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { calendarDayCO, formatDateTimeCO } from '../../../common/date.util';
 import { NotificationDispatcherService } from '../../../notifications/notification-dispatcher.service';
@@ -226,7 +227,10 @@ export class AppointmentRemindersService
 
     return {
       vertical,
-      types: catalog.types,
+      types:
+        ctx.roleCode === TRAINER_ROLE_CODE
+          ? [AGENDA_REMINDER_TYPE]
+          : catalog.types,
       canManage,
       maxMinutes: MAX_REMINDER_MINUTES,
       me: receives
@@ -257,11 +261,15 @@ export class AppointmentRemindersService
         rule: pick(rules.find((r) => r.userId === user.id)),
         defaultTypes: this.defaultTypes(catalog.types, user.role.code),
       })),
-      options: {
-        roles: roles.map((r) => ({ id: r.code, name: r.name })),
-        staff,
-        services,
-      },
+      // El entrenador no filtra: solo le llegan sus clases.
+      options:
+        ctx.roleCode === TRAINER_ROLE_CODE
+          ? { roles: [], staff: [], services: [] }
+          : {
+              roles: roles.map((r) => ({ id: r.code, name: r.name })),
+              staff,
+              services,
+            },
     };
   }
 

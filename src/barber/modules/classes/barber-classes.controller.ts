@@ -11,11 +11,16 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
-import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
+import { NotTrainerGuard } from '../../../auth/guards/not-trainer.guard';
 import { PasswordSetGuard } from '../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
+import { CLASS_ATTEND_PERMISSION } from '../../../auth/trainer-role';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberClassesService } from './barber-classes.service';
 import {
@@ -104,6 +109,7 @@ export class BarberClassesController {
   }
 
   @Get('schedules/:id/events')
+  @UseGuards(NotTrainerGuard)
   @RequirePermissions('barber:appointments:read')
   scheduleEvents(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
     return this.classes.listScheduleEvents(ctx, id);
@@ -111,6 +117,7 @@ export class BarberClassesController {
 
   // Los horarios fijos de un cliente (para su ficha).
   @Get('enrollments')
+  @UseGuards(NotTrainerGuard)
   @RequirePermissions('barber:appointments:read')
   customerEnrollments(
     @CurrentTenant() ctx: TenantContext,
@@ -141,7 +148,7 @@ export class BarberClassesController {
     @CurrentTenant() ctx: TenantContext,
     @Query() query: ListBarberClassSessionsQueryDto,
   ) {
-    return this.classes.listSessions(ctx, query.from, query.to);
+    return this.classes.listSessions(ctx, query.from, query.to, query.customerId);
   }
 
   // La clase va por sessionId o por scheduleId + startsAt (si aún no existe).
@@ -165,7 +172,7 @@ export class BarberClassesController {
   }
 
   @Post('sessions/attendees')
-  @RequirePermissions('barber:appointments:write')
+  @RequireAnyPermission('barber:appointments:write', CLASS_ATTEND_PERMISSION)
   addAttendee(
     @CurrentTenant() ctx: TenantContext,
     @Body() dto: AddBarberClassAttendeeDto,
@@ -175,7 +182,7 @@ export class BarberClassesController {
 
   // Pasar lista de una vez.
   @Post('sessions/attendance')
-  @RequirePermissions('barber:appointments:write')
+  @RequireAnyPermission('barber:appointments:write', CLASS_ATTEND_PERMISSION)
   markAttendance(
     @CurrentTenant() ctx: TenantContext,
     @Body() dto: MarkBarberClassAttendanceDto,
@@ -184,7 +191,7 @@ export class BarberClassesController {
   }
 
   @Patch('attendees/:appointmentId')
-  @RequirePermissions('barber:appointments:write')
+  @RequireAnyPermission('barber:appointments:write', CLASS_ATTEND_PERMISSION)
   setAttendance(
     @CurrentTenant() ctx: TenantContext,
     @Param('appointmentId') appointmentId: string,

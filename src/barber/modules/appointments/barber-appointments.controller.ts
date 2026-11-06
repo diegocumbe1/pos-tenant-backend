@@ -12,6 +12,7 @@ import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../../../auth/guards/jwt-auth.guard';
+import { NotTrainerGuard } from '../../../auth/guards/not-trainer.guard';
 import { PasswordSetGuard } from '../../../auth/guards/password-set.guard';
 import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
@@ -29,7 +30,13 @@ import {
 @ApiBearerAuth()
 @ApiSecurity('X-Tenant-Id')
 @ApiSecurity('X-Branch-Id')
-@UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard, PermissionsGuard)
+@UseGuards(
+  JwtAuthGuard,
+  PasswordSetGuard,
+  TenantGuard,
+  NotTrainerGuard,
+  PermissionsGuard,
+)
 @Controller('barber/appointments')
 export class BarberAppointmentsController {
   constructor(

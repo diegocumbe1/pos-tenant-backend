@@ -44,6 +44,17 @@ export class CreateBarberStaffDto {
   serviceIds?: string[];
 }
 
+export class GrantBarberStaffAccessDto {
+  @IsEmail()
+  email!: string;
+
+  // Con contraseña entra de una vez; sin ella le llega la invitación por correo.
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  password?: string;
+}
+
 export class UpdateBarberStaffDto {
   @IsOptional()
   @IsString()

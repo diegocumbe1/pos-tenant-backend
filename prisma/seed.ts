@@ -238,6 +238,12 @@ const PERMISSIONS: Array<{
     description: 'Crear/editar servicios de barbería',
   },
   {
+    code: 'barber:classes:attend',
+    resource: 'barber-classes',
+    action: 'attend',
+    description: 'Pasar lista en sus clases (rol Entrenador)',
+  },
+  {
     code: 'barber:classes:delete',
     resource: 'barber-classes',
     action: 'delete',

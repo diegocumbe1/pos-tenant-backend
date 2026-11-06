@@ -15,6 +15,8 @@ import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantGuard } from '../auth/guards/tenant.guard';
 import { PasswordSetGuard } from '../auth/guards/password-set.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
 import { CurrentTenant } from '../auth/decorators/current-tenant.decorator';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { StaffCompensationService } from './staff-compensation.service';
@@ -31,7 +33,9 @@ import {
 @ApiBearerAuth()
 @ApiSecurity('X-Tenant-Id')
 @ApiSecurity('X-Branch-Id')
-@UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard)
+// Nómina y comisiones: los mismos permisos de Finanzas, en todas las verticales.
+@UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard, PermissionsGuard)
+@RequirePermissions('restaurant:finance:read')
 @Controller('staff')
 export class StaffCompensationController {
   constructor(private readonly service: StaffCompensationService) {}
@@ -58,6 +62,7 @@ export class StaffCompensationController {
   }
 
   @Put('compensation/role-templates/:role')
+  @RequirePermissions('restaurant:finance:write')
   upsertRoleTemplate(
     @CurrentTenant() ctx: TenantContext,
     @Param('role') role: string,
@@ -75,6 +80,7 @@ export class StaffCompensationController {
   }
 
   @Put('compensation/:staffId')
+  @RequirePermissions('restaurant:finance:write')
   upsertProfile(
     @CurrentTenant() ctx: TenantContext,
     @Param('staffId') staffId: string,
@@ -93,6 +99,7 @@ export class StaffCompensationController {
   }
 
   @Post('ledger')
+  @RequirePermissions('restaurant:finance:write')
   addLedgerEntry(
     @CurrentTenant() ctx: TenantContext,
     @Body() dto: CreateLedgerEntryDto,
@@ -101,6 +108,7 @@ export class StaffCompensationController {
   }
 
   @Patch('ledger/:id')
+  @RequirePermissions('restaurant:finance:write')
   updateLedgerEntry(
     @CurrentTenant() ctx: TenantContext,
     @Param('id') id: string,
@@ -110,6 +118,7 @@ export class StaffCompensationController {
   }
 
   @Delete('ledger/:id')
+  @RequirePermissions('restaurant:finance:write')
   @HttpCode(204)
   deleteLedgerEntry(
     @CurrentTenant() ctx: TenantContext,
