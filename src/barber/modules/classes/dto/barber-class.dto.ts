@@ -100,6 +100,11 @@ export class ListBarberClassSessionsQueryDto {
 
   @Matches(DAY_RE)
   to!: string;
+
+  // Solo las clases de este cliente: con inscripción fija o reserva puntual.
+  @IsOptional()
+  @IsString()
+  customerId?: string;
 }
 
 /**
