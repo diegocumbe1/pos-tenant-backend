@@ -4,6 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseJwtPayload } from './types/jwt-payload.interface';
+import { AUTH_USER_INCLUDE, toAuthenticatedUser } from './helpers/tenant-access';
 import { AuthenticatedUser } from './types/tenant-context.interface';
 import * as jwksRsa from 'jwks-rsa';
 
@@ -37,10 +38,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: {
-        role: true,
-        userBranches: { select: { branchId: true } },
-      },
+      include: AUTH_USER_INCLUDE,
     });
 
     if (!user) {
@@ -50,17 +48,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User is inactive');
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      tenantId: user.tenantId,
-      roleId: user.roleId,
-      roleCode: user.role.code,
-      isRoot: user.role.code === 'ROOT',
-      isPlatformAdmin: user.isPlatformAdmin || user.role.code === 'ROOT',
-      passwordSetAt: user.passwordSetAt,
-      accessibleBranches: user.userBranches.map((ub) => ub.branchId),
-    };
+    return toAuthenticatedUser(user);
   }
 }

@@ -1,3 +1,4 @@
+import { storedPriceForDuration } from '../../shared/duration-price';
 import {
   BadRequestException,
   ConflictException,
@@ -390,6 +391,8 @@ export class BarberPublicService {
         branchId: true,
         isActive: true,
         durationMin: true,
+        priceCOP: true,
+        durationOptions: true,
         kind: true,
       },
     });
@@ -499,6 +502,8 @@ export class BarberPublicService {
         staffId: staff?.id ?? null,
         scheduledAt,
         scheduledEnd,
+        // Reserva de 2 h de cancha: queda con el precio de esas 2 h.
+        priceCOP: storedPriceForDuration(service, durationMin),
         source: 'public',
         // Las reservas públicas entran pendientes de aprobación del negocio.
         status: 'PENDING',

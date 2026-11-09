@@ -30,11 +30,17 @@ model Tenant {
   subscriptionPayments SubscriptionPayment[]
   subscriptionCharges  SubscriptionCharge[]
   billingContacts      BillingContact[]
+  /// Combo de verticales: negocios del mismo dueño que se cobran juntos. NULL
+  /// para casi todos, y entonces nada del cobro agrupado los toca.
+  billingGroupId       String?
+  billingGroup         BillingGroup?         @relation(fields: [billingGroupId], references: [id], onDelete: SetNull)
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   deletedAt            DateTime?
 
   users                   User[]
+  /// Personas cuyo negocio principal es otro y que también entran a este.
+  extraMembers            UserTenantMembership[]
   branches                Branch[]
   alexaSkills             AlexaSkill[]
   products                Product[]
@@ -87,6 +93,7 @@ model Tenant {
   @@index([plan])
   @@index([verticalId])
   @@index([planId])
+  @@index([billingGroupId])
   @@map("tenants")
 }
 
@@ -605,8 +612,10 @@ model BarberAppointment {
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId     String
   branch       Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  customerId   String
-  customer     BarberCustomer @relation(fields: [customerId], references: [id])
+  /// Opcional: el dueño o el gerente pueden agendar sin cliente registrado,
+  /// con una nota que diga quién es. Siempre que se pueda, se registra.
+  customerId   String?
+  customer     BarberCustomer? @relation(fields: [customerId], references: [id])
   serviceId    String
   service      BarberService  @relation(fields: [serviceId], references: [id])
   staffId      String?
@@ -1112,6 +1121,8 @@ model User {
 
   orders                 Order[]                  @relation("waiters")
   userBranches           UserBranch[]
+  /// Negocios adicionales a los que entra con este mismo correo (switch).
+  tenantMemberships      UserTenantMembership[]
   notificationEvents     NotificationEvent[]
   notificationPrefs      NotificationPreference[]
   appointmentReminderRules AppointmentReminderRule[]
@@ -1148,6 +1159,7 @@ model Role {
 
   rolePermissions RolePermission[]
   users           User[]
+  tenantMemberships UserTenantMembership[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -1163,6 +1175,36 @@ model RolePermission {
   @@id([roleId, permissionId])
   @@index([permissionId])
   @@map("role_permissions")
+}
+
+/// Acceso de una persona a un negocio que NO es su negocio principal.
+///
+/// El negocio principal sigue en `User.tenantId` / `User.roleId` y no se
+/// duplica aquí: así quien tiene un solo negocio no tiene ninguna fila y nada
+/// cambia para él. Cada fila agrega un negocio más al switch "Cambiar de
+/// negocio", con su propio rol (los roles son por negocio).
+///
+/// El token de Supabase no lleva el negocio: el negocio activo llega en
+/// `X-Tenant-Id` y `TenantGuard` lo valida contra el principal o contra esta
+/// tabla. Ver docs/PLAN_CUENTA_DOS_VERTICALES.md.
+model UserTenantMembership {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Rol de ESE negocio (Role.tenantId = tenantId).
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  isActive  Boolean  @default(true)
+  /// Quién dio el acceso (id del super-admin o del dueño).
+  grantedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@map("user_tenant_memberships")
 }
 
 model UserBranch {
@@ -2931,6 +2973,26 @@ model PlanTermDiscount {
   @@map("plan_term_discounts")
 }
 
+/// Descuento por combo de verticales a partir de una fecha.
+///
+/// Regla única para cualquier combinación (2 o 3 verticales): la vertical más
+/// cara del combo va a precio completo y CADA vertical adicional lleva
+/// `additionalBps` de descuento. Append-only igual que `plan_term_discounts`:
+/// cambiar el % es insertar una fila; un cobro pregunta el % vigente A SU FECHA.
+/// Ver docs/PLAN_CUENTA_DOS_VERTICALES.md §5.
+model PlanBundleDiscount {
+  id            String   @id @default(cuid())
+  /// Puntos básicos por vertical adicional (3000 = 30%).
+  additionalBps Int
+  effectiveFrom DateTime
+  note          String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([effectiveFrom])
+  @@map("plan_bundle_discounts")
+}
+
 /// Tasa USD→COP a partir de una fecha.
 model PlatformRate {
   id            String   @id @default(cuid())
@@ -3101,9 +3163,81 @@ model SubscriptionCharge {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  /// Línea de un cobro de combo. El link, la comisión y la conciliación viven
+  /// en el padre; aquí queda lo de ESTE negocio (su periodo, su descuento).
+  groupChargeId String?
+  groupCharge   BillingGroupCharge? @relation(fields: [groupChargeId], references: [id], onDelete: SetNull)
+
   @@index([tenantId, createdAt])
   @@index([status])
+  @@index([groupChargeId])
   @@map("subscription_charges")
+}
+
+/// Combo de verticales: negocios del mismo dueño que se cobran juntos.
+///
+/// Solo existe cuando hay combo. Cada negocio conserva su Subscription y su
+/// historial de pagos; el grupo solo decide CÓMO se cobra (un link, un
+/// recordatorio, el descuento de combo). Ver docs/PLAN_CUENTA_DOS_VERTICALES.md.
+model BillingGroup {
+  id              String   @id @default(cuid())
+  name            String
+  /// Negocio cuyo vencimiento manda (los demás se alinean a él) y que recibe
+  /// el recordatorio.
+  primaryTenantId String
+  isActive        Boolean  @default(true)
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenants Tenant[]
+  charges BillingGroupCharge[]
+
+  @@map("billing_groups")
+}
+
+/// Cobro de un combo: un solo link y una sola conciliación. Sus líneas son
+/// SubscriptionCharge (una por negocio) con `groupChargeId`.
+model BillingGroupCharge {
+  id             String       @id @default(cuid())
+  billingGroupId String
+  billingGroup   BillingGroup @relation(fields: [billingGroupId], references: [id], onDelete: Cascade)
+  termMonths     Int          @default(1)
+  periodStart    DateTime
+  periodEnd      DateTime
+  /// Invariante: listAmount - discountAmount = amount (suma de las líneas).
+  listAmount     Int
+  discountAmount Int          @default(0)
+  amount         Int
+  currency       String       @default("COP")
+  /// Desglose congelado al emitir: líneas, % de combo y anticipo, avisos.
+  breakdown      Json
+  /// pending | paid | failed | expired | canceled
+  status         String       @default("pending")
+  statusDetail   String?
+  /// 'wompi' (link de pago) | 'manual' (Bre-B, transferencia, efectivo)
+  provider       String       @default("wompi")
+  reference      String       @unique
+  checkoutUrl    String?
+  providerTxId   String?      @unique
+  paymentMethodType String?
+  gatewayFee     Int          @default(0)
+  withheld       Int          @default(0)
+  netSettled     Int?
+  feeMethod      String?
+  expectedSettlementAt DateTime?
+  expiresAt      DateTime?
+  paidAt         DateTime?
+  lastCheckedAt  DateTime?
+  createdByUserId String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  lines SubscriptionCharge[]
+
+  @@index([billingGroupId, createdAt])
+  @@index([status])
+  @@map("billing_group_charges")
 }
 
 // Bitácora cruda de lo que manda la pasarela. Existe para poder responder

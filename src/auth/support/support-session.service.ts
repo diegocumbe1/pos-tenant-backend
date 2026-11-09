@@ -56,7 +56,9 @@ export class SupportSessionService {
       user.isPlatformAdmin &&
       !!tenantId &&
       tenantId !== PLATFORM_TENANT_ID &&
-      tenantId !== user.tenantId
+      tenantId !== user.tenantId &&
+      // Un acceso propio por el switch no es soporte.
+      !user.tenantMemberships?.some((m) => m.tenantId === tenantId)
     );
   }
 

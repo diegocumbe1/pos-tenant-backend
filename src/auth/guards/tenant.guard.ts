@@ -7,6 +7,7 @@ import {
 import { Request } from 'express';
 import { performance } from 'perf_hooks';
 import { PermissionsCacheService } from '../services/permissions-cache.service';
+import { resolveTenantAccess } from '../helpers/tenant-access';
 import { SupportSessionService } from '../support/support-session.service';
 import {
   AuthenticatedUser,
@@ -27,8 +28,10 @@ type TimedRequest = Request & {
  *  - ROOT puede LEER cualquier tenantId/branchId.
  *  - Super-admin (ROOT o isPlatformAdmin) en un tenant ajeno: escribir exige una
  *    sesión de soporte viva; con ella actúa con poderes de ROOT y queda auditado.
- *  - Non-ROOT: X-Tenant-Id debe coincidir con user.tenantId.
- *  - X-Branch-Id (si viene) debe estar en userBranches — salvo ROOT.
+ *  - Non-ROOT: X-Tenant-Id debe ser su negocio principal (user.tenantId) o uno
+ *    de sus accesos adicionales (user_tenant_memberships). Rol y sedes salen de
+ *    ese negocio.
+ *  - X-Branch-Id (si viene) debe ser una sede suya de ESE negocio — salvo ROOT.
  */
 @Injectable()
 export class TenantGuard implements CanActivate {
@@ -55,33 +58,45 @@ export class TenantGuard implements CanActivate {
     // Las lecturas sin sesión se mantienen para el backoffice (p. ej. insights).
     let supportSessionId: string | undefined;
     if (this.supportSessions.isCrossTenant(user, headerTenantId)) {
-      const session = await this.supportSessions.findActive(user.id, headerTenantId);
+      const session = await this.supportSessions.findActive(
+        user.id,
+        headerTenantId,
+      );
       supportSessionId = session?.id;
       if (!session && !READ_METHODS.has(request.method)) {
         throw new ForbiddenException({
           code: 'SUPPORT_SESSION_REQUIRED',
-          message: 'Abre una sesión de soporte para modificar datos de este negocio.',
+          message:
+            'Abre una sesión de soporte para modificar datos de este negocio.',
         });
       }
     }
     const actsAsRoot = user.isRoot || !!supportSessionId;
 
-    if (!actsAsRoot && user.tenantId !== headerTenantId) {
+    // Negocio principal o uno adicional del switch (user_tenant_memberships).
+    // El rol y las sedes son los de ESE negocio, no los del principal.
+    const access = actsAsRoot
+      ? null
+      : resolveTenantAccess(user, headerTenantId);
+    if (!actsAsRoot && !access) {
       throw new ForbiddenException('Tenant mismatch');
     }
 
     if (
       headerBranchId &&
       !actsAsRoot &&
-      !user.accessibleBranches.includes(headerBranchId)
+      !access!.accessibleBranches.includes(headerBranchId)
     ) {
       throw new ForbiddenException('Branch not accessible for this user');
     }
 
+    const roleId = access?.roleId ?? user.roleId;
+    const roleCode = access?.roleCode ?? user.roleCode;
+
     const permissionsStart = performance.now();
     const permissions = actsAsRoot
       ? new Set<string>() // ROOT bypasea checks, no hace falta cargarlos
-      : await this.permissionsCache.getForRole(user.roleId);
+      : await this.permissionsCache.getForRole(roleId);
     request.requestTimings.tenantPermissions =
       performance.now() - permissionsStart;
 
@@ -91,11 +106,11 @@ export class TenantGuard implements CanActivate {
       name: user.name,
       tenantId: headerTenantId,
       branchId: headerBranchId ?? '',
-      roleId: user.roleId,
-      roleCode: user.roleCode,
+      roleId,
+      roleCode,
       isRoot: actsAsRoot,
       permissions,
-      accessibleBranches: user.accessibleBranches,
+      accessibleBranches: access?.accessibleBranches ?? user.accessibleBranches,
       supportSessionId,
     };
 

@@ -733,6 +733,14 @@ export class AdminService {
           'restaurant:payments:read',
           'restaurant:payments:write',
           'restaurant:reservations:read',
+          // Agenda: la recepción agenda, mueve y atiende clientes. Sin esto un
+          // cajero de agenda entraba a /agenda/appointments sin poder ver nada.
+          'barber:appointments:read',
+          'barber:appointments:write',
+          'barber:customers:read',
+          'barber:customers:write',
+          'barber:services:read',
+          'barber:staff:read',
           // Retail: vende y atiende clientes, no administra catálogo ni stock.
           'retail:catalog:read',
           'retail:inventory:read',
@@ -771,6 +779,11 @@ export class AdminService {
           'restaurant:reservations:read',
           'restaurant:settings:read',
           'restaurant:settings:write',
+          // Agenda: ve la operación para la nómina y las finanzas; no agenda.
+          'barber:appointments:read',
+          'barber:customers:read',
+          'barber:services:read',
+          'barber:staff:read',
           // Retail: lectura de operación + configuración; no vende ni mueve stock.
           'retail:catalog:read',
           'retail:inventory:read',

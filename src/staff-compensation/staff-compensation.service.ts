@@ -3,6 +3,7 @@ import { LedgerEntryType, Prisma, StaffLedgerEntry } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { UpsertCompensationDto } from './dto/compensation.dto';
+import { COMPLETED_STATUS_VARIANTS } from '../barber/shared/appointment-status';
 import { UpsertRoleTemplateDto } from './dto/role-template.dto';
 import {
   CreateLedgerEntryDto,
@@ -43,7 +44,11 @@ export class StaffCompensationService {
     return profile;
   }
 
-  upsertProfile(ctx: TenantContext, staffId: string, dto: UpsertCompensationDto) {
+  upsertProfile(
+    ctx: TenantContext,
+    staffId: string,
+    dto: UpsertCompensationDto,
+  ) {
     const data = {
       source: dto.source,
       branchId: dto.branchId ?? ctx.branchId ?? null,
@@ -70,7 +75,11 @@ export class StaffCompensationService {
     });
   }
 
-  upsertRoleTemplate(ctx: TenantContext, role: string, dto: UpsertRoleTemplateDto) {
+  upsertRoleTemplate(
+    ctx: TenantContext,
+    role: string,
+    dto: UpsertRoleTemplateDto,
+  ) {
     const data = {
       contractType: dto.contractType,
       payFrequency: dto.payFrequency,
@@ -110,8 +119,14 @@ export class StaffCompensationService {
           type: dto.type,
           amount: dto.amount,
           period: dto.period,
-          method: dto.method ?? null,
-          accountLabel: dto.accountLabel ?? null,
+          // Igual que al corregir: incentivo y descuento no mueven plata, así
+          // que no llevan medio de pago (antes se guardaba lo que llegara).
+          method: DISBURSING_TYPES.includes(dto.type)
+            ? (dto.method ?? 'CASH')
+            : null,
+          accountLabel: DISBURSING_TYPES.includes(dto.type)
+            ? (dto.accountLabel ?? null)
+            : null,
           coversFrom: dto.coversFrom ? new Date(dto.coversFrom) : null,
           coversTo: dto.coversTo ? new Date(dto.coversTo) : null,
           note: dto.note ?? null,
@@ -126,7 +141,11 @@ export class StaffCompensationService {
    * Corregir un movimiento ya registrado (el valor, el mes, el medio, la nota).
    * El gasto ligado se reescribe con él: corregir el pago corrige Finanzas.
    */
-  async updateLedgerEntry(ctx: TenantContext, id: string, dto: UpdateLedgerEntryDto) {
+  async updateLedgerEntry(
+    ctx: TenantContext,
+    id: string,
+    dto: UpdateLedgerEntryDto,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.staffLedgerEntry.findFirst({
         where: { id, tenantId: ctx.tenantId },
@@ -135,8 +154,7 @@ export class StaffCompensationService {
       const type = dto.type ?? current.type;
       // Incentivo y descuento no tienen medio de pago: no salió plata.
       const disbursing = DISBURSING_TYPES.includes(type);
-      const method =
-        dto.method !== undefined ? dto.method : current.method;
+      const method = dto.method !== undefined ? dto.method : current.method;
       const entry = await tx.staffLedgerEntry.update({
         where: { id },
         data: {
@@ -164,7 +182,8 @@ export class StaffCompensationService {
       const res = await tx.staffLedgerEntry.deleteMany({
         where: { id, tenantId: ctx.tenantId },
       });
-      if (res.count === 0) throw new NotFoundException('Ledger entry not found');
+      if (res.count === 0)
+        throw new NotFoundException('Ledger entry not found');
       await tx.expense.deleteMany({
         where: { id: payrollExpenseId(id), tenantId: ctx.tenantId },
       });
@@ -203,7 +222,9 @@ export class StaffCompensationService {
       sourceId: entry.id,
       note:
         [
-          entry.method === 'TRANSFER' ? `Transferencia${entry.accountLabel ? ` ${entry.accountLabel}` : ''}` : 'Efectivo',
+          entry.method === 'TRANSFER'
+            ? `Transferencia${entry.accountLabel ? ` ${entry.accountLabel}` : ''}`
+            : 'Efectivo',
           entry.note,
         ]
           .filter(Boolean)
@@ -234,7 +255,7 @@ export class StaffCompensationService {
         tenantId: ctx.tenantId,
         ...(ctx.branchId ? { branchId: ctx.branchId } : {}),
         staffId: { not: null },
-        status: { in: ['COMPLETED', 'completed'] },
+        status: { in: COMPLETED_STATUS_VARIANTS },
         OR: [
           { servedAt: { gte: from, lt: to } },
           { servedAt: null, scheduledAt: { gte: from, lt: to } },
@@ -246,7 +267,10 @@ export class StaffCompensationService {
         service: { select: { priceCOP: true } },
       },
     });
-    const byStaff = new Map<string, { servicesCount: number; salesCOP: number }>();
+    const byStaff = new Map<
+      string,
+      { servicesCount: number; salesCOP: number }
+    >();
     for (const a of appts) {
       const row = byStaff.get(a.staffId!) ?? { servicesCount: 0, salesCOP: 0 };
       row.servicesCount += 1;

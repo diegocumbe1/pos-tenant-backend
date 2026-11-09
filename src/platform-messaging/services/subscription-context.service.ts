@@ -8,6 +8,7 @@ import {
 } from '../../common/date.util';
 import { addDays, GRACE_DAYS } from '../../platform/platform.constants';
 import { subscriptionPriceAt } from '../../platform/pricing/subscription-price';
+import { BillingGroupsService } from '../../platform/billing-groups/billing-groups.service';
 
 const PLAN_LABELS: Record<string, string> = {
   BASIC: 'Básico',
@@ -38,6 +39,59 @@ export interface SubscriptionContext {
   periodEnd: Date | null;
   /** Qué datos duros faltan para poder redactar el mensaje. */
   missing: string[];
+  /**
+   * Solo si el negocio está en un combo: el próximo cobro del combo, línea por
+   * línea. Con esto `valor` es el total del combo y `detalle_plan` el desglose.
+   */
+  combo: ComboContext | null;
+}
+
+export interface ComboContext {
+  name: string;
+  planLabel: string;
+  lines: Array<{
+    tenantName: string;
+    verticalCode: string;
+    amount: number;
+    listAmount: number;
+    bundleBps: number;
+    position: number | null;
+    locked: boolean;
+    covered: boolean;
+  }>;
+  amount: number;
+  listAmount: number;
+  discountAmount: number;
+}
+
+const VERTICAL_LINE: Record<string, string> = {
+  restaurant: '🍽️ Restaurante',
+  barber: '📅 Agenda y reservas',
+  retail: '🛍️ Tienda',
+};
+
+/**
+ * Desglose del combo para WhatsApp y correo (el correo convierte *negrita*).
+ * Sin tachado (~): el correo no lo convierte y se vería el símbolo. Empieza
+ * con salto de línea para ir pegado a la línea del valor; vacío sin combo.
+ */
+export function renderComboDetail(combo: ComboContext | null): string {
+  if (!combo) return '';
+  const rows = combo.lines
+    .filter((l) => !l.covered)
+    .map((l) => {
+      const head = `${VERTICAL_LINE[l.verticalCode] ?? l.verticalCode} · ${l.tenantName}: ${formatCOP(l.amount)}`;
+      if (l.locked) return `${head} (precio acordado)`;
+      if (l.bundleBps > 0 && l.listAmount > l.amount) {
+        return `${head} (−${l.bundleBps / 100}% combo, antes ${formatCOP(l.listAmount)})`;
+      }
+      return l.position === 0 ? `${head} (precio completo)` : head;
+    });
+  const saving =
+    combo.discountAmount > 0
+      ? `\n💰 Ahorras ${formatCOP(combo.discountAmount)} frente a pagarlos por separado`
+      : '';
+  return `\n\n*${combo.planLabel} · ${rows.length} negocios*\n${rows.join('\n')}${saving}`;
 }
 
 export function slugify(input: string): string {
@@ -59,7 +113,10 @@ export function slugify(input: string): string {
  */
 @Injectable()
 export class SubscriptionContextService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly groups: BillingGroupsService,
+  ) {}
 
   async build(
     tenantId: string,
@@ -98,11 +155,18 @@ export class SubscriptionContextService {
       : null;
     // La tarifa es mensual; un precio fijado ya está guardado por ciclo.
     const pricedCOP =
-      priced && !priced.locked && priced.priceCOP != null && sub?.billingCycle === 'yearly'
+      priced &&
+      !priced.locked &&
+      priced.priceCOP != null &&
+      sub?.billingCycle === 'yearly'
         ? priced.priceCOP * 12
         : priced?.priceCOP;
     const amountCOP =
-      pricedCOP ?? sub?.agreedPriceCOP ?? sub?.priceCOP ?? sub?.listPriceCOP ?? 0;
+      pricedCOP ??
+      sub?.agreedPriceCOP ??
+      sub?.priceCOP ??
+      sub?.listPriceCOP ??
+      0;
     if (sub && amountCOP <= 0) missing.push('la suscripción no tiene precio');
 
     const lastPayment = await this.prisma.subscriptionPayment.findFirst({
@@ -111,6 +175,47 @@ export class SubscriptionContextService {
     });
 
     const daysToDue = dueAt ? diffCalendarDaysCO(now, dueAt) : null;
+
+    // Combo: el valor a pagar es el del combo y el mensaje lleva el desglose.
+    // Si la cotización falla (p. ej. planes distintos), se manda como negocio
+    // solo y se marca para que el admin lo vea antes de enviar.
+    let combo: ComboContext | null = null;
+    if (tenant.billingGroupId) {
+      try {
+        const q = await this.groups.quote(tenant.billingGroupId, 1, now);
+        const planLabel =
+          `Combo ${PLAN_LABELS[q.planCode ?? ''] ?? q.planCode ?? ''}`.trim();
+        combo = {
+          name: q.groupName,
+          planLabel,
+          lines: q.lines.map((l) => ({
+            tenantName: l.name,
+            verticalCode: l.verticalCode,
+            amount: l.amount,
+            listAmount: l.listAmount,
+            bundleBps: l.bundleBps,
+            position: l.position,
+            locked: l.locked,
+            covered: l.covered,
+          })),
+          amount: q.amount,
+          listAmount: q.listAmount,
+          discountAmount: q.discountAmount,
+        };
+        if (q.blocked) {
+          missing.push(
+            `el combo no se puede cobrar: ${q.issues
+              .filter((i) => i.level === 'error')
+              .map((i) => i.message)
+              .join(' ')}`,
+          );
+        }
+      } catch (err) {
+        missing.push(
+          `no se pudo calcular el combo (${(err as Error).message})`,
+        );
+      }
+    }
 
     return {
       tenantId,
@@ -129,6 +234,7 @@ export class SubscriptionContextService {
       periodStart: lastPayment?.periodStart ?? sub?.currentPeriodStart ?? null,
       periodEnd: lastPayment?.periodEnd ?? sub?.currentPeriodEnd ?? null,
       missing,
+      combo,
     };
   }
 
@@ -140,11 +246,19 @@ export class SubscriptionContextService {
         : '';
 
     return {
-      negocio: ctx.tenantName,
+      // Con combo, el mensaje habla del combo: un valor, un plan, un desglose.
+      negocio: ctx.combo
+        ? ctx.combo.lines.map((l) => l.tenantName).join(' + ')
+        : ctx.tenantName,
       slug: ctx.slug,
-      plan: ctx.planLabel,
+      plan: ctx.combo?.planLabel ?? ctx.planLabel,
+      detalle_plan: renderComboDetail(ctx.combo),
       ciclo: ctx.cycleLabel,
-      valor: ctx.amountCOP > 0 ? formatCOP(ctx.amountCOP) : '',
+      valor: ctx.combo
+        ? formatCOP(ctx.combo.amount)
+        : ctx.amountCOP > 0
+          ? formatCOP(ctx.amountCOP)
+          : '',
       fecha_vencimiento: ctx.dueAt ? formatDateCO(ctx.dueAt) : '',
       fecha_vencimiento_larga: ctx.dueAt ? formatDateLongCO(ctx.dueAt) : '',
       dias_para_vencer:

@@ -47,6 +47,16 @@ export const TEMPLATE_VARIABLES: TemplateVariable[] = [
     group: 'suscripcion',
   },
   {
+    // Vacía para un negocio sin combo (no bloquea el envío). Con combo trae el
+    // desglose por negocio, el descuento y el ahorro. Empieza con salto de
+    // línea para poder ir pegada al final de la línea del valor.
+    key: 'detalle_plan',
+    label: 'Desglose del combo (vacío si no hay combo)',
+    example:
+      '\n*Combo Pro · 2 negocios*\n🍽️ Restaurante · Ruta 43: $ 121.500\n📅 Agenda y reservas · Spa: $ 64.500 (−30% combo, antes $ 92.000)\n💰 Ahorras $ 27.500 frente a pagarlos por separado',
+    group: 'suscripcion',
+  },
+  {
     key: 'fecha_vencimiento',
     label: 'Vencimiento (corto)',
     example: '10/08/2026',
@@ -150,3 +160,9 @@ export function unknownVariables(body: string): string[] {
     (key) => !TEMPLATE_VARIABLE_KEYS.has(key),
   );
 }
+
+/**
+ * Variables que pueden quedar vacías sin bloquear el envío. Todas las demás,
+ * vacías, son un dato que falta y el preview lo marca como bloqueo.
+ */
+export const OPTIONAL_VARIABLES = new Set<string>(['detalle_plan']);

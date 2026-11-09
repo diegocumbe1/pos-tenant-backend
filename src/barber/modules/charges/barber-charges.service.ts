@@ -18,7 +18,13 @@ import {
 } from '../../../common/date.util';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
 import { COMPLETED_STATUS_VARIANTS } from '../../shared/appointment-status';
-import { addMonthsDay, planCycle, usedInCycle, type FreezeRange } from '../../shared/plan-cycle';
+import { appointmentPriceCOP } from '../../shared/duration-price';
+import {
+  addMonthsDay,
+  planCycle,
+  usedInCycle,
+  type FreezeRange,
+} from '../../shared/plan-cycle';
 import {
   BarberPaymentInputDto,
   CreateBarberChargeDto,
@@ -225,8 +231,16 @@ export class BarberChargesService {
           priceCOP: true,
           servedAt: true,
           scheduledAt: true,
+          scheduledEnd: true,
           customer: { select: { name: true } },
-          service: { select: { name: true, priceCOP: true } },
+          service: {
+            select: {
+              name: true,
+              priceCOP: true,
+              durationMin: true,
+              durationOptions: true,
+            },
+          },
         },
         orderBy: { scheduledAt: 'desc' },
       }),
@@ -267,15 +281,20 @@ export class BarberChargesService {
       byService.set(key, entry);
     }
 
-    const unchargedRows = uncharged.map((a) => ({
-      appointmentId: a.id,
-      customerId: a.customerId,
-      customerName: a.customer.name,
-      serviceId: a.serviceId,
-      serviceName: a.service.name,
-      priceCOP: a.priceCOP ?? a.service.priceCOP,
-      servedAt: (a.servedAt ?? a.scheduledAt).toISOString(),
-    }));
+    // Una cita sin cliente registrado no se puede cobrar a nadie: aparece aquí
+    // cuando le asignen el cliente (editando la cita).
+    const unchargedRows = uncharged
+      .filter((a) => a.customerId && a.customer)
+      .map((a) => ({
+        appointmentId: a.id,
+        customerId: a.customerId!,
+        customerName: a.customer!.name,
+        serviceId: a.serviceId,
+        serviceName: a.service.name,
+        // El de su duración real si no tiene precio guardado (2 h de cancha).
+        priceCOP: appointmentPriceCOP(a),
+        servedAt: (a.servedAt ?? a.scheduledAt).toISOString(),
+      }));
     for (const row of unchargedRows) {
       const entry = byService.get(row.serviceId) ?? {
         name: row.serviceName,
@@ -351,12 +370,22 @@ export class BarberChargesService {
       );
       const appt = await this.prisma.barberAppointment.findUniqueOrThrow({
         where: { id: dto.appointmentId },
-        include: { service: { select: { name: true, priceCOP: true } } },
+        include: {
+          service: {
+            select: {
+              name: true,
+              priceCOP: true,
+              durationMin: true,
+              durationOptions: true,
+            },
+          },
+        },
       });
       customerId = customerId ?? appt.customerId;
       serviceId = serviceId ?? appt.serviceId;
       concept = concept || appt.service.name;
-      totalCOP = totalCOP ?? appt.priceCOP ?? appt.service.priceCOP;
+      // Una reserva de 2 h se cobra por 2 h, no por el bloque base.
+      totalCOP = totalCOP ?? appointmentPriceCOP(appt);
       chargedAt = chargedAt ?? appt.servedAt ?? appt.scheduledAt;
     }
     if (serviceId && !dto.appointmentId) {
@@ -579,29 +608,38 @@ export class BarberChargesService {
       throw new BadRequestException('El cobro está anulado');
     }
     if (!current.endsOn) {
-      throw new BadRequestException('Este cobro no tiene vigencia que congelar');
+      throw new BadRequestException(
+        'Este cobro no tiene vigencia que congelar',
+      );
     }
     const today = calendarDayCO(new Date());
     const planEnd = dayOf(current.endsOn)!;
     // Congelar un plan vencido lo "revive" y cubre hacia atrás días que no se
     // pagaron. Si ya venció, se renueva.
     if (planEnd < today) {
-      throw new BadRequestException('El plan ya venció: renuévalo en vez de congelarlo');
+      throw new BadRequestException(
+        'El plan ya venció: renuévalo en vez de congelarlo',
+      );
     }
 
     const start = dto.startsOn ?? today;
     if (start > planEnd) {
-      throw new BadRequestException('La congelación tiene que empezar antes de que venza el plan');
+      throw new BadRequestException(
+        'La congelación tiene que empezar antes de que venza el plan',
+      );
     }
     const startsOn = dayOf(current.startsOn);
     if (startsOn && start < startsOn) {
-      throw new BadRequestException('La congelación no puede empezar antes que el plan');
+      throw new BadRequestException(
+        'La congelación no puede empezar antes que el plan',
+      );
     }
     if (!dto.days && !dto.untilOn) {
       throw new BadRequestException('Indica cuántos días o hasta qué fecha');
     }
     const end = dto.untilOn ?? addDays(start, dto.days! - 1);
-    if (end < start) throw new BadRequestException('La fecha final es antes de la inicial');
+    if (end < start)
+      throw new BadRequestException('La fecha final es antes de la inicial');
     const days = daysBetween(start, end) + 1;
     if (days > 365) throw new BadRequestException('Máximo 365 días');
 
@@ -669,7 +707,8 @@ export class BarberChargesService {
     }
     // Desde hoy vuelve a estar activo: hoy no cuenta como congelado.
     const keepUntil = addDays(today, -1);
-    const returned = start > keepUntil ? freeze.days : daysBetween(keepUntil, end);
+    const returned =
+      start > keepUntil ? freeze.days : daysBetween(keepUntil, end);
     const planEnd = dayOf(current.endsOn)!;
 
     await this.prisma.$transaction([
@@ -724,6 +763,11 @@ export class BarberChargesService {
         where: { id },
         include: CHARGE_INCLUDE,
       });
+      if (!appt.customerId) {
+        throw new BadRequestException(
+          'No tiene cliente registrado: asígnale uno antes de cobrar.',
+        );
+      }
       const problem = this.coverageProblem(charge, appt.customerId, day);
       if (problem) throw new BadRequestException(problem);
       await tx.barberAppointment.update({
@@ -819,8 +863,10 @@ export class BarberChargesService {
       (c) => c.endsOn !== null || c.sessionsTotal !== null,
     );
     const covering =
-      plans.find((c) => this.coverageProblem(c, customerId, onDay, appointmentId) === null) ??
-      null;
+      plans.find(
+        (c) =>
+          this.coverageProblem(c, customerId, onDay, appointmentId) === null,
+      ) ?? null;
     // Si nada la cubre, el plan del que hablar: el vigente por fechas (está
     // sin cupo o sin sesiones) o, si no, el más reciente.
     const inDates = (c: ChargeRow) =>
@@ -830,7 +876,10 @@ export class BarberChargesService {
 
     const reasons: { code: string; message: string }[] = [];
     if (!plan) {
-      reasons.push({ code: 'NO_PLAN', message: 'No tiene plan: la sesión se cobra suelta' });
+      reasons.push({
+        code: 'NO_PLAN',
+        message: 'No tiene plan: la sesión se cobra suelta',
+      });
     } else if (!covering) {
       const startsOn = dayOf(plan.startsOn);
       const endsOn = dayOf(plan.endsOn);
@@ -841,14 +890,23 @@ export class BarberChargesService {
           message: `Su plan está congelado hasta el ${formatDateCO(`${frozen.end}T12:00:00${CO_UTC_OFFSET}`)}`,
         });
       } else if (endsOn && onDay > endsOn) {
-        reasons.push({ code: 'PLAN_EXPIRED', message: `Su plan venció el ${formatDateCO(`${endsOn}T12:00:00${CO_UTC_OFFSET}`)}` });
+        reasons.push({
+          code: 'PLAN_EXPIRED',
+          message: `Su plan venció el ${formatDateCO(`${endsOn}T12:00:00${CO_UTC_OFFSET}`)}`,
+        });
       } else if (startsOn && onDay < startsOn) {
-        reasons.push({ code: 'PLAN_NOT_STARTED', message: `Su plan arranca el ${formatDateCO(`${startsOn}T12:00:00${CO_UTC_OFFSET}`)}` });
+        reasons.push({
+          code: 'PLAN_NOT_STARTED',
+          message: `Su plan arranca el ${formatDateCO(`${startsOn}T12:00:00${CO_UTC_OFFSET}`)}`,
+        });
       } else if (
         plan.sessionsTotal !== null &&
         plan._count.coveredAppointments >= plan.sessionsTotal
       ) {
-        reasons.push({ code: 'NO_SESSIONS', message: `Ya usó las ${plan.sessionsTotal} sesiones del paquete` });
+        reasons.push({
+          code: 'NO_SESSIONS',
+          message: `Ya usó las ${plan.sessionsTotal} sesiones del paquete`,
+        });
       } else if (plan.sessionsPerMonth !== null) {
         reasons.push({
           code: 'MONTHLY_LIMIT',
@@ -861,7 +919,8 @@ export class BarberChargesService {
     if (covering) {
       if (
         covering.sessionsPerMonth !== null &&
-        this.cycleUsage(covering, onDay, appointmentId).used === covering.sessionsPerMonth - 1
+        this.cycleUsage(covering, onDay, appointmentId).used ===
+          covering.sessionsPerMonth - 1
       ) {
         reasons.push({
           code: 'LAST_SESSION',
@@ -885,15 +944,30 @@ export class BarberChargesService {
       .filter((c) => c.status === 'OVERDUE' || c.status === 'DUE_TODAY')
       .reduce((acc, c) => acc + c.balanceCOP, 0);
     if (overdueCOP > 0) {
-      reasons.push({ code: 'DEBT_OVERDUE', message: `Tiene ${formatCOP(overdueCOP)} vencido por pagar` });
+      reasons.push({
+        code: 'DEBT_OVERDUE',
+        message: `Tiene ${formatCOP(overdueCOP)} vencido por pagar`,
+      });
     } else if (balanceCOP > 0) {
-      reasons.push({ code: 'DEBT_PENDING', message: `Debe ${formatCOP(balanceCOP)}` });
+      reasons.push({
+        code: 'DEBT_PENDING',
+        message: `Debe ${formatCOP(balanceCOP)}`,
+      });
     }
 
     const planDto = plan ? this.toDto(plan, today) : null;
-    let nextCycle: { start: string; end: string; used: number; left: number; available: boolean } | null = null;
+    let nextCycle: {
+      start: string;
+      end: string;
+      used: number;
+      left: number;
+      available: boolean;
+    } | null = null;
     if (plan && plan.sessionsPerMonth !== null) {
-      const start = addDays(planCycle(dayOf(plan.startsOn), onDay, this.freezesOf(plan)).end, 1);
+      const start = addDays(
+        planCycle(dayOf(plan.startsOn), onDay, this.freezesOf(plan)).end,
+        1,
+      );
       const usage = this.cycleUsage(plan, start);
       const endsOn = dayOf(plan.endsOn);
       const left = Math.max(0, plan.sessionsPerMonth - usage.used);
@@ -952,7 +1026,12 @@ export class BarberChargesService {
    *   INACTIVE   → no vino y no hay cobro: no se cuenta como deuda.
    */
   async account(ctx: TenantContext, customerId: string) {
-    await this.tenantHelper.assertScopedRecord('barberCustomer', ctx, customerId, 'Customer');
+    await this.tenantHelper.assertScopedRecord(
+      'barberCustomer',
+      ctx,
+      customerId,
+      'Customer',
+    );
     const today = calendarDayCO(new Date());
     const rows = await this.prisma.barberCharge.findMany({
       where: {
@@ -974,14 +1053,22 @@ export class BarberChargesService {
       .map((p) => p.dto.startsOn ?? calendarDayCO(p.row.chargedAt))
       .sort()[0];
     if (!firstStart) {
-      return { customerId, anchor: null, months: [], totals: { monthsOwed: 0, owedCOP: 0 }, plan: null };
+      return {
+        customerId,
+        anchor: null,
+        months: [],
+        totals: { monthsOwed: 0, owedCOP: 0 },
+        plan: null,
+      };
     }
 
     // El plan de referencia (precio del mes, cupo, valor por sesión): el último.
     const latest = plans[plans.length - 1];
     const planPriceCOP = latest.row.service?.priceCOP ?? latest.row.totalCOP;
     const sessionsPerMonth =
-      latest.row.sessionsPerMonth ?? latest.row.service?.sessionsPerMonth ?? null;
+      latest.row.sessionsPerMonth ??
+      latest.row.service?.sessionsPerMonth ??
+      null;
     const perSessionCOP = latest.dto.perSessionCOP;
 
     const visits = await this.prisma.barberAppointment.findMany({
@@ -1016,7 +1103,14 @@ export class BarberChargesService {
       sessions: number;
       sessionsPerMonth: number | null;
       status: 'PAID' | 'OWED' | 'NOT_CHARGED' | 'INACTIVE';
-      charges: { id: string; concept: string; totalCOP: number; paidCOP: number; balanceCOP: number; status: string }[];
+      charges: {
+        id: string;
+        concept: string;
+        totalCOP: number;
+        paidCOP: number;
+        balanceCOP: number;
+        status: string;
+      }[];
       /** Visitas de ese mes que nada cubrió ni cobró (sin plan o pasadas del cupo). */
       unsettledAppointmentIds: string[];
     }[] = [];
@@ -1055,14 +1149,18 @@ export class BarberChargesService {
           balanceCOP: p.dto.balanceCOP,
           status: p.dto.status,
         })),
-        unsettledAppointmentIds: inMonth.filter((v) => !v.settled).map((v) => v.id),
+        unsettledAppointmentIds: inMonth
+          .filter((v) => !v.settled)
+          .map((v) => v.id),
       });
     }
 
     // Lo que debe: saldos de los cobros (una vez cada uno, aunque cubran
     // varios meses) + un mes de plan por cada mes que vino sin cobro.
     const owedCharges = new Map<string, number>();
-    for (const m of months) for (const c of m.charges) if (c.balanceCOP > 0) owedCharges.set(c.id, c.balanceCOP);
+    for (const m of months)
+      for (const c of m.charges)
+        if (c.balanceCOP > 0) owedCharges.set(c.id, c.balanceCOP);
     const notCharged = months.filter((m) => m.status === 'NOT_CHARGED');
     return {
       customerId,
@@ -1076,7 +1174,9 @@ export class BarberChargesService {
       },
       months: months.reverse(),
       totals: {
-        monthsOwed: months.filter((m) => m.status === 'OWED' || m.status === 'NOT_CHARGED').length,
+        monthsOwed: months.filter(
+          (m) => m.status === 'OWED' || m.status === 'NOT_CHARGED',
+        ).length,
         owedCOP:
           [...owedCharges.values()].reduce((a, b) => a + b, 0) +
           notCharged.length * planPriceCOP,
@@ -1092,7 +1192,12 @@ export class BarberChargesService {
    *                 quedan dentro y el resto del mes sigue cubierto.
    */
   async settleSessions(ctx: TenantContext, dto: SettleBarberSessionsDto) {
-    await this.tenantHelper.assertScopedRecord('barberService', ctx, dto.serviceId, 'Service');
+    await this.tenantHelper.assertScopedRecord(
+      'barberService',
+      ctx,
+      dto.serviceId,
+      'Service',
+    );
     const service = await this.prisma.barberService.findUniqueOrThrow({
       where: { id: dto.serviceId },
       select: {
@@ -1142,7 +1247,9 @@ export class BarberChargesService {
       .sort();
     const n = appts.length;
     const perMonth = service.sessionsPerMonth ?? service.sessionsIncluded;
-    const perSession = perMonth ? Math.round(service.priceCOP / perMonth) : service.priceCOP;
+    const perSession = perMonth
+      ? Math.round(service.priceCOP / perMonth)
+      : service.priceCOP;
 
     const created =
       dto.mode === 'PER_SESSION'
@@ -1338,9 +1445,7 @@ export class BarberChargesService {
     // Mes de plan de hoy (o del último día del plan, si ya venció).
     const cycleDay = endsOn && endsOn < today ? endsOn : today;
     const cycle =
-      row.sessionsPerMonth !== null
-        ? this.cycleUsage(row, cycleDay)
-        : null;
+      row.sessionsPerMonth !== null ? this.cycleUsage(row, cycleDay) : null;
 
     let membershipState: BarberMembershipState | null = null;
     if (isMembership && !row.voidedAt) {
@@ -1415,8 +1520,12 @@ export class BarberChargesService {
       }),
       /** Congelado hoy: no cubre asistencias hasta `endsOn`. */
       frozenNow: (() => {
-        const f = row.freezes.find((x) => dayOf(x.startsOn)! <= today && today <= dayOf(x.endsOn)!);
-        return f ? { startsOn: dayOf(f.startsOn)!, endsOn: dayOf(f.endsOn)! } : null;
+        const f = row.freezes.find(
+          (x) => dayOf(x.startsOn)! <= today && today <= dayOf(x.endsOn)!,
+        );
+        return f
+          ? { startsOn: dayOf(f.startsOn)!, endsOn: dayOf(f.endsOn)! }
+          : null;
       })(),
       note: row.note,
       userName: row.userName,
@@ -1465,7 +1574,8 @@ export class BarberChargesService {
     }
     if (
       charge.sessionsPerMonth !== null &&
-      this.cycleUsage(charge, day, excludeAppointmentId).used >= charge.sessionsPerMonth
+      this.cycleUsage(charge, day, excludeAppointmentId).used >=
+        charge.sessionsPerMonth
     ) {
       return `Ya usó las ${charge.sessionsPerMonth} sesiones de este mes de plan`;
     }
@@ -1476,11 +1586,17 @@ export class BarberChargesService {
    * Sesiones usadas en el mes de plan que contiene `day`. Una cortesía no
    * cuenta; una "del próximo mes" cuenta en el mes siguiente al suyo.
    */
-  private cycleUsage(charge: ChargeRow, day: string, excludeAppointmentId?: string) {
+  private cycleUsage(
+    charge: ChargeRow,
+    day: string,
+    excludeAppointmentId?: string,
+  ) {
     const startsOn = dayOf(charge.startsOn);
     const freezes = this.freezesOf(charge);
     const days = charge.coveredAppointments
-      .filter((a) => a.quotaMode !== 'COURTESY' && a.id !== excludeAppointmentId)
+      .filter(
+        (a) => a.quotaMode !== 'COURTESY' && a.id !== excludeAppointmentId,
+      )
       .map((a) => {
         const d = calendarDayCO(a.servedAt ?? a.scheduledAt);
         return a.quotaMode === 'NEXT_CYCLE'
@@ -1492,12 +1608,17 @@ export class BarberChargesService {
 
   /** Las congelaciones del plan como rangos de días (inclusive). */
   private freezesOf(charge: ChargeRow): FreezeRange[] {
-    return charge.freezes.map((f) => ({ start: dayOf(f.startsOn)!, end: dayOf(f.endsOn)! }));
+    return charge.freezes.map((f) => ({
+      start: dayOf(f.startsOn)!,
+      end: dayOf(f.endsOn)!,
+    }));
   }
 
   /** La congelación que tiene a `day` adentro, si hay. */
   private frozenOn(charge: ChargeRow, day: string): FreezeRange | null {
-    return this.freezesOf(charge).find((f) => f.start <= day && day <= f.end) ?? null;
+    return (
+      this.freezesOf(charge).find((f) => f.start <= day && day <= f.end) ?? null
+    );
   }
 
   /**
@@ -1512,7 +1633,12 @@ export class BarberChargesService {
     mode: 'NEXT_CYCLE' | 'COURTESY',
   ) {
     await this.findScoped(ctx, id);
-    await this.tenantHelper.assertScopedRecord('barberAppointment', ctx, appointmentId, 'Appointment');
+    await this.tenantHelper.assertScopedRecord(
+      'barberAppointment',
+      ctx,
+      appointmentId,
+      'Appointment',
+    );
     await this.prisma.$transaction(async (tx) => {
       const appt = await tx.barberAppointment.findUniqueOrThrow({
         where: { id: appointmentId },
@@ -1532,7 +1658,9 @@ export class BarberChargesService {
         });
       }
       if (NOT_CONSUMED_STATUSES.includes(appt.status)) {
-        throw new BadRequestException('Solo se cubren sesiones en las que vino');
+        throw new BadRequestException(
+          'Solo se cubren sesiones en las que vino',
+        );
       }
       const charge = await tx.barberCharge.findUniqueOrThrow({
         where: { id },
@@ -1546,7 +1674,10 @@ export class BarberChargesService {
       }
       const day = calendarDayCO(appt.servedAt ?? appt.scheduledAt);
       if (mode === 'NEXT_CYCLE') {
-        const next = addDays(planCycle(dayOf(charge.startsOn), day, this.freezesOf(charge)).end, 1);
+        const next = addDays(
+          planCycle(dayOf(charge.startsOn), day, this.freezesOf(charge)).end,
+          1,
+        );
         const endsOn = dayOf(charge.endsOn);
         if (endsOn && next > endsOn) {
           throw new BadRequestException(
@@ -1554,7 +1685,9 @@ export class BarberChargesService {
           );
         }
         if (this.cycleUsage(charge, next).used >= charge.sessionsPerMonth) {
-          throw new BadRequestException('El mes siguiente ya tiene el cupo lleno');
+          throw new BadRequestException(
+            'El mes siguiente ya tiene el cupo lleno',
+          );
         }
       }
       await tx.barberAppointment.update({
@@ -1572,7 +1705,8 @@ export class BarberChargesService {
    */
   private perSessionCOP(row: ChargeRow): number | null {
     const price = row.service?.priceCOP ?? null;
-    const perMonth = row.sessionsPerMonth ?? row.service?.sessionsPerMonth ?? null;
+    const perMonth =
+      row.sessionsPerMonth ?? row.service?.sessionsPerMonth ?? null;
     if (price && perMonth) return Math.round(price / perMonth);
     if (row.sessionsTotal) return Math.round(row.totalCOP / row.sessionsTotal);
     return null;

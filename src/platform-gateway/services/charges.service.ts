@@ -21,6 +21,7 @@ import { CreateChargeDto } from '../dto/platform-gateway.dto';
 import { FeeMethod, quoteFee } from '../fee-calculator';
 import { FeeRatesService } from './fee-rates.service';
 import { GatewaySettingsService } from './gateway-settings.service';
+import { GroupChargesService } from './group-charges.service';
 import { WompiClient } from './wompi.client';
 
 /**
@@ -91,6 +92,7 @@ export class ChargesService {
     private readonly platform: PlatformService,
     private readonly pricing: PlanPricingService,
     private readonly rates: FeeRatesService,
+    private readonly groupCharges: GroupChargesService,
   ) {}
 
   // ─── Cobros ─────────────────────────────────────────────────────────────────
@@ -143,6 +145,13 @@ export class ChargesService {
       include: { subscription: true },
     });
     if (!tenant) throw new NotFoundException(`Tenant ${tenantId} not found`);
+    // Un negocio en combo se cobra con el link del combo. Un cobro suelto aquí
+    // le cobraría a precio de lista y desalinearía su vencimiento del grupo.
+    if (tenant.billingGroupId) {
+      throw new BadRequestException(
+        'Este negocio está en un combo: genera el cobro desde el combo para que lleve el descuento y quede alineado.',
+      );
+    }
 
     const amount = dto.amount;
     if (!Number.isInteger(amount) || amount <= 0) {
@@ -328,6 +337,13 @@ export class ChargesService {
         where: { reference: tx.reference },
       });
       if (!charge) {
+        // ¿Es el link de un combo? Esos viven en billing_group_charges.
+        const confirmedGroupTx = tx.id ? await this.wompi.getTransaction(tx.id) : null;
+        const groupResult = await this.groupCharges.settleByReference(
+          tx.reference,
+          confirmedGroupTx ?? tx,
+        );
+        if (groupResult) return log(groupResult, true);
         return log(
           {
             outcome: 'unknown_reference',

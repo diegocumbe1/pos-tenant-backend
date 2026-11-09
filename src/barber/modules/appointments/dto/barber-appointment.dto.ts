@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsInt,
   IsOptional,
@@ -8,8 +9,10 @@ import {
 } from 'class-validator';
 
 export class CreateBarberAppointmentDto {
+  // Opcional solo para dueño/gerente, y entonces `notes` es obligatoria.
+  @IsOptional()
   @IsString()
-  customerId!: string;
+  customerId?: string;
 
   @IsString()
   serviceId!: string;
@@ -32,6 +35,11 @@ export class CreateBarberAppointmentDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  // Agendar encima de una reserva PENDIENTE de aprobar (con confirmación).
+  @IsOptional()
+  @IsBoolean()
+  allowOverPending?: boolean;
 }
 
 export class UpdateBarberAppointmentDto {
@@ -70,6 +78,10 @@ export class UpdateBarberAppointmentDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  allowOverPending?: boolean;
 }
 
 export class UpdateBarberAppointmentServedAtDto {

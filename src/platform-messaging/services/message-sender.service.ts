@@ -1,3 +1,4 @@
+import { OPTIONAL_VARIABLES } from '../template-variables';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   PlatformMessageChannel,
@@ -53,6 +54,21 @@ export interface SendResult {
  * respuesta es 200 con el detalle de cada uno. Un 500 dejaría al admin sin saber
  * qué se envió y qué no, que es justo lo que no puede pasar en un cobro.
  */
+/**
+ * Las plantillas guardadas antes de existir el combo no traen
+ * `{{detalle_plan}}`, y el cliente de un combo recibiría solo el total. Si el
+ * negocio está en combo y la plantilla no la pide, se pega al final de la
+ * línea que muestra `{{valor}}` (o al final del cuerpo). Sin combo no toca nada.
+ */
+export function withComboDetail(body: string, hasCombo: boolean): string {
+  if (!hasCombo || body.includes('{{detalle_plan}}')) return body;
+  const lines = body.split('\n');
+  const index = lines.findIndex((line) => line.includes('{{valor}}'));
+  if (index === -1) return `${body}{{detalle_plan}}`;
+  lines[index] = `${lines[index]}{{detalle_plan}}`;
+  return lines.join('\n');
+}
+
 @Injectable()
 export class MessageSenderService {
   private readonly logger = new Logger(MessageSenderService.name);
@@ -175,19 +191,17 @@ export class MessageSenderService {
           html = this.renderer.renderHtml(options.bodyOverride, {}).html;
         }
       } else {
-        const rendered = this.renderer.render(template.body, baseValues);
+        const source = withComboDetail(template.body, !!ctx.combo);
+        const rendered = this.renderer.render(source, baseValues);
         body = rendered.text;
         for (const key of rendered.missing) {
+          if (OPTIONAL_VARIABLES.has(key)) continue;
           blockers.push(`falta el dato "${key}"`);
         }
         if (channel === 'email') {
           // Se re-renderiza desde la MISMA plantilla, pero con la versión HTML
           // del bloque de medios de pago (que trae el QR embebido).
-          html = this.renderer.renderHtml(
-            template.body,
-            baseValues,
-            htmlValues,
-          ).html;
+          html = this.renderer.renderHtml(source, baseValues, htmlValues).html;
         }
       }
 

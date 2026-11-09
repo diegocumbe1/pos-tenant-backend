@@ -1,10 +1,12 @@
 import { Logger, Module, OnApplicationBootstrap } from '@nestjs/common';
 import { PlatformModule } from '../platform/platform.module';
+import { GroupChargesController } from './group-charges.controller';
 import { PlatformGatewayController } from './platform-gateway.controller';
 import { WompiWebhookController } from './wompi-webhook.controller';
 import { ChargesService } from './services/charges.service';
 import { FeeRatesService } from './services/fee-rates.service';
 import { GatewaySettingsService } from './services/gateway-settings.service';
+import { GroupChargesService } from './services/group-charges.service';
 import { WompiClient } from './services/wompi.client';
 
 @Module({
@@ -12,11 +14,12 @@ import { WompiClient } from './services/wompi.client';
   // `createPayment` en vez de duplicar el registro del pago y la extensión del
   // periodo, que ya llevan su propia auditoría.
   imports: [PlatformModule],
-  controllers: [PlatformGatewayController, WompiWebhookController],
+  controllers: [PlatformGatewayController, GroupChargesController, WompiWebhookController],
   providers: [
     GatewaySettingsService,
     WompiClient,
     ChargesService,
+    GroupChargesService,
     FeeRatesService,
   ],
   exports: [

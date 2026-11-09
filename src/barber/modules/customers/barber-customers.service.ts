@@ -95,6 +95,8 @@ export class BarberCustomersService {
           AND a."branchId" = ${ctx.branchId}
           AND LOWER(a."status") = 'completed'
           AND a."servedAt" IS NOT NULL
+          -- Citas agendadas sin cliente registrado no son de nadie.
+          AND a."customerId" IS NOT NULL
       ),
       totals AS (
         SELECT "customerId", SUM(price)::int AS total_spent

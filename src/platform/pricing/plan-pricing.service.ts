@@ -1,5 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  BUNDLE_COMBOS,
+  MAX_BUNDLE_BPS,
+  quoteBundle,
+} from './bundle-quote';
 import { syncUnlockedSubscriptionPrices } from './subscription-price';
 
 /**
@@ -360,6 +365,118 @@ export class PlanPricingService {
           }),
         })),
       })),
+    };
+  }
+
+  // ─── Combo de verticales ────────────────────────────────────────────────────
+
+  /** Fila vigente del % por vertical adicional. Sin fila, no hay combo (0). */
+  async getBundleDiscountAt(at: Date = new Date()) {
+    const row = await this.prisma.planBundleDiscount.findFirst({
+      where: { effectiveFrom: { lte: at } },
+      orderBy: { effectiveFrom: 'desc' },
+    });
+    return {
+      additionalBps: row?.additionalBps ?? 0,
+      effectiveFrom: row?.effectiveFrom.toISOString() ?? null,
+      note: row?.note ?? undefined,
+    };
+  }
+
+  /**
+   * Precio de cada combo publicado (parejas y las tres) × plan × término,
+   * ya calculado. Lo leen la landing y el backoffice tal cual: ninguno de los
+   * dos repite la cuenta. Recibe la matriz de términos para no consultarla dos
+   * veces cuando se arma la respuesta pública.
+   */
+  async getBundleMatrixAt(
+    at: Date = new Date(),
+    termMatrix?: Awaited<ReturnType<PlanPricingService['getTermPricingMatrixAt']>>,
+  ) {
+    const [matrix, bundle] = await Promise.all([
+      termMatrix ? Promise.resolve(termMatrix) : this.getTermPricingMatrixAt(at),
+      this.getBundleDiscountAt(at),
+    ]);
+    const toCop = (usd: number) => usdToCop(usd, matrix.rate);
+
+    const planOf = (verticalCode: string, planCode: string) =>
+      matrix.verticals
+        .find((v) => v.verticalCode === verticalCode)
+        ?.plans.find((p) => p.planCode === planCode);
+
+    const combos = BUNDLE_COMBOS.map((verticals) => ({
+      verticals,
+      plans: PLAN_CODES.map((planCode) => {
+        const plans = verticals.map((v) => planOf(v, planCode));
+        // Sin tarifa cargada en alguna vertical, ese combo no se puede publicar.
+        if (plans.some((p) => p?.priceUSD == null)) {
+          return { planCode, terms: [] };
+        }
+        return {
+          planCode,
+          terms: TERM_MONTHS.map((termMonths) =>
+            quoteBundle({
+              lines: verticals.map((verticalCode, i) => ({
+                verticalCode,
+                priceUSD: plans[i]!.priceUSD!,
+                termBps:
+                  plans[i]!.terms.find((t) => t.termMonths === termMonths)
+                    ?.discountBps ?? 0,
+              })),
+              bundleBps: bundle.additionalBps,
+              termMonths,
+              usdToCop: toCop,
+            }),
+          ),
+        };
+      }),
+    }));
+
+    return { ...bundle, rate: matrix.rate, combos };
+  }
+
+  async getBundleDiscountHistory() {
+    const rows = await this.prisma.planBundleDiscount.findMany({
+      orderBy: [{ effectiveFrom: 'desc' }, { createdAt: 'desc' }],
+    });
+    return {
+      history: rows.map((row) => ({
+        id: row.id,
+        additionalBps: row.additionalBps,
+        effectiveFrom: row.effectiveFrom.toISOString(),
+        note: row.note ?? undefined,
+        createdBy: row.createdBy ?? undefined,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  /** Nuevo % por vertical adicional desde una fecha (append-only). */
+  async createBundleDiscount(
+    input: { additionalBps: number; effectiveFrom?: string; note?: string },
+    actorUserId: string,
+  ) {
+    const bps = Math.round(input.additionalBps);
+    if (!Number.isInteger(bps) || bps < 0 || bps > MAX_BUNDLE_BPS) {
+      throw new BadRequestException(
+        `additionalBps debe estar entre 0 y ${MAX_BUNDLE_BPS} (0% a ${MAX_BUNDLE_BPS / 100}%)`,
+      );
+    }
+    const row = await this.prisma.planBundleDiscount.create({
+      data: {
+        additionalBps: bps,
+        effectiveFrom: this.parseEffectiveFrom(input.effectiveFrom),
+        note: input.note,
+        createdBy: actorUserId,
+      },
+    });
+    return {
+      id: row.id,
+      additionalBps: row.additionalBps,
+      effectiveFrom: row.effectiveFrom.toISOString(),
+      note: row.note ?? undefined,
+      createdBy: row.createdBy ?? undefined,
+      createdAt: row.createdAt.toISOString(),
     };
   }
 

@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { BarberAppointmentEventKind, Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -9,6 +13,12 @@ import {
   formatCOP,
 } from '../../../common/date.util';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
+import { assertSlotFree, findSlotClashes } from '../../shared/slot-conflict';
+import {
+  minutesBetween,
+  priceForMinutes,
+  storedPriceForDuration,
+} from '../../shared/duration-price';
 import { ensureRecurringHorizon } from '../../shared/recurring-horizon';
 import {
   COMPLETED_STATUS_VARIANTS,
@@ -42,38 +52,76 @@ export class BarberAppointmentsService {
   }
 
   async createAppointment(ctx: TenantContext, dto: CreateBarberAppointmentDto) {
+    // Sin cliente: solo dueño o gerente, y con una nota que diga quién es. Lo
+    // ideal es registrarlo siempre; esto es para cuando no hay datos todavía.
+    const customerId = dto.customerId?.trim() || null;
+    const notes = dto.notes?.trim() || undefined;
+    if (!customerId) {
+      const canSkipCustomer =
+        ctx.isRoot || ['OWNER', 'MANAGER'].includes(ctx.roleCode);
+      if (!canSkipCustomer) {
+        throw new ForbiddenException(
+          'Solo el dueño o el gerente pueden agendar sin cliente.',
+        );
+      }
+      if (!notes) {
+        throw new BadRequestException({
+          code: 'CUSTOMER_NOTE_REQUIRED',
+          message:
+            'Sin cliente registrado, escribe una nota (nombre, teléfono o quién es).',
+        });
+      }
+    }
+
     await this.assertAppointmentRelations(ctx, {
-      customerId: dto.customerId,
+      customerId: customerId ?? undefined,
       serviceId: dto.serviceId,
       staffId: dto.staffId,
     });
 
     const service = await this.prisma.barberService.findUniqueOrThrow({
       where: { id: dto.serviceId },
-      select: { durationMin: true },
+      select: { durationMin: true, priceCOP: true, durationOptions: true },
     });
     const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledAt = new Date(dto.scheduledAt);
     const scheduledEnd = new Date(scheduledAt.getTime() + durationMin * 60_000);
+    // Reserva por bloques (2 h de cancha): se guarda el precio de ESA duración.
+    // En la duración base queda null y manda el precio del servicio.
+    const priceCOP = storedPriceForDuration(service, durationMin);
 
     return this.prisma.$transaction(async (tx) => {
+      // Misma regla que la reserva pública: el espacio (especialista, o el
+      // servicio si no hay especialista) no se puede tomar dos veces.
+      assertSlotFree(
+        await findSlotClashes(tx, {
+          branchId: ctx.branchId,
+          staffId: dto.staffId,
+          serviceId: dto.serviceId,
+          start: scheduledAt,
+          end: scheduledEnd,
+        }),
+        { allowOverPending: dto.allowOverPending },
+      );
+
       const created = await tx.barberAppointment.create({
         data: {
           tenantId: ctx.tenantId,
           branchId: ctx.branchId,
-          customerId: dto.customerId,
+          customerId,
           serviceId: dto.serviceId,
           staffId: dto.staffId,
           scheduledAt,
           scheduledEnd,
-          notes: dto.notes,
+          priceCOP,
+          notes,
         },
         include: { customer: true, service: true, staff: true },
       });
 
       await this.logAppointmentEvent(tx, ctx, created.id, {
         kind: 'CREATED',
-        summary: `Cita agendada para el ${calendarDayCO(scheduledAt)}`,
+        summary: `Agendada para el ${calendarDayCO(scheduledAt)}${customerId ? '' : ' (sin cliente registrado)'}`,
         detail: { scheduledAt: scheduledAt.toISOString() },
       });
 
@@ -103,17 +151,25 @@ export class BarberAppointmentsService {
       select: {
         serviceId: true,
         customerId: true,
+        staffId: true,
         status: true,
         priceCOP: true,
         costCOP: true,
         servedAt: true,
         scheduledAt: true,
+        scheduledEnd: true,
+        recurringBookingId: true,
       },
     });
     const serviceId = dto.serviceId ?? current.serviceId;
     const service = await this.prisma.barberService.findUniqueOrThrow({
       where: { id: serviceId },
-      select: { durationMin: true, priceCOP: true, costCOP: true },
+      select: {
+        durationMin: true,
+        priceCOP: true,
+        costCOP: true,
+        durationOptions: true,
+      },
     });
     const durationMin = dto.durationMinutes ?? service.durationMin;
     const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : undefined;
@@ -140,7 +196,69 @@ export class BarberAppointmentsService {
     // El cambio de estado y los contadores del cliente van en la MISMA
     // transacción: si una falla, ninguna pasa, o el contador de visitas queda
     // diciendo algo distinto del histórico que lo sustenta.
+    // Mover la cita (hora, duración, especialista o servicio) vuelve a validar
+    // el espacio. Cambiar solo el estado o la nota no.
+    const moves =
+      !!dto.scheduledAt ||
+      dto.durationMinutes !== undefined ||
+      (dto.staffId !== undefined && dto.staffId !== current.staffId) ||
+      (dto.serviceId !== undefined && dto.serviceId !== current.serviceId);
+    const nextStart = scheduledAt ?? current.scheduledAt;
+    const nextEnd =
+      scheduledAt || dto.durationMinutes !== undefined || dto.serviceId
+        ? new Date(nextStart.getTime() + durationMin * 60_000)
+        : current.scheduledEnd;
+    const freesSlot = [
+      'CANCELLED',
+      'REJECTED',
+      'NO_SHOW',
+      'COMPLETED',
+    ].includes((dto.status ?? current.status).toUpperCase());
+    // Una sesión que ya empezó y solo se alargó (misma hora de inicio) es
+    // registrar lo que pasó, no reservar: no se bloquea. Moverla a otra hora sí
+    // valida el espacio nuevo.
+    const sameStart =
+      !scheduledAt || scheduledAt.getTime() === current.scheduledAt.getTime();
+    const extendsStartedSession =
+      sameStart &&
+      (dto.staffId === undefined || dto.staffId === current.staffId) &&
+      current.scheduledAt.getTime() <= Date.now();
+
+    // Precio de la duración nueva. Alargar 1 h → 2 h en una cancha de
+    // $30.000/h deja la reserva en $60.000. No se toca una completada (su precio
+    // ya quedó congelado) ni una reserva fija (trae su precio pactado).
+    const nextMinutes = minutesBetween(nextStart, nextEnd);
+    const durationChanged =
+      nextMinutes !==
+        minutesBetween(current.scheduledAt, current.scheduledEnd) ||
+      serviceId !== current.serviceId;
+    const reprice =
+      moves &&
+      durationChanged &&
+      !isCompletedStatus(current.status) &&
+      !current.recurringBookingId;
+    const priceAfterMove = reprice
+      ? storedPriceForDuration(service, nextMinutes)
+      : current.priceCOP;
+    // Al completar: lo guardado, o el precio de la duración REAL (antes era
+    // siempre el del servicio, o sea el de un solo bloque).
+    const frozenPrice = priceAfterMove ?? priceForMinutes(service, nextMinutes);
+
     return this.prisma.$transaction(async (tx) => {
+      if (moves && !freesSlot && !extendsStartedSession) {
+        assertSlotFree(
+          await findSlotClashes(tx, {
+            branchId: ctx.branchId,
+            staffId: dto.staffId ?? current.staffId,
+            serviceId,
+            start: nextStart,
+            end: nextEnd,
+            excludeId: id,
+          }),
+          { allowOverPending: dto.allowOverPending },
+        );
+      }
+
       const updated = await tx.barberAppointment.update({
         where: { id },
         data: {
@@ -148,14 +266,18 @@ export class BarberAppointmentsService {
           serviceId: dto.serviceId,
           staffId: dto.staffId,
           scheduledAt,
-          scheduledEnd: scheduledAt
-            ? new Date(scheduledAt.getTime() + durationMin * 60_000)
-            : undefined,
+          // También cuando solo cambia la duración (antes se ignoraba si no
+          // venía la hora de inicio).
+          scheduledEnd:
+            nextEnd.getTime() !== current.scheduledEnd.getTime()
+              ? nextEnd
+              : undefined,
           status: dto.status,
           notes: dto.notes,
+          ...(reprice && !completesNow ? { priceCOP: priceAfterMove } : {}),
           ...(completesNow
             ? {
-                priceCOP: current.priceCOP ?? service.priceCOP,
+                priceCOP: frozenPrice,
                 costCOP: current.costCOP ?? service.costCOP,
                 servedAt,
               }
@@ -167,10 +289,10 @@ export class BarberAppointmentsService {
       if (completesNow) {
         await this.logAppointmentEvent(tx, ctx, id, {
           kind: 'COMPLETED',
-          summary: `Servicio prestado el ${calendarDayCO(servedAt!)} · ${formatCOP(current.priceCOP ?? service.priceCOP)}`,
+          summary: `Servicio prestado el ${calendarDayCO(servedAt!)} · ${formatCOP(frozenPrice)}`,
           detail: {
             servedAt: servedAt!.toISOString(),
-            priceCOP: current.priceCOP ?? service.priceCOP,
+            priceCOP: frozenPrice,
             costCOP: current.costCOP ?? service.costCOP,
           },
         });
@@ -323,10 +445,35 @@ export class BarberAppointmentsService {
       id,
       'Appointment',
     );
-    return this.prisma.barberAppointment.update({
+    const current = await this.prisma.barberAppointment.findUniqueOrThrow({
       where: { id },
-      data: { status: 'CONFIRMED' },
-      include: { customer: true, service: true, staff: true },
+      select: {
+        staffId: true,
+        serviceId: true,
+        scheduledAt: true,
+        scheduledEnd: true,
+      },
+    });
+    return this.prisma.$transaction(async (tx) => {
+      // Solo una reserva puede quedarse con el espacio: si ya hay otra
+      // confirmada ahí, esta no se aprueba (se rechaza o se mueve).
+      const clashes = await findSlotClashes(tx, {
+        branchId: ctx.branchId,
+        staffId: current.staffId,
+        serviceId: current.serviceId,
+        start: current.scheduledAt,
+        end: current.scheduledEnd,
+        excludeId: id,
+      });
+      assertSlotFree(
+        { confirmed: clashes.confirmed, pending: [] },
+        { allowOverPending: true },
+      );
+      return tx.barberAppointment.update({
+        where: { id },
+        data: { status: 'CONFIRMED' },
+        include: { customer: true, service: true, staff: true },
+      });
     });
   }
 
@@ -401,8 +548,10 @@ export class BarberAppointmentsService {
   // Público: el borrado de un servicio con su historial también se lleva citas.
   async syncCustomerVisits(
     tx: Prisma.TransactionClient,
-    customerId: string,
+    customerId: string | null,
   ) {
+    // Cita sin cliente registrado: no hay a quién contarle la visita.
+    if (!customerId) return;
     const agg = await tx.barberAppointment.aggregate({
       where: {
         customerId,

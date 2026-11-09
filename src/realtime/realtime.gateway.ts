@@ -13,6 +13,11 @@ import { corsOrigins } from '../common/cors-origins';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseJwtPayload } from '../auth/types/jwt-payload.interface';
 import {
+  AUTH_USER_INCLUDE,
+  resolveTenantAccess,
+  toAuthenticatedUser,
+} from '../auth/helpers/tenant-access';
+import {
   KITCHEN_TICKET_UPDATED,
   KitchenTicketUpdatedEvent,
   ORDER_CLOSED,
@@ -64,10 +69,7 @@ export class RealtimeGateway
 
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
-        include: {
-          role: true,
-          userBranches: { select: { branchId: true } },
-        },
+        include: AUTH_USER_INCLUDE,
       });
       if (!user) throw new Error('User not provisioned');
       if (!user.isActive) throw new Error('User inactive');
@@ -88,11 +90,14 @@ export class RealtimeGateway
         user.tenantId;
       if (!tenantId) throw new Error('Missing tenantId');
 
-      if (!isRoot && user.tenantId !== tenantId) {
+      // Negocio principal o uno adicional del switch, con las sedes de ese negocio.
+      const access = isRoot
+        ? null
+        : resolveTenantAccess(toAuthenticatedUser(user), tenantId);
+      if (!isRoot && !access) {
         throw new Error('Tenant mismatch');
       }
-      const accessibleBranches = user.userBranches.map((ub) => ub.branchId);
-      if (!isRoot && !accessibleBranches.includes(branchId)) {
+      if (!isRoot && !access!.accessibleBranches.includes(branchId)) {
         throw new Error('Branch not accessible');
       }
 
@@ -100,7 +105,7 @@ export class RealtimeGateway
         tenantId,
         branchId,
         userId: user.id,
-        roleCode: user.role.code,
+        roleCode: access?.roleCode ?? user.role.code,
         isRoot,
       };
 

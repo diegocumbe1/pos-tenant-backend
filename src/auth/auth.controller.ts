@@ -128,11 +128,18 @@ export class AuthController {
   })
   async refresh(
     @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const totalStart = performance.now();
     const timings: Record<string, number> = {};
-    const response = await this.authService.refresh(dto, timings);
+    // X-Tenant-Id = negocio activo del switch. Si no es suyo, se ignora y
+    // vuelve el perfil del negocio principal.
+    const response = await this.authService.refresh(
+      dto,
+      timings,
+      req.headers['x-tenant-id'] as string | undefined,
+    );
     timings.total = elapsedMs(totalStart);
 
     res.setHeader('Server-Timing', toServerTimingHeader(timings));

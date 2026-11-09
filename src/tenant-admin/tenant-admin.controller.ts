@@ -28,6 +28,7 @@ import {
 import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
 import { UpdateTenantDto } from './dto/tenant.dto';
 import { TenantAdminService } from './tenant-admin.service';
+import { TenantPlanService } from './tenant-plan.service';
 
 @ApiTags('TenantAdmin')
 @ApiBearerAuth()
@@ -35,7 +36,16 @@ import { TenantAdminService } from './tenant-admin.service';
 @UseGuards(JwtAuthGuard, PasswordSetGuard, TenantGuard, PermissionsGuard)
 @Controller('tenant')
 export class TenantAdminController {
-  constructor(private readonly service: TenantAdminService) {}
+  constructor(
+    private readonly service: TenantAdminService,
+    private readonly plan: TenantPlanService,
+  ) {}
+
+  /** "Tu plan" en Ajustes: plan, próximo pago y combo. Solo el dueño. */
+  @Get('plan')
+  getPlan(@CurrentTenant() ctx: TenantContext) {
+    return this.plan.summary(ctx);
+  }
 
   // ─── Tenant (datos del negocio) ──────────────────────────────────────────────
 
@@ -57,7 +67,10 @@ export class TenantAdminController {
 
   @Post('branches')
   @RequirePermissions('restaurant:settings:write')
-  createBranch(@CurrentTenant() ctx: TenantContext, @Body() dto: CreateBranchDto) {
+  createBranch(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: CreateBranchDto,
+  ) {
     return this.service.createBranch(ctx.tenantId, dto);
   }
 

@@ -483,14 +483,15 @@ export class GoogleCalendarService {
         staffId: apt.staffId,
         startsAt: apt.scheduledAt,
         endsAt: apt.scheduledEnd,
-        summary: `${prefix}${apt.service.name} · ${apt.customer.name}`,
+        // Sin cliente registrado (agendada por el dueño con una nota).
+        summary: `${prefix}${apt.service.name} · ${apt.customer?.name ?? 'Sin cliente registrado'}`,
         lines: [
-          `Cliente: ${apt.customer.name}`,
+          `Cliente: ${apt.customer?.name ?? 'Sin cliente registrado'}`,
           `Servicio: ${apt.service.name}`,
           apt.staff ? `Especialista: ${apt.staff.name}` : '',
           apt.notes ? `Notas: ${apt.notes}` : '',
         ].filter(Boolean),
-        phone: apt.customer.phone,
+        phone: apt.customer?.phone ?? null,
         link: `${appUrl()}/barber/appointments?date=${calendarDayCO(apt.scheduledAt)}&apt=${apt.id}`,
       });
     }

@@ -21,6 +21,7 @@ import { normalizePhone } from '../platform-messaging/phone.util';
 import { GRACE_DAYS } from './platform.constants';
 import {
   CreatePlanPriceDto,
+  CreateBundleDiscountDto,
   CreateTermDiscountDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
@@ -248,6 +249,20 @@ export class PlatformService {
       'plan_term_discount',
       created.id,
       { discountBps: before },
+      created,
+    );
+    return created;
+  }
+
+  async createBundleDiscount(dto: CreateBundleDiscountDto, actorUserId: string) {
+    const before = await this.pricing.getBundleDiscountAt();
+    const created = await this.pricing.createBundleDiscount(dto, actorUserId);
+    await this.audit(
+      actorUserId,
+      'platform.bundle-discount.create',
+      'plan_bundle_discount',
+      created.id,
+      { additionalBps: before.additionalBps },
       created,
     );
     return created;

@@ -141,6 +141,27 @@ export class CreateTermDiscountDto {
   note?: string;
 }
 
+export class CreateBundleDiscountDto {
+  @ApiProperty({
+    example: 3000,
+    description:
+      'Descuento por cada vertical adicional del combo, en puntos básicos (3000 = 30%). Máximo 5000.',
+  })
+  @IsInt()
+  @Min(0)
+  additionalBps!: number;
+
+  @ApiPropertyOptional({ description: 'Desde cuándo rige. Por defecto, ya mismo.' })
+  @IsOptional()
+  @IsISO8601()
+  effectiveFrom?: string;
+
+  @ApiPropertyOptional({ description: 'Motivo del cambio (queda en histórico)' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
 export class TermDiscountHistoryQueryDto {
   @ApiPropertyOptional({ enum: VERTICALS })
   @IsOptional()

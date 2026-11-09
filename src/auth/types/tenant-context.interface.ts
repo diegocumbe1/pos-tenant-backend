@@ -29,5 +29,14 @@ export interface AuthenticatedUser {
   /** Identidad de plataforma (super-admin). El ROOT siempre cuenta como tal. */
   isPlatformAdmin: boolean;
   passwordSetAt: Date | null;
+  /** Todas las sedes asignadas, de cualquier negocio. Para validar usa `branchesByTenant`. */
   accessibleBranches: string[];
+  /**
+   * Sedes asignadas agrupadas por negocio. Opcional: quien arma un actor sin
+   * pasar por el JWT (Alexa, asistente, tests) no lo trae y se usa
+   * `accessibleBranches` en el negocio principal.
+   */
+  branchesByTenant?: Record<string, string[]>;
+  /** Negocios adicionales al principal (switch). Vacío o ausente para casi todos. */
+  tenantMemberships?: Array<{ tenantId: string; roleId: string; roleCode: string }>;
 }

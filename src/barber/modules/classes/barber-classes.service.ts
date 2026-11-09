@@ -506,7 +506,9 @@ export class BarberClassesService {
   async deleteSchedulePermanently(ctx: TenantContext, id: string) {
     const current = await this.findSchedule(ctx, id);
     if (current.isActive) {
-      throw new BadRequestException('Primero archiva el horario; después se puede eliminar.');
+      throw new BadRequestException(
+        'Primero archiva el horario; después se puede eliminar.',
+      );
     }
     const used = await this.prisma.barberClassSession.count({
       where: { scheduleId: id },
@@ -582,7 +584,7 @@ export class BarberClassesService {
           where: { classSessionId: id, status: { notIn: FREED_STATUSES } },
           select: { customerId: true },
         });
-        attendees.forEach((a) => touched.add(a.customerId));
+        attendees.forEach((a) => touched.add(a.customerId!));
         await tx.barberAppointment.updateMany({
           where: { classSessionId: id, status: { notIn: FREED_STATUSES } },
           data: {
@@ -792,12 +794,17 @@ export class BarberClassesService {
     const hidden = new Set(
       (
         await this.prisma.barberClassSchedule.findMany({
-          where: { ...scope, OR: [{ isActive: false }, { deletedAt: { not: null } }] },
+          where: {
+            ...scope,
+            OR: [{ isActive: false }, { deletedAt: { not: null } }],
+          },
           select: { id: true },
         })
       ).map((s) => s.id),
     );
-    const stored = storedAll.filter((s) => !s.scheduleId || !hidden.has(s.scheduleId));
+    const stored = storedAll.filter(
+      (s) => !s.scheduleId || !hidden.has(s.scheduleId),
+    );
 
     const storedKey = new Map(
       stored
@@ -868,7 +875,11 @@ export class BarberClassesService {
 
     for (const session of stored) {
       const day = calendarDayCO(session.startsAt);
-      const booked = new Set(session.attendees.map((a) => a.customerId));
+      const booked = new Set(
+        session.attendees
+          .map((a) => a.customerId)
+          .filter((id): id is string => !!id),
+      );
       const match = matchOf(session.scheduleId, day, booked);
       if (match === null) continue;
       const expected = expectedFor(session.scheduleId, day, booked);
@@ -932,8 +943,8 @@ export class BarberClassesService {
     // Un entrenador ve la clase si le toca a él, también cuando lo cambiaron solo
     // para ese día: manda el entrenador de la clase, no el del horario.
     const own = await this.tenantHelper.trainerStaffId(ctx);
-    return (own ? rows.filter((row) => row.staffId === own) : rows).sort((a, b) =>
-      a.startsAt.localeCompare(b.startsAt),
+    return (own ? rows.filter((row) => row.staffId === own) : rows).sort(
+      (a, b) => a.startsAt.localeCompare(b.startsAt),
     );
   }
 
@@ -1014,8 +1025,8 @@ export class BarberClassesService {
       attendees.map(async (a) => ({
         appointmentId: a.id,
         customerId: a.customerId,
-        customerName: a.customer.name,
-        customerPhone: a.customer.phone,
+        customerName: a.customer!.name,
+        customerPhone: a.customer!.phone,
         status: a.status,
         attended: a.status.toUpperCase() === 'COMPLETED',
         absent: a.status.toUpperCase() === 'NO_SHOW',
@@ -1025,13 +1036,18 @@ export class BarberClassesService {
               concept: a.coveredByCharge.concept,
               sessionsLeft: null,
             }
-          : await coverage(a.customerId),
+          : await coverage(a.customerId!),
         isCovered: !!a.coveredByCharge,
         chargeId: a.charges[0]?.id ?? null,
         // Cuántas lleva del mes de plan, si su plan venció y cuánto debe: la
         // recepción lo ve antes de marcar "Vino".
         // Su propia reserva de esta clase no cuenta contra sí misma.
-        check: await this.charges.attendanceCheck(ctx, a.customerId, day, a.id),
+        check: await this.charges.attendanceCheck(
+          ctx,
+          a.customerId!,
+          day,
+          a.id,
+        ),
       })),
     );
     const expectedRows = await Promise.all(
@@ -1165,7 +1181,7 @@ export class BarberClassesService {
     await this.prisma.$transaction((tx) =>
       this.applyAttendance(tx, ctx, appt, attended),
     );
-    await this.syncVisits(appt.customerId);
+    await this.syncVisits(appt.customerId!);
     return this.roster(ctx, { sessionId: appt.classSessionId! });
   }
 
@@ -1186,7 +1202,7 @@ export class BarberClassesService {
       where: { id: appointmentId },
       data: { status: 'CANCELLED', coveredByChargeId: null },
     });
-    await this.syncVisits(appt.customerId);
+    await this.syncVisits(appt.customerId!);
     return this.roster(ctx, { sessionId: appt.classSessionId! });
   }
 
@@ -1210,8 +1226,13 @@ export class BarberClassesService {
       const booked = new Set(attendees.map((a) => a.customerId));
 
       for (const appt of attendees) {
-        await this.applyAttendance(tx, ctx, appt, present.has(appt.customerId));
-        touched.add(appt.customerId);
+        await this.applyAttendance(
+          tx,
+          ctx,
+          appt,
+          present.has(appt.customerId!),
+        );
+        touched.add(appt.customerId!);
       }
       if (own) {
         await this.assertEnrolled(
@@ -1265,8 +1286,13 @@ export class BarberClassesService {
       },
       select: { customerId: true },
     });
-    if (new Set(enrolled.map((e) => e.customerId)).size !== new Set(customerIds).size) {
-      throw new BadRequestException('Solo puedes marcar a quienes están inscritos');
+    if (
+      new Set(enrolled.map((e) => e.customerId)).size !==
+      new Set(customerIds).size
+    ) {
+      throw new BadRequestException(
+        'Solo puedes marcar a quienes están inscritos',
+      );
     }
   }
 
@@ -1319,7 +1345,12 @@ export class BarberClassesService {
 
   private async findSchedule(ctx: TenantContext, id: string) {
     const row = await this.prisma.barberClassSchedule.findFirst({
-      where: { id, tenantId: ctx.tenantId, branchId: ctx.branchId, deletedAt: null },
+      where: {
+        id,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
     });
     if (!row) throw new NotFoundException(`Class schedule ${id} not found`);
     return row;
@@ -1491,7 +1522,9 @@ export class BarberClassesService {
     ctx: TenantContext,
     appt: {
       id: string;
-      customerId: string;
+      // Las asistencias de clase siempre tienen alumno; el tipo admite null
+      // porque la columna es opcional para las citas sueltas sin cliente.
+      customerId: string | null;
       serviceId: string;
       coveredByChargeId: string | null;
       classSession: { startsAt: Date } | null;
@@ -1511,7 +1544,7 @@ export class BarberClassesService {
         await this.charges.findCoveringCharge(
           tx,
           ctx,
-          appt.customerId,
+          appt.customerId!,
           calendarDayCO(startsAt),
         )
       )?.id ??

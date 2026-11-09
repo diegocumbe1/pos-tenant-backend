@@ -13,6 +13,8 @@ import { TemplateRendererService } from './services/template-renderer.service';
 import { TemplatesService } from './services/templates.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SEED_PAYMENT_METHOD } from './seed-templates';
+import { BillingGroupsService } from '../platform/billing-groups/billing-groups.service';
+import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
 
 @Module({
   imports: [WhatsAppModule],
@@ -21,6 +23,10 @@ import { SEED_PAYMENT_METHOD } from './seed-templates';
     TemplatesService,
     TemplateRendererService,
     SubscriptionContextService,
+    // Sin importar PlatformModule (crearía un ciclo vía Alexa → asistente →
+    // mensajería): ambos solo dependen de Prisma y no guardan estado.
+    PlanPricingService,
+    BillingGroupsService,
     RecipientResolverService,
     PaymentMethodsService,
     MessagingSettingsService,

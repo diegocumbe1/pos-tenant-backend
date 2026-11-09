@@ -11,6 +11,10 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { performance } from 'perf_hooks';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseJwtPayload } from '../types/jwt-payload.interface';
+import {
+  AUTH_USER_INCLUDE,
+  toAuthenticatedUser,
+} from '../helpers/tenant-access';
 import { AuthenticatedUser } from '../types/tenant-context.interface';
 
 type TimedRequest = Request & {
@@ -120,10 +124,7 @@ export class JwtAuthGuard implements CanActivate {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: {
-        role: true,
-        userBranches: { select: { branchId: true } },
-      },
+      include: AUTH_USER_INCLUDE,
     });
 
     if (!user) {
@@ -134,18 +135,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('User is inactive');
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      tenantId: user.tenantId,
-      roleId: user.roleId,
-      roleCode: user.role.code,
-      isRoot: user.role.code === 'ROOT',
-      isPlatformAdmin: user.isPlatformAdmin || user.role.code === 'ROOT',
-      passwordSetAt: user.passwordSetAt,
-      accessibleBranches: user.userBranches.map((ub) => ub.branchId),
-    };
+    return toAuthenticatedUser(user);
   }
 
   private async loadUserCached(

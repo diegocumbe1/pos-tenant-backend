@@ -87,6 +87,16 @@ type TenantProfile = {
   plan: string;
 };
 
+/** Un negocio al que la persona puede entrar (para el switch). */
+type BusinessAccess = {
+  tenantId: string;
+  name: string;
+  vertical: string | null;
+  roleCode: string;
+  roleName: string;
+  isPrimary: boolean;
+};
+
 type AuthProfile = {
   id: string;
   email: string;
@@ -100,6 +110,11 @@ type AuthProfile = {
   isRoot: boolean;
   permissions: string[];
   branches: BranchProfile[];
+  /**
+   * Negocios a los que entra con este correo (principal primero). Con uno solo,
+   * el frontend no muestra el switch.
+   */
+  businesses: BusinessAccess[];
   /** Solo en modo soporte: el super-admin está operando este tenant. */
   supportSession?: {
     id: string;
@@ -358,7 +373,7 @@ export class AuthService {
     headerTenantId?: string,
   ) {
     const profileStart = performance.now();
-    const user = await this.loadLoginProfile(authUser.id);
+    const user = await this.loadLoginProfile(authUser.id, headerTenantId);
     timings.profile = elapsedMs(profileStart);
 
     if (!user) throw new UnauthorizedException('User not found');
@@ -377,16 +392,20 @@ export class AuthService {
     this.assertTenantAccess(user, authUser.isRoot);
 
     const permissionsStart = performance.now();
+    // Rol del negocio activo: en un negocio adicional no es `authUser.roleId`.
     const permissions = authUser.isRoot
       ? null
-      : await this.permissionsCache.getForRole(authUser.roleId);
+      : await this.permissionsCache.getForRole(user.role.id);
     timings.permissions = elapsedMs(permissionsStart);
 
     const branchesStart = performance.now();
-    const branches = await this.resolveAccessibleBranches(user);
+    const [branches, businesses] = await Promise.all([
+      this.resolveAccessibleBranches(user),
+      this.listBusinesses(authUser.id),
+    ]);
     timings.branches = elapsedMs(branchesStart);
 
-    return this.toAuthProfile(user, authUser.isRoot, permissions, branches);
+    return this.toAuthProfile(user, authUser.isRoot, permissions, branches, businesses);
   }
 
   async login(dto: LoginDto, timings: Record<string, number> = {}) {
@@ -431,18 +450,25 @@ export class AuthService {
    * suspendido o un usuario desactivado pierden la sesión en el primer refresh
    * en vez de seguir operando hasta que venza el access_token.
    */
-  async refresh(dto: RefreshTokenDto, timings: Record<string, number> = {}) {
+  async refresh(
+    dto: RefreshTokenDto,
+    timings: Record<string, number> = {},
+    activeTenantId?: string,
+  ) {
     const authStart = performance.now();
     const { session, user: authUser } = await this.supabase.refreshSession(
       dto.refreshToken,
     );
     timings.auth = elapsedMs(authStart);
 
+    // Con el switch, el refresh debe devolver el perfil del negocio en el que
+    // está la persona, no el principal (si no, el rol cambiaría por debajo).
     const response = await this.buildLoginResponse(
       authUser.id,
       session,
       authUser,
       timings,
+      activeTenantId,
     );
 
     this.logger.log(
@@ -634,9 +660,10 @@ export class AuthService {
     session: Session,
     authUser: SupabaseUser,
     timings: Record<string, number> = {},
+    activeTenantId?: string,
   ) {
     const profileStart = performance.now();
-    const user = await this.loadLoginProfile(userId);
+    const user = await this.loadLoginProfile(userId, activeTenantId);
     timings.profile = elapsedMs(profileStart);
 
     if (!user) {
@@ -652,7 +679,10 @@ export class AuthService {
     this.assertTenantAccess(user, isRoot);
 
     const branchesStart = performance.now();
-    const branches = await this.resolveAccessibleBranches(user);
+    const [branches, businesses] = await Promise.all([
+      this.resolveAccessibleBranches(user),
+      this.listBusinesses(userId),
+    ]);
     timings.branches = elapsedMs(branchesStart);
 
     const permissionsStart = performance.now();
@@ -669,7 +699,7 @@ export class AuthService {
       expires_in: session.expires_in,
       token_type: session.token_type,
       user: { id: authUser.id, email: authUser.email },
-      profile: this.toAuthProfile(user, isRoot, permissions, branches),
+      profile: this.toAuthProfile(user, isRoot, permissions, branches, businesses),
     };
   }
 
@@ -725,6 +755,7 @@ export class AuthService {
     isRoot: boolean,
     permissions: Set<string> | null,
     branches: BranchProfile[],
+    businesses: BusinessAccess[] = [],
   ): AuthProfile {
     const isPlatformAdmin = user.isPlatformAdmin || isRoot;
     const platformOnly = isPlatformAdmin && !user.tenant;
@@ -746,6 +777,7 @@ export class AuthService {
       isRoot,
       permissions: isRoot ? ['*'] : [...(permissions ?? new Set<string>())],
       branches,
+      businesses: platformOnly ? [] : businesses,
     };
   }
 
@@ -798,6 +830,7 @@ export class AuthService {
       isRoot: true,
       permissions: ['*'],
       branches: tenant.branches.map((branch) => this.toBranchProfile(branch)),
+      businesses: [],
       supportSession: {
         id: session.id,
         reason: session.reason,
@@ -835,9 +868,48 @@ export class AuthService {
     };
   }
 
+  /**
+   * Negocio y rol con los que se arma el perfil.
+   *
+   * Sin `requestedTenantId`, o si no es un negocio suyo, es el principal
+   * (`User.tenantId`/`roleId`), como siempre. Si es uno de sus accesos
+   * adicionales activos, es ese negocio con el rol de ese negocio.
+   */
+  private async resolveProfileScope(
+    userId: string,
+    requestedTenantId?: string,
+  ): Promise<{ tenantId: string | null; roleId: string | null } | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { tenantId: true, roleId: true },
+    });
+    if (!user) return null;
+
+    if (requestedTenantId && requestedTenantId !== user.tenantId) {
+      const membership = await this.prisma.userTenantMembership.findFirst({
+        where: {
+          userId,
+          tenantId: requestedTenantId,
+          isActive: true,
+          tenant: { deletedAt: null },
+        },
+        select: { tenantId: true, roleId: true },
+      });
+      if (membership) return membership;
+    }
+    return { tenantId: user.tenantId, roleId: user.roleId };
+  }
+
   private async loadLoginProfile(
     userId: string,
+    requestedTenantId?: string,
   ): Promise<LoginProfileRow | null> {
+    const scope = await this.resolveProfileScope(userId, requestedTenantId);
+    if (!scope) return null;
+    const { tenantId, roleId } = scope;
+
+    // Las sedes se filtran por el negocio activo: una persona con dos negocios
+    // no debe ver en el selector de sedes las del otro.
     const rows = await this.prisma.$queryRaw<LoginProfileRow[]>`
       SELECT
         u.id,
@@ -846,7 +918,7 @@ export class AuthService {
         u."isActive",
         u."isPlatformAdmin",
         u."passwordSetAt",
-        u."tenantId",
+        t.id AS "tenantId",
         CASE
           WHEN t.id IS NULL THEN NULL
           ELSE json_build_object(
@@ -882,17 +954,68 @@ export class AuthService {
           '[]'::json
         ) AS "userBranches"
       FROM users u
-      LEFT JOIN tenants t ON t.id = u."tenantId"
+      LEFT JOIN tenants t ON t.id = ${tenantId}::text
       LEFT JOIN business_verticals v ON v.id = t."verticalId"
       LEFT JOIN subscriptions s ON s."tenantId" = t.id
-      LEFT JOIN roles r ON r.id = u."roleId"
+      LEFT JOIN roles r ON r.id = ${roleId}::text
       LEFT JOIN user_branches ub ON ub."userId" = u.id
       LEFT JOIN branches b ON b.id = ub."branchId"
+        AND (${tenantId}::text IS NULL OR b."tenantId" = ${tenantId}::text)
       WHERE u.id = ${userId}
       GROUP BY u.id, t.id, v.id, s.id, r.id
       LIMIT 1
     `;
     return rows[0] ?? null;
+  }
+
+  /**
+   * Negocios a los que entra esta persona: el principal y sus accesos
+   * adicionales activos. Quien tiene uno solo recibe una lista de uno y el
+   * frontend no muestra el switch.
+   */
+  private async listBusinesses(userId: string): Promise<BusinessAccess[]> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        tenant: {
+          select: { id: true, name: true, vertical: { select: { code: true } } },
+        },
+        role: { select: { code: true, name: true } },
+        tenantMemberships: {
+          where: { isActive: true, tenant: { deletedAt: null } },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            tenant: {
+              select: { id: true, name: true, vertical: { select: { code: true } } },
+            },
+            role: { select: { code: true, name: true } },
+          },
+        },
+      },
+    });
+    if (!user?.tenant) return [];
+
+    const primary: BusinessAccess = {
+      tenantId: user.tenant.id,
+      name: user.tenant.name,
+      vertical: user.tenant.vertical?.code ?? null,
+      roleCode: user.role.code,
+      roleName: user.role.name,
+      isPrimary: true,
+    };
+    return [
+      primary,
+      ...user.tenantMemberships
+        .filter((m) => m.tenant.id !== primary.tenantId)
+        .map((m) => ({
+          tenantId: m.tenant.id,
+          name: m.tenant.name,
+          vertical: m.tenant.vertical?.code ?? null,
+          roleCode: m.role.code,
+          roleName: m.role.name,
+          isPrimary: false,
+        })),
+    ];
   }
 
   private async resolveAccessibleBranches(user: {

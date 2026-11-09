@@ -521,7 +521,9 @@ export class AppointmentRemindersService
         url: apt.classSessionId ? link : `${link}&apt=${apt.id}`,
         body: [
           apt.service.name,
-          apt.classSessionId ? null : apt.customer.name,
+          apt.classSessionId
+            ? null
+            : (apt.customer?.name ?? 'Sin cliente registrado'),
           formatDateTimeCO(apt.scheduledAt),
           apt.staff?.name,
         ]

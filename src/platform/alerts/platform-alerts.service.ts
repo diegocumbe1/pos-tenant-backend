@@ -95,7 +95,12 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
         nextPaymentDueAt: true,
         currentPeriodEnd: true,
         graceEndsAt: true,
-        tenant: { select: { name: true } },
+        tenant: {
+          select: {
+            name: true,
+            billingGroup: { select: { isActive: true, name: true, primaryTenantId: true } },
+          },
+        },
       },
     });
 
@@ -108,10 +113,14 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
       body: string;
     }[] = [];
     for (const sub of subscriptions) {
+      // Un combo se cobra junto: avisa solo el negocio principal, con el nombre
+      // del combo. Los demás quedan alineados a su vencimiento.
+      const group = sub.tenant.billingGroup?.isActive ? sub.tenant.billingGroup : null;
+      if (group && group.primaryTenantId !== sub.tenantId) continue;
       const dates = billingDatesOf(sub);
       const type = billingAlertFor(today, dates);
       if (!type) continue;
-      const name = sub.tenant.name.trim();
+      const name = (group?.name ?? sub.tenant.name).trim();
       const text = billingAlertText(type, name, today, dates.dueDay);
       try {
         const row = await this.prisma.platformAlert.create({

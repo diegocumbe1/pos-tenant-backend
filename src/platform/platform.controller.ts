@@ -23,6 +23,7 @@ import { AuthenticatedUser } from '../auth/types/tenant-context.interface';
 import { PlatformActor } from './decorators/platform-actor.decorator';
 import {
   CreatePlanPriceDto,
+  CreateBundleDiscountDto,
   CreateTermDiscountDto,
   TermDiscountHistoryQueryDto,
   CreatePlatformExpenseDto,
@@ -145,6 +146,34 @@ export class PlatformController {
     @PlatformActor() actor: AuthenticatedUser,
   ) {
     return this.platform.createTermDiscount(dto, actor.id);
+  }
+
+  // ─── Combo de verticales (2 o 3) ─────────────────────────────────────────────
+
+  @Get('bundle-discounts')
+  @ApiOperation({
+    summary: 'Current bundle discount and the price of every combo (plan × term)',
+  })
+  getBundleDiscounts() {
+    return this.pricing.getBundleMatrixAt();
+  }
+
+  @Get('bundle-discounts/history')
+  @ApiOperation({ summary: 'Bundle discount history (super admin only)' })
+  getBundleDiscountHistory() {
+    return this.pricing.getBundleDiscountHistory();
+  }
+
+  @Post('bundle-discounts')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Set the discount per additional vertical from a date (append-only)',
+  })
+  createBundleDiscount(
+    @Body() dto: CreateBundleDiscountDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.createBundleDiscount(dto, actor.id);
   }
 
   @Patch('pricing-config')
