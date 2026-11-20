@@ -173,6 +173,7 @@ export class OrdersService {
           {
             tenantId: ctx.tenantId,
             orderId: newOrder.id,
+            actor: ctx,
             type: OrderEventType.OPENED,
             metadata: {
               tableId: dto.tableId,
@@ -185,6 +186,7 @@ export class OrdersService {
             return {
               tenantId: ctx.tenantId,
               orderId: newOrder.id,
+              actor: ctx,
               type: OrderEventType.ITEM_ADDED,
               metadata: {
                 productId: item.productId,
@@ -301,7 +303,7 @@ export class OrdersService {
         });
       }
 
-      await this.orderEvents.ensureOpened(ctx.tenantId, id, order.createdAt, tx);
+      await this.orderEvents.ensureOpened(ctx.tenantId, id, order.createdAt, tx, ctx);
 
       // Eventos (added/updated) en un solo createMany.
       await this.orderEvents.recordMany(
@@ -311,6 +313,7 @@ export class OrdersService {
             return {
               tenantId: ctx.tenantId,
               orderId: id,
+              actor: ctx,
               type: OrderEventType.ITEM_ADDED,
               metadata: {
                 productId: item.productId,
@@ -327,6 +330,7 @@ export class OrdersService {
             return {
               tenantId: ctx.tenantId,
               orderId: id,
+              actor: ctx,
               type: OrderEventType.ITEM_UPDATED,
               metadata: {
                 productId: existing.productId,
@@ -342,6 +346,7 @@ export class OrdersService {
           ...removedItems.map((existing) => ({
             tenantId: ctx.tenantId,
             orderId: id,
+            actor: ctx,
             type: OrderEventType.ITEM_REMOVED,
             metadata: {
               productId: existing.productId,
@@ -571,6 +576,7 @@ export class OrdersService {
         {
           tenantId: ctx.tenantId,
           orderId: id,
+          actor: ctx,
           type: OrderEventType.SENT_TO_KITCHEN,
           ticketId: newTicket.id,
           metadata: {
@@ -797,6 +803,7 @@ export class OrdersService {
         ticket.items.map((ti) => ({
           tenantId: ctx.tenantId,
           orderId: ticket.orderId,
+          actor: ctx,
           type: OrderEventType.ITEM_REMOVED,
           metadata: {
             productId: ti.productId,
@@ -900,6 +907,7 @@ export class OrdersService {
         {
           tenantId: ctx.tenantId,
           orderId: id,
+          actor: ctx,
           type: OrderEventType.PAYMENT_REQUESTED,
           metadata: {
             totalCOP: dto.totalCOP,
@@ -912,6 +920,7 @@ export class OrdersService {
         {
           tenantId: ctx.tenantId,
           orderId: id,
+          actor: ctx,
           type: OrderEventType.PAYMENT_REGISTERED,
           metadata: {
             totalCOP: dto.totalCOP,
@@ -993,6 +1002,7 @@ export class OrdersService {
         {
           tenantId: ctx.tenantId,
           orderId: id,
+          actor: ctx,
           type: OrderEventType.CLOSED,
           at: closedAt,
           metadata: {
@@ -1176,6 +1186,7 @@ export class OrdersService {
         {
           tenantId: ctx.tenantId,
           orderId: id,
+          actor: ctx,
           type: 'VOIDED' as OrderEventType,
           at: voidedAt,
           note: dto.reason,

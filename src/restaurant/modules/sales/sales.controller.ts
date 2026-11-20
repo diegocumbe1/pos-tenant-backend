@@ -55,6 +55,19 @@ export class SalesController {
     return this.salesService.daily(ctx, from, to);
   }
 
+  /** Ranking por mesero. Solo el dueño (el servicio lo valida). Va antes de ':id'. */
+  @Get('waiters')
+  @RequirePermissions('restaurant:sales:read')
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  waiters(
+    @CurrentTenant() ctx: TenantContext,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.salesService.waiterRanking(ctx, from, to);
+  }
+
   @Get(':id')
   @RequirePermissions('restaurant:sales:read')
   findOne(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {

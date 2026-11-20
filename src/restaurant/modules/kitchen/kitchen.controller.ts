@@ -13,6 +13,7 @@ import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { KitchenService } from './kitchen.service';
+import { MarkItemsServedDto } from './dto/mark-items-served.dto';
 import {
   KITCHEN_TICKET_STATUSES,
   UpdateTicketStatusDto,
@@ -38,6 +39,16 @@ export class KitchenController {
     @Query('status') status?: string,
   ) {
     return this.kitchenService.findTickets(ctx, status);
+  }
+
+  /** Entrega parcial: unidades de cada línea que ya están en la mesa. */
+  @Patch(':id/served')
+  markItemsServed(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: MarkItemsServedDto,
+  ) {
+    return this.kitchenService.markItemsServed(ctx, id, dto.items);
   }
 
   @Patch(':id/status')

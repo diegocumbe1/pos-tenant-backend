@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   CashMovementType,
   ClaimSeverity,
@@ -9,6 +9,8 @@ import {
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { dayStartCO, dayEndCO } from '../../../common/date.util';
+import { buildAttention } from './service-attention';
+import { buildWaiterRanking } from './waiter-ranking';
 import { OrderEventsService } from '../order-events/order-events.service';
 import { computeTimings } from './sales-timings';
 import { CreateClaimDto } from './dto/create-claim.dto';
@@ -43,6 +45,39 @@ export class SalesService {
     return {
       sales: orders.map((o) => this.toSaleRecord(o, sessionByOrder.get(o.id))),
     };
+  }
+
+  /**
+   * Ranking por mesero (solo el dueño): quién atiende y entrega más en el período.
+   * Sale de la bitácora de cada venta cerrada; las anteriores al registro de actor se
+   * cuentan aparte, no se reparten.
+   */
+  async waiterRanking(ctx: TenantContext, from?: string, to?: string) {
+    if (!ctx.isRoot && ctx.roleCode !== 'OWNER') {
+      throw new ForbiddenException('Solo el dueño ve el ranking por mesero.');
+    }
+    const orders = await this.prisma.order.findMany({
+      where: this.rangeWhere(ctx, from, to),
+      select: {
+        id: true,
+        totalCOP: true,
+        events: {
+          where: {
+            type: {
+              in: [
+                'OPENED', 'ITEM_ADDED', 'ITEM_UPDATED', 'SENT_TO_KITCHEN',
+                'SERVED', 'ITEM_SERVED', 'PAYMENT_REGISTERED', 'CLOSED',
+              ],
+            },
+          },
+          select: {
+            type: true, ticketId: true, metadata: true,
+            actorId: true, actorName: true, actorRole: true,
+          },
+        },
+      },
+    });
+    return buildWaiterRanking(orders);
   }
 
   async daily(ctx: TenantContext, from?: string, to?: string) {
@@ -146,6 +181,7 @@ export class SalesService {
     await this.orderEvents.record({
       tenantId: ctx.tenantId,
       orderId,
+      actor: ctx,
       type: 'CLAIM',
       note: dto.description,
     });
@@ -228,6 +264,7 @@ export class SalesService {
         .map((e) => this.mapEvent(e)),
       timings: computeTimings(order.events, order.closedAt),
       claims: order.claims.map((c) => this.mapClaim(c)),
+      attention: buildAttention(order.events, order.waiter?.name),
       cashSessionId: cashSessionId ?? undefined,
     };
   }
@@ -241,6 +278,9 @@ export class SalesService {
       ticketId: e.ticketId ?? undefined,
       note: e.note ?? undefined,
       metadata: e.metadata ?? undefined,
+      actorId: e.actorId ?? undefined,
+      actorName: e.actorName ?? undefined,
+      actorRole: e.actorRole ?? undefined,
     };
   }
 

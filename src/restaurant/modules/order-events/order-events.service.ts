@@ -4,6 +4,13 @@ import { PrismaService } from '../../../prisma/prisma.service';
 
 type TxClient = Prisma.TransactionClient | PrismaService;
 
+/** Quien hizo la acción. Basta con pasar el `TenantContext` de la petición. */
+export interface EventActor {
+  userId?: string | null;
+  name?: string | null;
+  roleCode?: string | null;
+}
+
 export interface RecordEventInput {
   tenantId: string;
   orderId: string;
@@ -12,6 +19,16 @@ export interface RecordEventInput {
   note?: string | null;
   metadata?: Prisma.InputJsonValue;
   at?: Date;
+  /** Quién lo hizo (mesero, cajero, dueño, administrador). Sin actor = sistema o dato antiguo. */
+  actor?: EventActor | null;
+}
+
+function actorData(actor?: EventActor | null) {
+  return {
+    actorId: actor?.userId ?? null,
+    actorName: actor?.name ?? null,
+    actorRole: actor?.roleCode ?? null,
+  };
 }
 
 /**
@@ -36,6 +53,7 @@ export class OrderEventsService {
         ticketId: input.ticketId ?? null,
         note: input.note ?? null,
         metadata: input.metadata ?? undefined,
+        ...actorData(input.actor),
         ...(input.at ? { at: input.at } : {}),
       },
     });
@@ -59,6 +77,7 @@ export class OrderEventsService {
         ticketId: input.ticketId ?? null,
         note: input.note ?? null,
         metadata: input.metadata ?? undefined,
+        ...actorData(input.actor),
         ...(input.at ? { at: input.at } : {}),
       })),
     });
@@ -72,13 +91,14 @@ export class OrderEventsService {
     orderId: string,
     at?: Date,
     tx?: TxClient,
+    actor?: EventActor | null,
   ) {
     const client = tx ?? this.prisma;
     const existing = await client.orderEvent.findFirst({
       where: { orderId, type: OrderEventType.OPENED },
     });
     if (existing) return existing;
-    return this.record({ tenantId, orderId, type: OrderEventType.OPENED, at }, tx);
+    return this.record({ tenantId, orderId, type: OrderEventType.OPENED, at, actor }, tx);
   }
 
   async listForOrder(orderId: string) {

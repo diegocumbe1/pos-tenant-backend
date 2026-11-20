@@ -123,6 +123,105 @@ export class KitchenService {
     return mapped;
   }
 
+  /**
+   * Entrega parcial: marca cuántas unidades de cada línea ya están en la mesa.
+   *
+   * Sirve con y sin KDS: con KDS la cocina marca "listo" y la mesera confirma lo que
+   * llegó; sin KDS (solo comandas impresas) la mesera es quien dice qué ya se entregó.
+   * El estado de la comanda se DEDUCE de las líneas: SERVED cuando todas llegaron a su
+   * cantidad; si se corrige una (se deshace) y estaba SERVED, vuelve a READY.
+   */
+  async markItemsServed(
+    ctx: TenantContext,
+    id: string,
+    changes: { lineKey: string; servedQty: number }[],
+  ) {
+    const ticket = await this.prisma.kitchenTicket.findFirst({
+      where: { id, tenantId: ctx.tenantId, order: { branchId: ctx.branchId } },
+      include: TICKET_INCLUDE,
+    });
+    if (!ticket) throw new NotFoundException(`Kitchen ticket ${id} not found`);
+
+    const byKey = new Map<string, any>(ticket.items.map((i: any) => [i.lineKey, i]));
+    for (const c of changes) {
+      const item = byKey.get(c.lineKey);
+      if (!item) {
+        throw new UnprocessableEntityException(`Línea ${c.lineKey} no está en la comanda`);
+      }
+      if (c.servedQty < 0 || c.servedQty > item.qty) {
+        throw new UnprocessableEntityException(
+          `servedQty de "${item.name}" debe estar entre 0 y ${item.qty}`,
+        );
+      }
+    }
+
+    // Bitácora: quién entregó qué (una fila por línea que cambió, con la diferencia).
+    const deltas = changes
+      .map((c) => {
+        const item = byKey.get(c.lineKey);
+        const previous = item.servedQty ?? 0;
+        return { c, item, previous, deltaQty: c.servedQty - previous };
+      })
+      .filter((x) => x.deltaQty !== 0);
+    await this.prisma.$transaction(
+      changes.map((c) =>
+        this.prisma.kitchenTicketItem.update({
+          where: { ticketId_lineKey: { ticketId: id, lineKey: c.lineKey } },
+          data: { servedQty: c.servedQty },
+        }),
+      ),
+    );
+
+    await this.orderEvents.recordMany(
+      deltas.map(({ c, item, previous, deltaQty }) => ({
+        tenantId: ctx.tenantId,
+        orderId: ticket.orderId,
+        actor: ctx,
+        type: OrderEventType.ITEM_SERVED,
+        ticketId: id,
+        metadata: {
+          lineKey: c.lineKey,
+          productId: item.productId,
+          name: item.name,
+          qty: item.qty,
+          previousServedQty: previous,
+          newServedQty: c.servedQty,
+          deltaQty,
+        },
+      })),
+    );
+
+    const fresh = await this.prisma.kitchenTicket.findFirstOrThrow({
+      where: { id },
+      include: TICKET_INCLUDE,
+    });
+    const allServed = fresh.items.every((i: any) => (i.servedQty ?? 0) >= i.qty);
+
+    // Cambia de estado por el mismo camino de siempre (eventos, ALL_SERVED, realtime).
+    if (allServed && fresh.status !== 'SERVED') {
+      return this.updateStatus(ctx, id, 'SERVED');
+    }
+    if (!allServed && fresh.status === 'SERVED') {
+      const reopened = await this.prisma.kitchenTicket.update({
+        where: { id },
+        data: { status: 'READY', servedAt: null },
+        include: TICKET_INCLUDE,
+      });
+      return this.emitTicket(ctx, reopened);
+    }
+    return this.emitTicket(ctx, fresh);
+  }
+
+  private emitTicket(ctx: TenantContext, ticket: any) {
+    const mapped = this.mapTicket(ticket);
+    this.events.emit(KITCHEN_TICKET_UPDATED, {
+      tenantId: ctx.tenantId,
+      branchId: ctx.branchId,
+      ticket: mapped,
+    } satisfies KitchenTicketUpdatedEvent);
+    return mapped;
+  }
+
   /** Bitácora de cocina + ALL_SERVED cuando todos los tickets quedan SERVED. */
   private async recordKitchenEvents(
     ctx: TenantContext,
@@ -142,6 +241,7 @@ export class KitchenService {
     await this.orderEvents.record({
       tenantId: ctx.tenantId,
       orderId,
+      actor: ctx,
       type,
       ticketId,
       metadata: {
@@ -159,6 +259,7 @@ export class KitchenService {
         await this.orderEvents.record({
           tenantId: ctx.tenantId,
           orderId,
+          actor: ctx,
           type: OrderEventType.ALL_SERVED,
           metadata: {
             ticketId,
@@ -186,6 +287,7 @@ export class KitchenService {
         lineKey: i.lineKey,
         name: i.name,
         qty: i.qty,
+        servedQty: i.servedQty ?? 0,
         notes: i.notes ?? null,
         additions: i.additions ?? null,
         modifiers: i.modifiers ?? null,
