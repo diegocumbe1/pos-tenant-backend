@@ -90,7 +90,7 @@ export class WhatsAppSessionManager
   // Versión de WhatsApp Web servida al Chromium. Ver el comentario del `Client`
   // en pair(): es la causa número uno de "Execution context was destroyed".
   private readonly webVersion =
-    process.env.WA_WEB_VERSION ?? '2.3000.1047296119-alpha';
+    process.env.WA_WEB_VERSION ?? '2.3000.1054966512-alpha';
   private readonly pairTimeoutMs = Number(process.env.WA_PAIR_TIMEOUT_MS ?? 60000);
   private readonly readyTimeoutMs = Number(process.env.WA_READY_TIMEOUT_MS ?? 120000);
   private readonly maxActiveSessions = Number(process.env.WA_MAX_ACTIVE_SESSIONS ?? 2);
@@ -347,7 +347,8 @@ export class WhatsAppSessionManager
       // de .wwebjs_cache. Si WhatsApp la retira (expiran ~2 meses), basta con
       // mover WA_WEB_VERSION a otra sin redeploy de código.
       //
-      // Fijada el 11-sep-2026; caduca el 11-nov-2026. Las vigentes y su fecha
+      // Fijada el 17-nov-2026; caduca el 17-ene-2027 (la anterior caducó el 11-nov-2026
+      // y dejó la sesión en "authenticated" sin llegar a "ready"). Las vigentes y su fecha
       // de caducidad están en versions.json del mismo repo: cuando esta expire,
       // copia el `currentVersion` de ahí a WA_WEB_VERSION. El valor en uso se
       // expone en /whatsapp/session/diagnostics para no tener que adivinarlo.
