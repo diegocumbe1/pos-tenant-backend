@@ -46,6 +46,14 @@ function build(
         alerts.push(row);
         return row;
       }),
+      findUnique: jest.fn(async ({ where }) => {
+        const k = where.type_tenantId_dueDay;
+        return (
+          alerts.find(
+            (a) => a.type === k.type && a.tenantId === k.tenantId && a.dueDay === k.dueDay,
+          ) ?? null
+        );
+      }),
       updateMany: jest.fn(async () => ({ count: 1 })),
       findMany: jest.fn(async () => alerts),
       count: jest.fn(async () => alerts.length),
@@ -87,6 +95,14 @@ describe('PlatformAlertsService', () => {
     await service.run(NOW);
     expect(await service.run(NOW)).toEqual({ created: 0 });
     expect(webPush.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('no intenta crear un aviso que ya existe (evita el error de llave única en el log)', async () => {
+    const { service, prisma } = build([sub('t1', 'Malexca', '2026-11-10')]);
+    await service.run(NOW);
+    await service.run(NOW);
+    await service.run(NOW);
+    expect(prisma.platformAlert.create).toHaveBeenCalledTimes(1);
   });
 
   it('al pagar, el vencimiento cambia y no avisa', async () => {

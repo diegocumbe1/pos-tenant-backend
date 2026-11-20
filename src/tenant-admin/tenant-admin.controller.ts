@@ -29,6 +29,8 @@ import { TenantInviteUserDto, UpdateUserDto } from './dto/user.dto';
 import { UpdateTenantDto } from './dto/tenant.dto';
 import { TenantAdminService } from './tenant-admin.service';
 import { TenantPlanService } from './tenant-plan.service';
+import { TenantAddVerticalService } from './tenant-add-vertical.service';
+import { AddVerticalDto } from './dto/add-vertical.dto';
 
 @ApiTags('TenantAdmin')
 @ApiBearerAuth()
@@ -39,12 +41,28 @@ export class TenantAdminController {
   constructor(
     private readonly service: TenantAdminService,
     private readonly plan: TenantPlanService,
+    private readonly addVertical: TenantAddVerticalService,
   ) {}
 
   /** "Tu plan" en Ajustes: plan, próximo pago y combo. Solo el dueño. */
   @Get('plan')
   getPlan(@CurrentTenant() ctx: TenantContext) {
     return this.plan.summary(ctx);
+  }
+
+  /** Verticales que el dueño puede sumar, con su costo estimado en el combo. */
+  @Get('plan/verticals')
+  getAddableVerticals(@CurrentTenant() ctx: TenantContext) {
+    return this.addVertical.options(ctx);
+  }
+
+  /** Suma otra vertical a la cuenta (negocio nuevo + acceso + combo). Solo el dueño. */
+  @Post('plan/verticals')
+  addVerticalToAccount(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: AddVerticalDto,
+  ) {
+    return this.addVertical.add(ctx, dto);
   }
 
   // ─── Tenant (datos del negocio) ──────────────────────────────────────────────

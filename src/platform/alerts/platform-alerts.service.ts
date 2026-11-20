@@ -122,6 +122,16 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
       if (!type) continue;
       const name = (group?.name ?? sub.tenant.name).trim();
       const text = billingAlertText(type, name, today, dates.dueDay);
+      // Casi todos los ciclos repiten un aviso que ya se dio. Preguntar primero evita
+      // provocar la violación de la llave única: Prisma imprime `prisma:error` por cada
+      // una aunque se capture, y llenaba la consola de ruido en cada ciclo.
+      const alreadySent = await this.prisma.platformAlert.findUnique({
+        where: {
+          type_tenantId_dueDay: { type, tenantId: sub.tenantId, dueDay: dates.dueDay },
+        },
+        select: { id: true },
+      });
+      if (alreadySent) continue;
       try {
         const row = await this.prisma.platformAlert.create({
           data: {
@@ -140,7 +150,8 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
           ...text,
         });
       } catch (error) {
-        // Ya se avisó de este vencimiento: es el caso normal de casi todos los ciclos.
+        // Respaldo: otro proceso avisó justo entre la consulta y el create. Con una sola
+        // instancia no pasa, pero la llave única sigue siendo la garantía real.
         if (
           !(error instanceof Prisma.PrismaClientKnownRequestError) ||
           error.code !== 'P2002'
