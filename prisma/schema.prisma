@@ -38,57 +38,57 @@ model Tenant {
   updatedAt            DateTime              @updatedAt
   deletedAt            DateTime?
 
-  users                   User[]
+  users                    User[]
   /// Personas cuyo negocio principal es otro y que también entran a este.
-  extraMembers            UserTenantMembership[]
-  branches                Branch[]
-  alexaSkills             AlexaSkill[]
-  products                Product[]
-  categories              ProductCategory[]
-  ingredients             Ingredient[]
-  stockMovements          StockMovement[]
-  menuPublicConfig        MenuPublicConfig?
-  areas                   Area[]
-  tables                  RestaurantTable[]
-  orders                  Order[]
-  kitchenTickets          KitchenTicket[]
-  paymentSplits           PaymentSplit[]
-  reservations            Reservation[]
-  expenses                Expense[]
-  expenseTemplates        ExpenseTemplate[]
-  capitalMovements        CapitalMovement[]
-  moneyAccounts           MoneyAccount[]
+  extraMembers             UserTenantMembership[]
+  branches                 Branch[]
+  alexaSkills              AlexaSkill[]
+  products                 Product[]
+  categories               ProductCategory[]
+  ingredients              Ingredient[]
+  stockMovements           StockMovement[]
+  menuPublicConfig         MenuPublicConfig?
+  areas                    Area[]
+  tables                   RestaurantTable[]
+  orders                   Order[]
+  kitchenTickets           KitchenTicket[]
+  paymentSplits            PaymentSplit[]
+  reservations             Reservation[]
+  expenses                 Expense[]
+  expenseTemplates         ExpenseTemplate[]
+  capitalMovements         CapitalMovement[]
+  moneyAccounts            MoneyAccount[]
   appointmentReminderRules AppointmentReminderRule[]
-  payrolls                Payroll[]
-  financeGoals            FinanceGoal[]
-  roles                   Role[]
-  barberSettings          BarberSettings[]
-  barberServices          BarberService[]
-  barberServiceCategories BarberServiceCategory[]
-  barberStaff             BarberStaff[]
-  barberCustomers         BarberCustomer[]
-  barberAppointments      BarberAppointment[]
-  retailCategories        RetailCategory[]
-  retailProducts          RetailProduct[]
-  retailStockMovements    RetailStockMovement[]
-  retailStockLocations    RetailStockLocation[]
-  retailCustomers         RetailCustomer[]
-  retailSales             RetailSale[]
-  retailPurchaseItems     RetailPurchaseItem[]
-  publicSites             PublicSite[]
-  orderEvents             OrderEvent[]
-  orderClaims             OrderClaim[]
-  printers                Printer[]
-  printJobs               PrintJob[]
-  receiptShares           ReceiptShare[]
-  cashSessions            CashSession[]
-  notificationEvents      NotificationEvent[]
-  notificationPrefs       NotificationPreference[]
-  webPushSubscriptions    WebPushSubscription[]
-  platformMessages        PlatformMessage[]
-  whatsappTemplates       WhatsappTemplate[]
-  qrCodes                 QrCode[]
-  assistantConversations  AssistantConversation[]
+  payrolls                 Payroll[]
+  financeGoals             FinanceGoal[]
+  roles                    Role[]
+  barberSettings           BarberSettings[]
+  barberServices           BarberService[]
+  barberServiceCategories  BarberServiceCategory[]
+  barberStaff              BarberStaff[]
+  barberCustomers          BarberCustomer[]
+  barberAppointments       BarberAppointment[]
+  retailCategories         RetailCategory[]
+  retailProducts           RetailProduct[]
+  retailStockMovements     RetailStockMovement[]
+  retailStockLocations     RetailStockLocation[]
+  retailCustomers          RetailCustomer[]
+  retailSales              RetailSale[]
+  retailPurchaseItems      RetailPurchaseItem[]
+  publicSites              PublicSite[]
+  orderEvents              OrderEvent[]
+  orderClaims              OrderClaim[]
+  printers                 Printer[]
+  printJobs                PrintJob[]
+  receiptShares            ReceiptShare[]
+  cashSessions             CashSession[]
+  notificationEvents       NotificationEvent[]
+  notificationPrefs        NotificationPreference[]
+  webPushSubscriptions     WebPushSubscription[]
+  platformMessages         PlatformMessage[]
+  whatsappTemplates        WhatsappTemplate[]
+  qrCodes                  QrCode[]
+  assistantConversations   AssistantConversation[]
 
   @@index([plan])
   @@index([verticalId])
@@ -607,19 +607,19 @@ model BarberCustomer {
 }
 
 model BarberAppointment {
-  id           String         @id @default(cuid())
+  id           String          @id @default(cuid())
   tenantId     String
-  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId     String
-  branch       Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch       Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
   /// Opcional: el dueño o el gerente pueden agendar sin cliente registrado,
   /// con una nota que diga quién es. Siempre que se pueda, se registra.
   customerId   String?
   customer     BarberCustomer? @relation(fields: [customerId], references: [id])
   serviceId    String
-  service      BarberService  @relation(fields: [serviceId], references: [id])
+  service      BarberService   @relation(fields: [serviceId], references: [id])
   staffId      String?
-  staff        BarberStaff?   @relation(fields: [staffId], references: [id])
+  staff        BarberStaff?    @relation(fields: [staffId], references: [id])
   scheduledAt  DateTime
   scheduledEnd DateTime
   // Cuándo se PRESTÓ el servicio, que no es lo mismo que cuándo se agendó ni
@@ -634,12 +634,12 @@ model BarberAppointment {
   // entero. null = cita no completada, o completada antes de este cambio.
   priceCOP     Int?
   costCOP      Int?
-  status       String         @default("SCHEDULED")
-  source       String         @default("manual")
+  status       String          @default("SCHEDULED")
+  source       String          @default("manual")
   notes        String?
   cancelReason String?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   // Clase grupal a la que pertenece esta asistencia. null = cita normal.
   classSessionId     String?
@@ -770,13 +770,13 @@ model BarberCharge {
 
   /// Sesiones o ingresos que incluye (paquete, plan limitado). null = ilimitado.
   /// Las usadas se cuentan sobre `coveredAppointments`, no se guardan.
-  sessionsTotal Int?
+  sessionsTotal    Int?
   /// Cupo por mes de plan, copiado del servicio al cobrar. null = sin cupo
   /// mensual. Pasado el cupo, la sesión no la cubre el plan: se cobra aparte.
   sessionsPerMonth Int?
   /// Días que se congeló (viaje, lesión). Ya están sumados a `endsOn`; este
   /// número queda para que se vea por qué la vigencia es más larga.
-  frozenDays    Int  @default(0)
+  frozenDays       Int  @default(0)
 
   userId   String?
   userName String?
@@ -790,7 +790,7 @@ model BarberCharge {
   updatedAt DateTime @updatedAt
 
   payments            BarberPayment[]
-  coveredAppointments BarberAppointment[] @relation("ChargeCoverage")
+  coveredAppointments BarberAppointment[]  @relation("ChargeCoverage")
   freezes             BarberChargeFreeze[]
 
   @@index([tenantId, branchId, chargedAt])
@@ -1119,15 +1119,15 @@ model User {
   passwordSetAt   DateTime?
   createdAt       DateTime     @default(now())
 
-  orders                 Order[]                  @relation("waiters")
-  userBranches           UserBranch[]
+  orders                   Order[]                   @relation("waiters")
+  userBranches             UserBranch[]
   /// Negocios adicionales a los que entra con este mismo correo (switch).
-  tenantMemberships      UserTenantMembership[]
-  notificationEvents     NotificationEvent[]
-  notificationPrefs      NotificationPreference[]
+  tenantMemberships        UserTenantMembership[]
+  notificationEvents       NotificationEvent[]
+  notificationPrefs        NotificationPreference[]
   appointmentReminderRules AppointmentReminderRule[]
-  webPushSubscriptions   WebPushSubscription[]
-  assistantConversations AssistantConversation[]
+  webPushSubscriptions     WebPushSubscription[]
+  assistantConversations   AssistantConversation[]
 
   @@index([tenantId])
   @@index([roleId])
@@ -1157,8 +1157,8 @@ model Role {
   isSystem  Boolean  @default(false)
   createdAt DateTime @default(now())
 
-  rolePermissions RolePermission[]
-  users           User[]
+  rolePermissions   RolePermission[]
+  users             User[]
   tenantMemberships UserTenantMembership[]
 
   @@unique([tenantId, code])
@@ -1594,6 +1594,9 @@ model KitchenTicketItem {
   lineKey   String
   name      String
   qty       Int
+  // Cuántas unidades de esta línea ya están en la mesa (entrega parcial). 0..qty.
+  // La comanda pasa a SERVED cuando todas sus líneas llegan a qty.
+  servedQty Int           @default(0)
   // Opciones/especificaciones copiadas del OrderItem al enviar a cocina, para
   // que la comanda impresa muestre las notas de cada plato.
   notes     String?
@@ -2143,9 +2146,16 @@ model OrderEvent {
   ticketId String? // KitchenTicket relacionado, si aplica
   note     String?
   metadata Json?
+  // Quién hizo la acción (mesero, cajero, dueño o administrador). El nombre y el rol se
+  // guardan congelados: el historial no cambia si luego renombran o borran al usuario.
+  // null = evento anterior a este registro, o hecho por el sistema.
+  actorId   String?
+  actorName String?
+  actorRole String?
 
   @@index([tenantId])
   @@index([orderId])
+  @@index([tenantId, actorId, at])
   @@index([tenantId, type, at])
   @@index([orderId, at])
   @@map("order_events")
@@ -2160,6 +2170,8 @@ enum OrderEventType {
   KITCHEN_PREPARING
   KITCHEN_READY
   SERVED
+  // Entrega parcial: unas unidades de una línea ya están en la mesa (metadata: lineKey, name, deltaQty).
+  ITEM_SERVED
   ALL_SERVED
   PAYMENT_REQUESTED
   PAYMENT_REGISTERED
@@ -2547,37 +2559,37 @@ enum BillingCycle {
 // Suscripción comercial del tenant (plan + estado + ciclo + periodo).
 // Es la fuente de verdad de billing; tenant.status es el estado operativo.
 model Subscription {
-  id                 String             @id @default(cuid())
-  tenantId           String             @unique
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  plan               String // "BASIC" | "PRO" | "PREMIUM" (consistente con Tenant.plan)
-  status             SubscriptionStatus @default(TRIALING)
-  billingCycle       BillingCycle       @default(monthly)
-  currentPeriodStart DateTime
-  currentPeriodEnd   DateTime
-  nextPaymentDueAt   DateTime?
-  graceEndsAt        DateTime? // nextPaymentDueAt + ventana de gracia
-  trialEndsAt        DateTime?
-  canceledAt         DateTime?
+  id                  String             @id @default(cuid())
+  tenantId            String             @unique
+  tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan                String // "BASIC" | "PRO" | "PREMIUM" (consistente con Tenant.plan)
+  status              SubscriptionStatus @default(TRIALING)
+  billingCycle        BillingCycle       @default(monthly)
+  currentPeriodStart  DateTime
+  currentPeriodEnd    DateTime
+  nextPaymentDueAt    DateTime?
+  graceEndsAt         DateTime? // nextPaymentDueAt + ventana de gracia
+  trialEndsAt         DateTime?
+  canceledAt          DateTime?
   // priceCOP/priceUSD = precio VIGENTE (el que se cobra). Se mantienen como
   // fuente legacy y siempre reflejan agreedPrice*.
-  priceCOP           Int?
-  priceUSD           Int?
+  priceCOP            Int?
+  priceUSD            Int?
   // Términos comerciales: precio de lista vs precio pactado. El descuento es la
   // diferencia y NO es un gasto — es ingreso que se deja de percibir (§finanzas).
-  listPriceCOP       Int?
-  listPriceUSD       Int?
-  agreedPriceCOP     Int?
-  agreedPriceUSD     Int?
-  discountReason     String? // 'cliente fundador', 'bono 2 meses', …
-  discountApprovedBy String?
+  listPriceCOP        Int?
+  listPriceUSD        Int?
+  agreedPriceCOP      Int?
+  agreedPriceUSD      Int?
+  discountReason      String? // 'cliente fundador', 'bono 2 meses', …
+  discountApprovedBy  String?
   // != null = el admin fijó el precio (precio especial o descuento) y manda.
   // null = sigue la tarifa de lista vigente en la fecha de cada cobro. El
   // anticipo (3/6/12 meses) no necesita esto: queda en el pago de su término.
   agreedPriceLockedAt DateTime?
-  provider           String             @default("manual") // 'manual' | 'stripe' | 'mercadopago'
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  provider            String             @default("manual") // 'manual' | 'stripe' | 'mercadopago'
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
   payments SubscriptionPayment[]
   charges  SubscriptionCharge[]
@@ -2657,20 +2669,28 @@ model BillingContact {
 // PlatformRecurringExpense y generan aquí un registro por cada cobro, para que
 // el acumulado histórico sea plata realmente gastada y no una proyección.
 model PlatformExpense {
-  id          String    @id @default(cuid())
-  category    String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
-  concept     String
-  vendor      String? // 'Vercel', 'Namecheap', 'Meta Ads', …
-  amount      Int
-  currency    String    @default("COP") // 'COP' | 'USD'
+  id           String    @id @default(cuid())
+  category     String // 'infra' | 'marketing' | 'payroll' | 'tools' | 'support' | 'taxes' | 'other'
+  concept      String
+  vendor       String? // 'Vercel', 'Namecheap', 'Meta Ads', …
+  // Float: el USD lleva centavos (US$ 5.72). Se redondea a 2 decimales al escribir.
+  amount       Float
+  currency     String    @default("COP") // 'COP' | 'USD'
   // 'one_time' = compra puntual · 'recurring' = cobro de un contrato recurrente
-  kind        String    @default("one_time")
+  kind         String    @default("one_time")
+  // 'paid' = plata que salió (cuenta en finanzas) · 'pending' = factura por
+  // pagar: se ve, pero NO suma al gasto hasta que se registra el pago.
+  status       String    @default("paid")
+  // 'recurring' | 'variable' | 'extraordinary' (clasificación para decidir)
+  nature       String?
+  // TRM (COP por USD) del día del pago; null = se usa la tasa vigente.
+  exchangeRate Float?
   // Periodo que cubre el gasto (dominio anual: 1 año). Solo informativo: el
   // gasto suma completo en incurredAt (base caja), no se prorratea.
-  periodStart DateTime?
-  periodEnd   DateTime?
-  incurredAt  DateTime
-  note        String?
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  incurredAt   DateTime
+  note         String?
 
   recurringExpenseId String?
   recurringExpense   PlatformRecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: SetNull)
@@ -2684,6 +2704,7 @@ model PlatformExpense {
   @@index([category, currency, incurredAt])
   @@index([category])
   @@index([recurringExpenseId])
+  @@index([status, incurredAt])
   @@map("platform_expenses")
 }
 
@@ -2695,7 +2716,7 @@ model PlatformRecurringExpense {
   category   String
   concept    String
   vendor     String?
-  amount     Int
+  amount     Float
   currency   String  @default("COP")
   // 'monthly' | 'quarterly' | 'yearly' | 'weekly'
   recurrence String  @default("monthly")
@@ -2902,8 +2923,8 @@ model PlatformMessage {
 // histórico). Esta fila se sigue escribiendo en la misma transacción para no
 // romper lectores legacy, pero NO se lee para resolver la tasa vigente.
 model PlatformPricingConfig {
-  id           String   @id @default("singleton")
-  usdToCopRate Int      @default(3650)
+  id                  String   @id @default("singleton")
+  usdToCopRate        Int      @default(3650)
   /// Valores de los planes editados desde el backoffice, solo lo que difiere del
   /// default de fábrica (`PLAN_FEATURES`): `{ "PRO": { "aiChatMonthlyLimit": 150 } }`.
   /// `null` en un límite numérico = sin tope.
@@ -2912,9 +2933,9 @@ model PlatformPricingConfig {
   /// valor de fábrica (`ASSISTANT_VERTICALS_FACTORY`: solo retail encendida).
   /// Precedencia AND con el plan: apagada, ningún negocio de esa vertical lo tiene.
   assistantVerticals  Json?
-  updatedBy    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedBy           String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("platform_pricing_config")
 }
@@ -3010,26 +3031,26 @@ model PlatformRate {
 // El proveedor de correo se configura DESDE LA CONSOLA, no por variables de
 // entorno: cambiar el remitente o rotar la API key no debe requerir un redeploy.
 model PlatformMessagingSettings {
-  id           String   @id @default("singleton")
-  waEnabled    Boolean  @default(false)
-  emailEnabled Boolean  @default(false)
+  id                  String   @id @default("singleton")
+  waEnabled           Boolean  @default(false)
+  emailEnabled        Boolean  @default(false)
   // ¿El agente de Lynko contesta los mensajes que ENTRAN al número de la
   // plataforma? Vive aquí y no en una variable de entorno porque encender y
   // apagar un agente que le habla a los clientes no puede exigir un redeploy:
   // cuando algo salga mal, se apaga desde la consola en diez segundos.
-  agentEnabled Boolean  @default(false)
+  agentEnabled        Boolean  @default(false)
   // ¿El agente puede REGISTRAR (siempre con borrador y confirmación)? Es otro
   // interruptor a propósito: encender el agente que consulta no debe habilitar
   // que escriba en los libros de un negocio.
-  agentCaptureEnabled Boolean @default(false)
-  fromEmail    String?
-  fromName     String?
-  replyTo      String?
+  agentCaptureEnabled Boolean  @default(false)
+  fromEmail           String?
+  fromName            String?
+  replyTo             String?
   // Secreto: NUNCA se devuelve por la API. El GET expone solo `hasApiKey` y los
   // últimos 4 caracteres, para que la UI pueda decir si está puesta sin filtrarla.
-  resendApiKey String?
-  signature    String?  @default("Equipo Lynko")
-  updatedAt    DateTime @updatedAt
+  resendApiKey        String?
+  signature           String?  @default("Equipo Lynko")
+  updatedAt           DateTime @updatedAt
 
   @@map("platform_messaging_settings")
 }
@@ -3135,6 +3156,10 @@ model SubscriptionCharge {
   /// Nuestra referencia, la que viaja firmada al checkout y vuelve en el evento.
   reference         String  @unique
   checkoutUrl       String
+  /// Token del enlace público del ticket (`/cobro/<token>`). Sin login: es la
+  /// única llave, por eso es aleatorio y largo. Se crea al emitir el cobro o a
+  /// pedido del admin en los cobros viejos (null hasta entonces).
+  publicToken       String? @unique
   /// Id de la transacción en Wompi. Único: es la llave de idempotencia del webhook.
   providerTxId      String? @unique
   paymentMethodType String?
@@ -3199,39 +3224,39 @@ model BillingGroup {
 /// Cobro de un combo: un solo link y una sola conciliación. Sus líneas son
 /// SubscriptionCharge (una por negocio) con `groupChargeId`.
 model BillingGroupCharge {
-  id             String       @id @default(cuid())
-  billingGroupId String
-  billingGroup   BillingGroup @relation(fields: [billingGroupId], references: [id], onDelete: Cascade)
-  termMonths     Int          @default(1)
-  periodStart    DateTime
-  periodEnd      DateTime
+  id                   String       @id @default(cuid())
+  billingGroupId       String
+  billingGroup         BillingGroup @relation(fields: [billingGroupId], references: [id], onDelete: Cascade)
+  termMonths           Int          @default(1)
+  periodStart          DateTime
+  periodEnd            DateTime
   /// Invariante: listAmount - discountAmount = amount (suma de las líneas).
-  listAmount     Int
-  discountAmount Int          @default(0)
-  amount         Int
-  currency       String       @default("COP")
+  listAmount           Int
+  discountAmount       Int          @default(0)
+  amount               Int
+  currency             String       @default("COP")
   /// Desglose congelado al emitir: líneas, % de combo y anticipo, avisos.
-  breakdown      Json
+  breakdown            Json
   /// pending | paid | failed | expired | canceled
-  status         String       @default("pending")
-  statusDetail   String?
+  status               String       @default("pending")
+  statusDetail         String?
   /// 'wompi' (link de pago) | 'manual' (Bre-B, transferencia, efectivo)
-  provider       String       @default("wompi")
-  reference      String       @unique
-  checkoutUrl    String?
-  providerTxId   String?      @unique
-  paymentMethodType String?
-  gatewayFee     Int          @default(0)
-  withheld       Int          @default(0)
-  netSettled     Int?
-  feeMethod      String?
+  provider             String       @default("wompi")
+  reference            String       @unique
+  checkoutUrl          String?
+  providerTxId         String?      @unique
+  paymentMethodType    String?
+  gatewayFee           Int          @default(0)
+  withheld             Int          @default(0)
+  netSettled           Int?
+  feeMethod            String?
   expectedSettlementAt DateTime?
-  expiresAt      DateTime?
-  paidAt         DateTime?
-  lastCheckedAt  DateTime?
-  createdByUserId String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  expiresAt            DateTime?
+  paidAt               DateTime?
+  lastCheckedAt        DateTime?
+  createdByUserId      String
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
 
   lines SubscriptionCharge[]
 
@@ -4156,9 +4181,9 @@ model RetailSale {
   // Nota de la entrega: dirección, a quién se le deja, cuándo pasa a recoger.
   deliveryNote          String?
   /// Por qué canal del agente entró. NULL = se registró en la pantalla.
-  capturedVia     AssistantChannel?
+  capturedVia           AssistantChannel?
   /// El borrador que lo originó: quién lo pidió, qué se le mostró y cuándo aprobó.
-  agentProposalId String?
+  agentProposalId       String?
   subtotalCOP           Int
   discountCOP           Int                  @default(0)
   // Flete que se le traslada al cliente. Lo pone el envío, no el mostrador: el
@@ -5537,4 +5562,31 @@ model QrCode {
   @@index([tenantId])
   @@index([branchId])
   @@map("qr_codes")
+}
+
+/**
+ * Vínculo de una sede con Play Mundial (marcador de las canchas).
+ * Play Mundial CONSULTA a Lynko con un token de servicio: Lynko no empuja nada.
+ * Una sede, un vínculo. El token se muestra UNA vez al crearlo o rotarlo y aquí
+ * solo queda su hash (sha256: el token es aleatorio de 256 bits, no una clave
+ * elegida por una persona, así que no hace falta un hash lento).
+ * Ver docs/PLAN_CANCHAS_MARCADOR_Y_FIDELIZACION.md (frontend).
+ */
+model PlayMundialLink {
+  id          String    @id @default(cuid())
+  tenantId    String
+  branchId    String    @unique
+  /// sha256 hex del token completo.
+  tokenHash   String    @unique
+  /// Primeros caracteres, para reconocerlo en pantalla. Nunca sirven para entrar.
+  tokenPrefix String
+  createdById String?
+  createdAt   DateTime  @default(now())
+  rotatedAt   DateTime?
+  revokedAt   DateTime?
+  lastUsedAt  DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@map("playmundial_links")
 }
