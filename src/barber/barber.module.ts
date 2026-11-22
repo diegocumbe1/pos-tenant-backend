@@ -5,6 +5,7 @@ import { BarberClassesModule } from './modules/classes/barber-classes.module';
 import { BarberRecurringModule } from './modules/recurring/barber-recurring.module';
 import { InMoveSyncModule } from './modules/integrations/inmove/inmove-sync.module';
 import { GoogleCalendarModule } from './modules/integrations/google-calendar/google-calendar.module';
+import { PlayMundialModule } from './modules/integrations/playmundial/playmundial.module';
 import { BarberCustomersModule } from './modules/customers/barber-customers.module';
 import { BarberPublicModule } from './modules/public/barber-public.module';
 import { PublicSiteModule } from '../public-site/admin/public-site.module';
@@ -26,6 +27,7 @@ import { AppointmentRemindersModule } from './modules/reminders/appointment-remi
     AppointmentRemindersModule,
     InMoveSyncModule,
     GoogleCalendarModule,
+    PlayMundialModule,
     PublicSiteModule,
     BarberPublicModule,
   ],
