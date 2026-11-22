@@ -890,10 +890,35 @@ export class CreateRecurringExpenseDto {
   @IsBoolean()
   chargeOnCreate?: boolean;
 
+  @ApiPropertyOptional({
+    enum: ['paid', 'pending'],
+    default: 'paid',
+    description:
+      'Estado de los ciclos de meses ya cerrados: paid = ya pagados (histórico) · pending = quedan por pagar.',
+  })
+  @IsOptional()
+  @IsIn(['paid', 'pending'])
+  pastCyclesStatus?: 'paid' | 'pending';
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+/** Qué hacer con los ciclos de meses ya cerrados al crear o poner al día un contrato. */
+export const PAST_CYCLE_STATUSES = ['paid', 'pending'] as const;
+
+export class BackfillRecurringExpenseDto {
+  @ApiPropertyOptional({
+    enum: PAST_CYCLE_STATUSES,
+    default: 'paid',
+    description:
+      'paid = histórico ya pagado · pending = quedan por pagar (se deben). El del mes en curso siempre queda por confirmar.',
+  })
+  @IsOptional()
+  @IsIn(PAST_CYCLE_STATUSES)
+  pastCyclesStatus?: (typeof PAST_CYCLE_STATUSES)[number];
 }
 
 export class UpdateRecurringExpenseDto {

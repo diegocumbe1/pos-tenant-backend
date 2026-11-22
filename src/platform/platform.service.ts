@@ -2191,7 +2191,10 @@ export class PlatformService {
 
     // Contratar suele implicar pagar el primer ciclo de una.
     if (dto.chargeOnCreate !== false) {
-      await this.generateDueRecurringExpenses(created.id);
+      await this.generateDueRecurringExpenses(
+        created.id,
+        dto.pastCyclesStatus ?? 'paid',
+      );
     }
     return this.getRecurringExpense(created.id);
   }
@@ -2247,6 +2250,20 @@ export class PlatformService {
     return this.getRecurringExpense(id);
   }
 
+  /** Los cobros de un contrato, del más reciente al más antiguo. */
+  async listRecurringCharges(id: string) {
+    const item = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!item) throw new NotFoundException(`Recurring expense ${id} not found`);
+    const charges = await this.prisma.platformExpense.findMany({
+      where: { recurringExpenseId: id },
+      orderBy: [{ dueAt: 'desc' }, { incurredAt: 'desc' }],
+    });
+    return { charges: charges.map((c) => this.toPlatformExpenseDto(c)) };
+  }
+
   /**
    * Qué ciclos del contrato faltan por registrar desde su inicio hasta hoy.
    * No escribe nada: es la vista previa de "Poner al día". Los de meses ya
@@ -2297,7 +2314,11 @@ export class PlatformService {
    * (idempotente: los que ya existen, aunque se les haya corregido la fecha de
    * pago, no se repiten). Los cobros ya registrados no se tocan.
    */
-  async applyRecurringBackfill(id: string, actorUserId: string) {
+  async applyRecurringBackfill(
+    id: string,
+    actorUserId: string,
+    pastStatus: 'paid' | 'pending' = 'paid',
+  ) {
     const item = await this.prisma.platformRecurringExpense.findUnique({
       where: { id },
     });
@@ -2308,7 +2329,7 @@ export class PlatformService {
         data: { nextChargeAt: item.startsAt },
       });
     }
-    const result = await this.generateDueRecurringExpenses(id);
+    const result = await this.generateDueRecurringExpenses(id, pastStatus);
     await this.audit(
       actorUserId,
       'platform.finance.recurring.backfill',
@@ -2364,7 +2385,10 @@ export class PlatformService {
    * compromisos activos (nextChargeAt <= hoy), avanzando el ciclo hasta
    * ponerse al día. Idempotente: solo genera lo que aún no existe.
    */
-  async generateDueRecurringExpenses(onlyId?: string) {
+  async generateDueRecurringExpenses(
+    onlyId?: string,
+    pastStatus: 'paid' | 'pending' = 'paid',
+  ) {
     // Candado transaccional: el dashboard, la lista y "crear" llaman a esto casi
     // a la vez; sin serializar, cada llamada veía "no existe" y creaba el mismo
     // cobro (duplicó Supabase y Railway en prod). El candado se libera solo al
@@ -2372,7 +2396,7 @@ export class PlatformService {
     return this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(727401)`;
-        return this.generateDueRecurringExpensesLocked(tx, onlyId);
+        return this.generateDueRecurringExpensesLocked(tx, onlyId, pastStatus);
       },
       { timeout: 30_000, maxWait: 15_000 },
     );
@@ -2381,6 +2405,7 @@ export class PlatformService {
   private async generateDueRecurringExpensesLocked(
     tx: Prisma.TransactionClient,
     onlyId?: string,
+    pastStatus: 'paid' | 'pending' = 'paid',
   ) {
     const now = new Date();
     const currentMonth = calendarMonthCO(now);
@@ -2430,7 +2455,9 @@ export class PlatformService {
               // del mes en curso queda por confirmar hasta registrar el pago real.
               nature: 'recurring',
               status:
-                calendarMonthCO(chargeDate) < currentMonth ? 'paid' : 'pending',
+                calendarMonthCO(chargeDate) < currentMonth
+                  ? pastStatus
+                  : 'pending',
               incurredAt: chargeDate,
               dueAt: chargeDate,
               periodStart: chargeDate,

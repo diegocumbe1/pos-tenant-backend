@@ -27,6 +27,7 @@ import {
   CreateTermDiscountDto,
   TermDiscountHistoryQueryDto,
   CreatePlatformExpenseDto,
+  BackfillRecurringExpenseDto,
   CreatePaymentDto,
   UpdatePaymentTraceDto,
   CreateRecurringExpenseDto,
@@ -326,9 +327,20 @@ export class PlatformController {
   })
   applyRecurringBackfill(
     @Param('id') id: string,
+    @Body() dto: BackfillRecurringExpenseDto,
     @PlatformActor() actor: AuthenticatedUser,
   ) {
-    return this.platform.applyRecurringBackfill(id, actor.id);
+    return this.platform.applyRecurringBackfill(
+      id,
+      actor.id,
+      dto.pastCyclesStatus ?? 'paid',
+    );
+  }
+
+  @Get('finance/recurring-expenses/:id/charges')
+  @ApiOperation({ summary: 'Cobros (ciclos) de un contrato recurrente' })
+  listRecurringCharges(@Param('id') id: string) {
+    return this.platform.listRecurringCharges(id);
   }
 
   @Delete('finance/recurring-expenses/:id')
