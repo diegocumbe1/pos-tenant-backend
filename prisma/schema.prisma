@@ -2634,10 +2634,44 @@ model SubscriptionPayment {
   createdByUserId String // platform admin que registró el pago
   createdAt       DateTime      @default(now())
 
+  // Enlace público del comprobante (`/comprobante/<token>`). Aleatorio, 144 bits;
+  // NULL hasta que se genera (los pagos viejos lo piden a demanda).
+  receiptToken    String?       @unique
+
+  // Plan pagado en cuotas (p. ej. anual en 2 pagos). Todo NULL = pago único.
+  // Es una FOTO congelada al registrar: el saldo del comprobante que ya se le
+  // mandó al cliente no cambia aunque después se registren otras cuotas.
+  //   installmentGroupId → une las cuotas de un mismo plan
+  //   planTotal          → lo acordado por el plan completo (neto)
+  //   planListTotal      → el mismo plan a precio de lista mensual (para el ahorro)
+  //   balanceAfter       → lo que queda por pagar DESPUÉS de esta cuota
+  //   nextDueAt/Amount   → fecha y valor estimados de la siguiente cuota
+  installmentGroupId String?
+  installmentNo      Int?
+  installmentsTotal  Int?
+  planTotal          Int?
+  planListTotal      Int?
+  balanceAfter       Int?
+  nextDueAt          DateTime?
+  nextDueAmount      Int?
+
+  // Tarifa vigente al contratar (nota legal del comprobante). Se congela: si la
+  // tabla de precios sube después, este pago sigue diciendo con qué se cobró.
+  //   tariffTermMonths  → plan contratado (1, 3, 6 o 12 meses)
+  //   tariffListMonthly → mensual de lista del plan ese día
+  //   tariffDiscountBps → descuento por anticipo de la tabla (1700 = 17%)
+  //   tariffTableTotal  → lo que la tabla cobraba por ese plan completo
+  // El descuento ADICIONAL (si lo hubo) = tariffTableTotal - lo acordado.
+  tariffTermMonths   Int?
+  tariffListMonthly  Int?
+  tariffDiscountBps  Int?
+  tariffTableTotal   Int?
+
   @@index([tenantId, paidAt])
   @@index([paidAt])
   @@index([subscriptionId])
   @@index([countsAsRevenue, paidAt])
+  @@index([installmentGroupId])
   @@map("subscription_payments")
 }
 
@@ -3309,6 +3343,12 @@ model StaffCompensation {
   expectedHoursPerPeriod Int? // HOURLY
   commissionPercent      Int? // COMMISSION (0-100)
   notes                  String?
+  /// Días del mes en que se paga (1–31; 31 = último día del mes). Vacío = los de
+  /// siempre según la frecuencia: quincenal 15 y fin de mes, mensual fin de mes.
+  payDays                Int[]        @default([])
+  /// Desde cuándo corre el contrato, 'YYYY-MM-DD'. Puede ser anterior a los días
+  /// de pago (arranca el 1 y se paga el 15 y el 31). NULL = desde que se creó.
+  payStartDate           String?
   createdAt              DateTime     @default(now())
   updatedAt              DateTime     @updatedAt
 

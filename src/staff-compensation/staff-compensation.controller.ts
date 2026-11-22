@@ -56,6 +56,12 @@ export class StaffCompensationController {
     return this.service.getEarnings(ctx, query.period);
   }
 
+  // Fechas de nómina que faltan por pagar (alimenta "Por pagar" de Finanzas).
+  @Get('payroll-due')
+  getPayrollDue(@CurrentTenant() ctx: TenantContext) {
+    return this.service.getPayrollDue(ctx);
+  }
+
   @Get('compensation/role-templates')
   getRoleTemplates(@CurrentTenant() ctx: TenantContext) {
     return this.service.getRoleTemplates(ctx);

@@ -1,6 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { LedgerEntryType, Prisma, StaffLedgerEntry } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { addCalendarDaysCO, calendarDayCO } from '../common/date.util';
+import {
+  expectedPerPayDay,
+  payDaysOf,
+  unpaidOccurrences,
+} from './payroll-schedule';
 import { TenantContext } from '../auth/types/tenant-context.interface';
 import { UpsertCompensationDto } from './dto/compensation.dto';
 import { COMPLETED_STATUS_VARIANTS } from '../barber/shared/appointment-status';
@@ -60,12 +66,114 @@ export class StaffCompensationService {
       expectedHoursPerPeriod: dto.expectedHoursPerPeriod ?? null,
       commissionPercent: dto.commissionPercent ?? null,
       notes: dto.notes ?? null,
+      // Sin mandarlos no se tocan: un cliente viejo no borra el calendario.
+      ...(dto.payDays !== undefined ? { payDays: dto.payDays } : {}),
+      ...(dto.payStartDate !== undefined
+        ? { payStartDate: dto.payStartDate }
+        : {}),
     };
     return this.prisma.staffCompensation.upsert({
       where: { tenantId_staffId: { tenantId: ctx.tenantId, staffId } },
       create: { tenantId: ctx.tenantId, staffId, ...data },
       update: data,
     });
+  }
+
+  /**
+   * Nómina por pagar: las fechas de pago de cada contrato (quincenal, mensual)
+   * que aún no tienen su pago, vencidas, de la semana o del próximo mes. Es lo
+   * que "Por pagar" de Finanzas suma a los gastos recurrentes.
+   *
+   * No crea nada: se calcula al consultar. Pagar una fecha es registrar el pago
+   * de nómina de siempre (que escribe su gasto), y con eso la fecha sale sola.
+   * Comisionistas: la fecha aparece con monto desconocido (`amountCOP: null`).
+   */
+  async getPayrollDue(ctx: TenantContext) {
+    const today = calendarDayCO(new Date());
+    const to = addCalendarDaysCO(today, 31);
+    // Atrás solo 62 días: lo más viejo no es un pendiente, es un dato por revisar.
+    const lookback = addCalendarDaysCO(today, -62);
+
+    const profiles = await this.prisma.staffCompensation.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        ...(ctx.branchId
+          ? { OR: [{ branchId: ctx.branchId }, { branchId: null }] }
+          : {}),
+        payFrequency: { in: ['MONTHLY', 'BIWEEKLY'] },
+      },
+    });
+    if (profiles.length === 0) return [];
+
+    const [users, specialists, payments] = await Promise.all([
+      this.prisma.user.findMany({
+        where: {
+          id: {
+            in: profiles
+              .filter((p) => p.source === 'tenant_user')
+              .map((p) => p.staffId),
+          },
+        },
+        select: { id: true, name: true },
+      }),
+      this.prisma.barberStaff.findMany({
+        where: {
+          id: {
+            in: profiles
+              .filter((p) => p.source === 'specialist')
+              .map((p) => p.staffId),
+          },
+        },
+        select: { id: true, name: true },
+      }),
+      this.prisma.staffLedgerEntry.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          staffId: { in: profiles.map((p) => p.staffId) },
+          type: 'PAYMENT',
+          period: { gte: lookback.slice(0, 7) },
+        },
+        select: { staffId: true, period: true, staffName: true },
+      }),
+    ]);
+    const names = new Map<string, string>([
+      ...users.map((u) => [u.id, u.name] as [string, string]),
+      ...specialists.map((s) => [s.id, s.name] as [string, string]),
+      ...payments.map((x) => [x.staffId, x.staffName] as [string, string]),
+    ]);
+
+    const rows = profiles.flatMap((profile) => {
+      const startDay = profile.payStartDate ?? calendarDayCO(profile.createdAt);
+      const perPeriod = new Map<string, number>();
+      for (const pay of payments) {
+        if (pay.staffId !== profile.staffId) continue;
+        perPeriod.set(pay.period, (perPeriod.get(pay.period) ?? 0) + 1);
+      }
+      const schedule = {
+        payFrequency: profile.payFrequency,
+        payDays: payDaysOf(profile.payFrequency, profile.payDays),
+        startDay,
+      };
+      const amount = expectedPerPayDay(profile);
+      return unpaidOccurrences(schedule, lookback, to, perPeriod).map(
+        (occurrence) => ({
+          staffId: profile.staffId,
+          staffName: names.get(profile.staffId) ?? 'Sin nombre',
+          source: profile.source,
+          occurrence,
+          period: occurrence.slice(0, 7),
+          frequency: profile.payFrequency,
+          amountCOP: amount,
+          status:
+            occurrence < today
+              ? ('OVERDUE' as const)
+              : occurrence <= addCalendarDaysCO(today, 7)
+                ? ('DUE_SOON' as const)
+                : ('UPCOMING' as const),
+        }),
+      );
+    });
+    return rows.sort((a, b) => a.occurrence.localeCompare(b.occurrence));
   }
 
   // ── Plantillas por rol ──────────────────────────────────────────────────────

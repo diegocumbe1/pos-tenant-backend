@@ -1,10 +1,14 @@
 import { ContractType, PayFrequency } from '@prisma/client';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsEnum,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
+  Matches,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -65,4 +69,18 @@ export class UpsertCompensationDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  /** Días del mes en que se paga (1–31; 31 = último día). Vacío = los de siempre. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(4)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(31, { each: true })
+  payDays?: number[];
+
+  /** Desde cuándo corre el contrato (YYYY-MM-DD). */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'payStartDate must be YYYY-MM-DD' })
+  payStartDate?: string | null;
 }
