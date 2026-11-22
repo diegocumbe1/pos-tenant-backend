@@ -1208,7 +1208,14 @@ export class PlatformService {
     // periodo regalado y del motivo, pero NO suma a ingresos ni a la utilidad.
     const countsAsRevenue = kind === 'payment';
     const currency = dto.currency ?? 'COP';
-    const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
+    // Un día suelto ('2026-11-21') se ancla al mediodía de Colombia: `new Date()`
+    // lo leería como medianoche UTC, que en Colombia es el día anterior y el pago
+    // cambiaría de día (y de mes si es el 1.º).
+    const paidAt = dto.paidAt
+      ? /^\d{4}-\d{2}-\d{2}$/.test(dto.paidAt)
+        ? new Date(dayStartCO(dto.paidAt).getTime() + 12 * 60 * 60 * 1000)
+        : new Date(dto.paidAt)
+      : new Date();
 
     // Precio de lista vigente A LA FECHA DEL COBRO. Es el eslabón que hace que
     // subir la tarifa en septiembre no toque lo que se cobró en junio: cada pago
@@ -1430,7 +1437,17 @@ export class PlatformService {
             // Con una cuota pendiente, el aviso al super-admin sale en la fecha
             // que se dejó para la próxima cuota (por defecto, el fin del periodo).
             nextPaymentDueAt: installmentData?.nextDueAt ?? periodEnd,
-            graceEndsAt: this.addDays(periodEnd, GRACE_DAYS),
+            // La gracia cuenta desde lo que toca pagar primero: con una cuota
+            // pendiente antes de que termine el periodo, desde esa fecha. Si no,
+            // el servicio quedaría "con gracia" hasta el final del año aunque la
+            // cuota 2 no se pague.
+            graceEndsAt: this.addDays(
+              installmentData?.nextDueAt &&
+                installmentData.nextDueAt < periodEnd
+                ? (installmentData.nextDueAt as Date)
+                : periodEnd,
+              GRACE_DAYS,
+            ),
             status: 'ACTIVE',
             canceledAt: null,
           },
