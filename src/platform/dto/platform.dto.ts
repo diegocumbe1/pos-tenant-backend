@@ -726,6 +726,15 @@ export class CreatePlatformExpenseDto {
   @IsISO8601()
   incurredAt!: string;
 
+  @ApiPropertyOptional({
+    example: '2026-06-08T12:00:00.000Z',
+    description:
+      'Fecha programada de pago (vencimiento). Distinta de incurredAt, que es cuando salió la plata.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  dueAt?: string;
+
   @ApiPropertyOptional({ description: 'Inicio del periodo que cubre el gasto' })
   @IsOptional()
   @IsISO8601()
@@ -802,6 +811,11 @@ export class UpdatePlatformExpenseDto {
   @IsOptional()
   @IsISO8601()
   incurredAt?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha programada de pago (vencimiento)' })
+  @IsOptional()
+  @IsISO8601()
+  dueAt?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -914,6 +928,14 @@ export class UpdateRecurringExpenseDto {
   @IsOptional()
   @IsIn(RECURRENCES)
   recurrence?: (typeof RECURRENCES)[number];
+
+  @ApiPropertyOptional({
+    description:
+      'Primer cobro del contrato. Cambiarlo no crea ni borra cobros: para poner al día los ciclos anteriores usa "backfill".',
+  })
+  @IsOptional()
+  @IsISO8601()
+  startsAt?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

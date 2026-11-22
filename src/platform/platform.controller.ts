@@ -311,6 +311,26 @@ export class PlatformController {
     return this.platform.updateRecurringExpense(id, dto, actor.id);
   }
 
+  @Get('finance/recurring-expenses/:id/backfill')
+  @ApiOperation({
+    summary: 'Vista previa: ciclos del contrato que faltan por registrar',
+  })
+  previewRecurringBackfill(@Param('id') id: string) {
+    return this.platform.previewRecurringBackfill(id);
+  }
+
+  @Post('finance/recurring-expenses/:id/backfill')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Poner al día: crea los ciclos que faltan desde el inicio',
+  })
+  applyRecurringBackfill(
+    @Param('id') id: string,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.applyRecurringBackfill(id, actor.id);
+  }
+
   @Delete('finance/recurring-expenses/:id')
   @ApiOperation({
     summary: 'Cancel a commitment (keeps the charges already paid)',

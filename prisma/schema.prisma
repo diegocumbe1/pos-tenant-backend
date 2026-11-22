@@ -2738,7 +2738,12 @@ model PlatformExpense {
   // gasto suma completo en incurredAt (base caja), no se prorratea.
   periodStart  DateTime?
   periodEnd    DateTime?
+  /// Fecha de caja: cuándo salió la plata de verdad. Es la que suma en finanzas.
   incurredAt   DateTime
+  /// Fecha PROGRAMADA de pago (la del contrato). Si pagaste el 10 un cobro que
+  /// vencía el 8, aquí queda el 8 y en `incurredAt` el 10: así se ve cuándo
+  /// debía pagarse y cuándo se pagó. NULL en gastos puntuales sin vencimiento.
+  dueAt        DateTime?
   note         String?
 
   recurringExpenseId String?

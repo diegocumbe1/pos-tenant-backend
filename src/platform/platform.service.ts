@@ -2208,6 +2208,10 @@ export class PlatformService {
       throw new NotFoundException(`Recurring expense ${id} not found`);
     }
 
+    const hasCharges =
+      (await this.prisma.platformExpense.count({
+        where: { recurringExpenseId: id },
+      })) > 0;
     const updated = await this.prisma.platformRecurringExpense.update({
       where: { id },
       data: {
@@ -2218,8 +2222,14 @@ export class PlatformService {
           dto.amount === undefined ? undefined : this.roundMoney(dto.amount),
         currency: dto.currency,
         recurrence: dto.recurrence,
+        startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
         endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
-        nextChargeAt: dto.nextChargeAt ? new Date(dto.nextChargeAt) : undefined,
+        // Sin cobros hechos, mover el inicio mueve también el primer cobro.
+        nextChargeAt: dto.nextChargeAt
+          ? new Date(dto.nextChargeAt)
+          : dto.startsAt && !hasCharges
+            ? new Date(dto.startsAt)
+            : undefined,
         isActive: dto.isActive,
         autoGenerate: dto.autoGenerate,
         note: dto.note,
@@ -2235,6 +2245,79 @@ export class PlatformService {
       this.toRecurringExpenseDto(updated),
     );
     return this.getRecurringExpense(id);
+  }
+
+  /**
+   * Qué ciclos del contrato faltan por registrar desde su inicio hasta hoy.
+   * No escribe nada: es la vista previa de "Poner al día". Los de meses ya
+   * cerrados entran como pagados (histórico) y el del mes en curso como pendiente,
+   * igual que la generación automática.
+   */
+  async previewRecurringBackfill(id: string) {
+    const item = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+    });
+    if (!item) throw new NotFoundException(`Recurring expense ${id} not found`);
+    const existing = await this.prisma.platformExpense.findMany({
+      where: { recurringExpenseId: id },
+      select: { periodStart: true, dueAt: true, incurredAt: true },
+    });
+    const known = new Set<number>();
+    for (const e of existing) {
+      for (const d of [e.periodStart, e.dueAt, e.incurredAt]) {
+        if (d) known.add(d.getTime());
+      }
+    }
+    const now = new Date();
+    const currentMonth = calendarMonthCO(now);
+    const missing: Array<{
+      dueAt: string;
+      status: 'paid' | 'pending';
+      amount: number;
+      currency: string;
+    }> = [];
+    let cursor = item.startsAt;
+    for (let i = 0; i < 120 && cursor <= now; i += 1) {
+      if (item.endsAt && cursor > item.endsAt) break;
+      if (!known.has(cursor.getTime())) {
+        missing.push({
+          dueAt: cursor.toISOString(),
+          status: calendarMonthCO(cursor) < currentMonth ? 'paid' : 'pending',
+          amount: item.amount,
+          currency: item.currency,
+        });
+      }
+      cursor = this.advanceRecurrence(cursor, item.recurrence);
+    }
+    return { id, concept: item.concept, missing };
+  }
+
+  /**
+   * Pone al día un contrato: crea SOLO los ciclos que faltan desde su inicio
+   * (idempotente: los que ya existen, aunque se les haya corregido la fecha de
+   * pago, no se repiten). Los cobros ya registrados no se tocan.
+   */
+  async applyRecurringBackfill(id: string, actorUserId: string) {
+    const item = await this.prisma.platformRecurringExpense.findUnique({
+      where: { id },
+    });
+    if (!item) throw new NotFoundException(`Recurring expense ${id} not found`);
+    if (item.nextChargeAt > item.startsAt) {
+      await this.prisma.platformRecurringExpense.update({
+        where: { id },
+        data: { nextChargeAt: item.startsAt },
+      });
+    }
+    const result = await this.generateDueRecurringExpenses(id);
+    await this.audit(
+      actorUserId,
+      'platform.finance.recurring.backfill',
+      'platform_recurring_expense',
+      id,
+      null,
+      result,
+    );
+    return { ...result, item: await this.getRecurringExpense(id) };
   }
 
   /**
@@ -2321,8 +2404,18 @@ export class PlatformService {
 
         const periodEnd = this.advanceRecurrence(cursor, item.recurrence);
         const chargeDate = cursor;
+        // El ciclo ya está si alguna de sus fechas coincide: el periodo (que
+        // nunca se edita), el vencimiento o la fecha de caja. Así corregir el día
+        // real de un pago no hace que el ciclo vuelva a generarse.
         const already = await tx.platformExpense.count({
-          where: { recurringExpenseId: item.id, incurredAt: chargeDate },
+          where: {
+            recurringExpenseId: item.id,
+            OR: [
+              { periodStart: chargeDate },
+              { dueAt: chargeDate },
+              { incurredAt: chargeDate },
+            ],
+          },
         });
         if (already === 0) {
           await tx.platformExpense.create({
@@ -2339,6 +2432,7 @@ export class PlatformService {
               status:
                 calendarMonthCO(chargeDate) < currentMonth ? 'paid' : 'pending',
               incurredAt: chargeDate,
+              dueAt: chargeDate,
               periodStart: chargeDate,
               periodEnd,
               note: item.note,
@@ -2443,6 +2537,7 @@ export class PlatformService {
           dto.nature ?? (dto.kind === 'recurring' ? 'recurring' : 'variable'),
         exchangeRate: dto.exchangeRate,
         incurredAt: new Date(dto.incurredAt),
+        dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
         periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
         note: dto.note,
@@ -2486,6 +2581,7 @@ export class PlatformService {
         nature: dto.nature,
         exchangeRate: dto.exchangeRate,
         incurredAt: dto.incurredAt ? new Date(dto.incurredAt) : undefined,
+        dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
         periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
         note: dto.note,
@@ -3100,6 +3196,8 @@ export class PlatformService {
       nature: expense.nature ?? undefined,
       exchangeRate: expense.exchangeRate ?? undefined,
       incurredAt: expense.incurredAt.toISOString(),
+      // Programada vs real: dueAt es el vencimiento; incurredAt, cuándo se pagó.
+      dueAt: expense.dueAt?.toISOString(),
       periodStart: expense.periodStart?.toISOString(),
       periodEnd: expense.periodEnd?.toISOString(),
       recurringExpenseId: expense.recurringExpenseId ?? undefined,
