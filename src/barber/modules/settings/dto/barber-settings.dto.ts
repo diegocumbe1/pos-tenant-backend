@@ -60,6 +60,12 @@ export class PublicBookingCopyDto {
   @IsString()
   @MaxLength(100)
   schedulePrompt?: string;
+
+  /** Mensaje de WhatsApp al consultar un servicio con las reservas online apagadas. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(400)
+  inquiryMessage?: string;
 }
 
 export class BookingSettingsDto {

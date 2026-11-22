@@ -15,6 +15,11 @@ export type PublicBookingCopy = {
   /** Quien atiende: "especialista" / "entrenador" / "responsable". */
   staffSingular: string;
   staffPlural: string;
+  /**
+   * Mensaje de WhatsApp para consultar un servicio cuando las reservas online
+   * están apagadas. Variables: {negocio}, {servicio}, {precio}.
+   */
+  inquiryMessage: string;
 };
 
 export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
@@ -30,6 +35,8 @@ export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
     schedulePrompt: 'Aparta tu horario',
     staffSingular: 'especialista',
     staffPlural: 'especialistas',
+    inquiryMessage:
+      'Hola {negocio} 👋 Me interesa el servicio *{servicio}*. ¿Tienen disponibilidad para agendar? Quedo atento(a).',
   },
   // Gimnasio: lo que se agenda por la web es una sesión con entrenador.
   fitness: {
@@ -41,6 +48,8 @@ export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
     schedulePrompt: 'Aparta tu horario',
     staffSingular: 'entrenador',
     staffPlural: 'entrenadores',
+    inquiryMessage:
+      'Hola {negocio} 👋 Me interesa *{servicio}*. ¿Qué horarios tienen disponibles? Quedo atento(a).',
   },
   resources: {
     itemSingular: 'espacio',
@@ -51,6 +60,8 @@ export const DEFAULT_PUBLIC_BOOKING_COPY: Record<
     schedulePrompt: 'Aparta tu horario',
     staffSingular: 'responsable',
     staffPlural: 'responsables',
+    inquiryMessage:
+      'Hola {negocio} 👋 Quiero consultar disponibilidad de *{servicio}*. ¿Qué horarios hay? Quedo atento(a).',
   },
 };
 
