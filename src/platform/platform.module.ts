@@ -13,6 +13,10 @@ import { PlatformAdminGuard } from './guards/platform-admin.guard';
 import { PlanPricingService } from './pricing/plan-pricing.service';
 import { PlanFeaturesService } from './plans/plan-features.service';
 import { PublicPlanFeaturesController } from './plans/public-plan-features.controller';
+import {
+  PaymentReceiptsService,
+  PublicPaymentReceiptsController,
+} from './payment-receipts';
 import { PublicPricingController } from './pricing/public-pricing.controller';
 
 @Module({
@@ -25,6 +29,7 @@ import { PublicPricingController } from './pricing/public-pricing.controller';
     BillingGroupsController,
     PublicPricingController,
     PublicPlanFeaturesController,
+    PublicPaymentReceiptsController,
   ],
   providers: [
     PlatformService,
@@ -34,6 +39,7 @@ import { PublicPricingController } from './pricing/public-pricing.controller';
     PlatformAlertsService,
     TenantMembershipsService,
     BillingGroupsService,
+    PaymentReceiptsService,
   ],
   exports: [PlatformService, PlanPricingService, PlanFeaturesService, BillingGroupsService],
 })

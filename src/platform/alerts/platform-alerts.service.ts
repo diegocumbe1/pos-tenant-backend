@@ -16,6 +16,7 @@ import {
   billingAlertText,
   billingDatesOf,
   billingGroupText,
+  PendingInstallment,
 } from './billing-alert-rules';
 
 const TICK_MS = 15 * 60_000;
@@ -98,11 +99,19 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
         tenant: {
           select: {
             name: true,
-            billingGroup: { select: { isActive: true, name: true, primaryTenantId: true } },
+            billingGroup: {
+              select: { isActive: true, name: true, primaryTenantId: true },
+            },
           },
         },
       },
     });
+
+    // Planes en cuotas con saldo: el último pago real de la cuenta manda. Una
+    // sola consulta para todas, no una por cuenta.
+    const pending = await this.pendingInstallments(
+      subscriptions.map((sub) => sub.tenantId),
+    );
 
     const created: {
       id: string;
@@ -115,19 +124,31 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
     for (const sub of subscriptions) {
       // Un combo se cobra junto: avisa solo el negocio principal, con el nombre
       // del combo. Los demás quedan alineados a su vencimiento.
-      const group = sub.tenant.billingGroup?.isActive ? sub.tenant.billingGroup : null;
+      const group = sub.tenant.billingGroup?.isActive
+        ? sub.tenant.billingGroup
+        : null;
       if (group && group.primaryTenantId !== sub.tenantId) continue;
       const dates = billingDatesOf(sub);
       const type = billingAlertFor(today, dates);
       if (!type) continue;
       const name = (group?.name ?? sub.tenant.name).trim();
-      const text = billingAlertText(type, name, today, dates.dueDay);
+      const text = billingAlertText(
+        type,
+        name,
+        today,
+        dates.dueDay,
+        pending.get(sub.tenantId) ?? null,
+      );
       // Casi todos los ciclos repiten un aviso que ya se dio. Preguntar primero evita
       // provocar la violación de la llave única: Prisma imprime `prisma:error` por cada
       // una aunque se capture, y llenaba la consola de ruido en cada ciclo.
       const alreadySent = await this.prisma.platformAlert.findUnique({
         where: {
-          type_tenantId_dueDay: { type, tenantId: sub.tenantId, dueDay: dates.dueDay },
+          type_tenantId_dueDay: {
+            type,
+            tenantId: sub.tenantId,
+            dueDay: dates.dueDay,
+          },
         },
         select: { id: true },
       });
@@ -183,6 +204,43 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
       }
     }
     return { created: created.length };
+  }
+
+  /**
+   * Por cuenta, la próxima cuota por cobrar si su último pago real dejó saldo.
+   * Si después hubo otro pago (sin cuotas o de otro plan) ya no hay cuota
+   * pendiente que recordar.
+   */
+  private async pendingInstallments(
+    tenantIds: string[],
+  ): Promise<Map<string, PendingInstallment>> {
+    const result = new Map<string, PendingInstallment>();
+    if (tenantIds.length === 0) return result;
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      where: { tenantId: { in: tenantIds }, kind: 'payment' },
+      orderBy: { paidAt: 'desc' },
+      select: {
+        tenantId: true,
+        installmentNo: true,
+        installmentsTotal: true,
+        balanceAfter: true,
+        nextDueAmount: true,
+      },
+    });
+    const seen = new Set<string>();
+    for (const p of payments) {
+      if (seen.has(p.tenantId)) continue;
+      seen.add(p.tenantId);
+      if (p.installmentNo && p.installmentsTotal && (p.balanceAfter ?? 0) > 0) {
+        result.set(p.tenantId, {
+          number: p.installmentNo + 1,
+          total: p.installmentsTotal,
+          amount: p.nextDueAmount,
+          balance: p.balanceAfter ?? 0,
+        });
+      }
+    }
+    return result;
   }
 
   // ─── Consola ──────────────────────────────────────────────────────────────

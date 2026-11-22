@@ -4,6 +4,7 @@ import {
   dayStartCO,
   formatDateLongCO,
 } from '../../common/date.util';
+import { formatCOP } from '../../common/date.util';
 import { GRACE_DAYS } from '../platform.constants';
 
 export const DUE_SOON_DAYS = 2;
@@ -70,30 +71,54 @@ const daysBetween = (from: string, to: string) =>
 
 const plural = (n: number) => `${n} ${n === 1 ? 'día' : 'días'}`;
 
+/** Plan pagado en cuotas con saldo: lo que el aviso debe decir de la próxima. */
+export interface PendingInstallment {
+  /** La cuota que toca cobrar (la última pagada + 1). */
+  number: number;
+  total: number;
+  amount: number | null;
+  balance: number;
+}
+
 export function billingAlertText(
   type: BillingAlertType,
   tenantName: string,
   today: string,
   dueDay: string,
+  installment: PendingInstallment | null = null,
 ): { title: string; body: string } {
   const date = formatDateLongCO(dayStartCO(dueDay));
   const left = daysBetween(today, dueDay);
   const late = -left;
+  // "Cuota 2 de 2 · $ 363.000": el aviso deja de ser un vencimiento genérico y
+  // dice qué hay que cobrar, que es lo que Diego necesita para escribirle.
+  const cuota = installment
+    ? `Cuota ${installment.number} de ${installment.total}${installment.amount ? ` · ${formatCOP(installment.amount)}` : ''}`
+    : null;
+  const saldo = installment
+    ? ` Saldo del plan: ${formatCOP(installment.balance)}.`
+    : '';
   switch (type) {
     case 'billing.due_soon':
       return {
-        title: `${left === 1 ? 'Vence mañana' : `Vence en ${plural(left)}`}: ${tenantName}`,
-        body: `Se vence el ${date}. Recuérdale el pago.`,
+        title: `${left === 1 ? 'Vence mañana' : `Vence en ${plural(left)}`}: ${tenantName}${cuota ? ` (${cuota})` : ''}`,
+        body: cuota
+          ? `${cuota}, el ${date}.${saldo} Recuérdale el abono.`
+          : `Se vence el ${date}. Recuérdale el pago.`,
       };
     case 'billing.due':
       return late === 0
         ? {
-            title: `Vence hoy: ${tenantName}`,
-            body: 'Hoy es el vencimiento y aún no registra el pago.',
+            title: `Vence hoy: ${tenantName}${cuota ? ` (${cuota})` : ''}`,
+            body: cuota
+              ? `Hoy toca cobrar la ${cuota.toLowerCase()} y aún no se registra.${saldo}`
+              : 'Hoy es el vencimiento y aún no registra el pago.',
           }
         : {
-            title: `Venció hace ${plural(late)}: ${tenantName}`,
-            body: `Se venció el ${date} y aún no registra el pago.`,
+            title: `Venció hace ${plural(late)}: ${tenantName}${cuota ? ` (${cuota})` : ''}`,
+            body: cuota
+              ? `La ${cuota.toLowerCase()} se venció el ${date} y aún no se registra.${saldo}`
+              : `Se venció el ${date} y aún no registra el pago.`,
           };
     case 'billing.grace_ended':
       return {

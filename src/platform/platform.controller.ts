@@ -152,7 +152,8 @@ export class PlatformController {
 
   @Get('bundle-discounts')
   @ApiOperation({
-    summary: 'Current bundle discount and the price of every combo (plan × term)',
+    summary:
+      'Current bundle discount and the price of every combo (plan × term)',
   })
   getBundleDiscounts() {
     return this.pricing.getBundleMatrixAt();
@@ -167,7 +168,8 @@ export class PlatformController {
   @Post('bundle-discounts')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Set the discount per additional vertical from a date (append-only)',
+    summary:
+      'Set the discount per additional vertical from a date (append-only)',
   })
   createBundleDiscount(
     @Body() dto: CreateBundleDiscountDto,
@@ -200,18 +202,25 @@ export class PlatformController {
   }
 
   @Patch('plan-features/assistant-verticals/:vertical')
-  @ApiOperation({ summary: 'Turn Pregúntale a Lynko on/off for a whole vertical' })
+  @ApiOperation({
+    summary: 'Turn Pregúntale a Lynko on/off for a whole vertical',
+  })
   setAssistantVertical(
     @Param('vertical') vertical: string,
     @Body() body: { enabled?: boolean },
     @PlatformActor() actor: AuthenticatedUser,
   ) {
-    return this.platform.setAssistantVertical(vertical, body?.enabled as boolean, actor.id);
+    return this.platform.setAssistantVertical(
+      vertical,
+      body?.enabled as boolean,
+      actor.id,
+    );
   }
 
   @Patch('plan-features/:plan')
   @ApiOperation({
-    summary: 'Edit feature values of one plan (null on a numeric limit = unlimited)',
+    summary:
+      'Edit feature values of one plan (null on a numeric limit = unlimited)',
   })
   updatePlanFeatures(
     @Param('plan') plan: string,
@@ -244,6 +253,15 @@ export class PlatformController {
   })
   getPlatformFinanceDashboard(@Query() query: PlatformFinanceQueryDto) {
     return this.platform.getPlatformFinanceDashboard(query);
+  }
+
+  @Get('finance/cashflow')
+  @ApiOperation({
+    summary:
+      'Monthly cash flow: received, pending, expected, expenses, balances',
+  })
+  getPlatformCashflow(@Query('month') month?: string) {
+    return this.platform.getPlatformCashflow(month);
   }
 
   @Get('finance/income')
@@ -570,6 +588,18 @@ export class PlatformController {
     @PlatformActor() actor: AuthenticatedUser,
   ) {
     return this.platform.createPayment(id, dto, actor.id);
+  }
+
+  @Post('tenants/:id/payments/:paymentId/receipt-link')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Enlace público del comprobante de un pago (lo genera si falta)',
+  })
+  ensureReceiptLink(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+  ) {
+    return this.platform.ensureReceiptToken(id, paymentId);
   }
 
   // ─── Contactos de cobro ─────────────────────────────────────────────────────────

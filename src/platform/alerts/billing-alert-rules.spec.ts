@@ -106,3 +106,25 @@ describe('textos', () => {
     });
   });
 });
+
+describe('billingAlertText con cuota pendiente', () => {
+  const cuota = { number: 2, total: 2, amount: 363000, balance: 363000 };
+
+  it('dice cuál cuota toca, cuánto y el saldo del plan', () => {
+    const t = billingAlertText('billing.due_soon', 'Jimcell', '2027-05-19', '2027-05-21', cuota);
+    expect(t.title).toContain('Cuota 2 de 2');
+    expect(t.body).toContain('Saldo del plan');
+    expect(t.body).toContain('abono');
+  });
+
+  it('el día del vencimiento y en mora conserva la cuota', () => {
+    expect(billingAlertText('billing.due', 'Jimcell', '2027-05-21', '2027-05-21', cuota).title).toContain('Vence hoy');
+    expect(billingAlertText('billing.due', 'Jimcell', '2027-05-23', '2027-05-21', cuota).body).toContain('cuota 2 de 2');
+  });
+
+  it('sin cuota el texto es el de siempre', () => {
+    const t = billingAlertText('billing.due_soon', 'Jimcell', '2027-05-19', '2027-05-21');
+    expect(t.title).not.toContain('Cuota');
+    expect(t.body).toContain('Recuérdale el pago');
+  });
+});

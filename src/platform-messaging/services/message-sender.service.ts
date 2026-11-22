@@ -69,6 +69,28 @@ export function withComboDetail(body: string, hasCombo: boolean): string {
   return lines.join('\n');
 }
 
+/**
+ * "Pago recibido" lleva siempre el abono, el saldo y el enlace del comprobante,
+ * aunque la plantilla guardada en la base sea anterior a la variable (o la haya
+ * editado el admin). Se pega antes de la firma; si la plantilla ya la usa, o no
+ * es la de pago recibido, no toca nada.
+ */
+export function withReceiptDetail(body: string, templateKey: string): string {
+  if (templateKey !== 'payment_received') return body;
+  // `valor` es el precio del plan; en esta confirmación hay que decir lo que
+  // ENTRÓ (un abono no es el plan completo).
+  body = body.replaceAll('{{valor}}', '{{valor_pagado}}');
+  if (body.includes('{{detalle_comprobante}}')) return body;
+  const lines = body.split('\n');
+  const index = lines.findIndex((line) => line.includes('{{firma}}'));
+  if (index === -1) return `${body}{{detalle_comprobante}}`;
+  // Pegada al renglón anterior a la firma (el vacío entre ambos se conserva).
+  let at = index - 1;
+  while (at > 0 && lines[at].trim() === '') at -= 1;
+  lines[at] = `${lines[at]}{{detalle_comprobante}}`;
+  return lines.join('\n');
+}
+
 @Injectable()
 export class MessageSenderService {
   private readonly logger = new Logger(MessageSenderService.name);
@@ -191,7 +213,10 @@ export class MessageSenderService {
           html = this.renderer.renderHtml(options.bodyOverride, {}).html;
         }
       } else {
-        const source = withComboDetail(template.body, !!ctx.combo);
+        const source = withReceiptDetail(
+          withComboDetail(template.body, !!ctx.combo),
+          effectiveKey,
+        );
         const rendered = this.renderer.render(source, baseValues);
         body = rendered.text;
         for (const key of rendered.missing) {

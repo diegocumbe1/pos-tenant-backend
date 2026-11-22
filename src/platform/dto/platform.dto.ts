@@ -7,13 +7,16 @@ import {
   IsInt,
   IsISO8601,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
   MaxLength,
   Min,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 const PLANS = ['BASIC', 'PRO', 'PREMIUM'] as const;
 const TENANT_STATUSES = ['ACTIVE', 'SUSPENDED', 'INACTIVE'] as const;
@@ -151,12 +154,16 @@ export class CreateBundleDiscountDto {
   @Min(0)
   additionalBps!: number;
 
-  @ApiPropertyOptional({ description: 'Desde cuándo rige. Por defecto, ya mismo.' })
+  @ApiPropertyOptional({
+    description: 'Desde cuándo rige. Por defecto, ya mismo.',
+  })
   @IsOptional()
   @IsISO8601()
   effectiveFrom?: string;
 
-  @ApiPropertyOptional({ description: 'Motivo del cambio (queda en histórico)' })
+  @ApiPropertyOptional({
+    description: 'Motivo del cambio (queda en histórico)',
+  })
   @IsOptional()
   @IsString()
   note?: string;
@@ -312,6 +319,53 @@ export class SetUserPhoneDto {
 const CURRENCIES = ['COP', 'USD'] as const;
 const PAYMENT_KINDS = ['payment', 'bonus', 'credit'] as const;
 
+/** Plan pagado en cuotas: une este pago con los demás del mismo plan. */
+export class PaymentInstallmentDto {
+  @ApiPropertyOptional({
+    description:
+      'Grupo del plan. Vacío en la cuota 1 (se crea); obligatorio desde la 2.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  groupId?: string;
+
+  @ApiProperty({ example: 1, description: 'Número de esta cuota' })
+  @IsInt()
+  @Min(1)
+  number!: number;
+
+  @ApiProperty({ example: 2, description: 'Cuotas del plan completo' })
+  @IsInt()
+  @Min(2)
+  total!: number;
+
+  @ApiProperty({ example: 726000, description: 'Total acordado del plan (neto)' })
+  @IsInt()
+  @Min(1)
+  planTotal!: number;
+
+  @ApiPropertyOptional({
+    example: 876000,
+    description: 'El plan a precio de lista mensual (para calcular el ahorro)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  planListTotal?: number;
+
+  @ApiPropertyOptional({ description: 'Fecha estimada de la próxima cuota' })
+  @IsOptional()
+  @IsISO8601()
+  nextDueAt?: string;
+
+  @ApiPropertyOptional({ description: 'Valor estimado de la próxima cuota' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  nextDueAmount?: number;
+}
+
 export class CreatePaymentDto {
   @ApiProperty({ example: 129000, description: 'Monto neto recibido' })
   @IsInt()
@@ -406,6 +460,21 @@ export class CreatePaymentDto {
   @IsOptional()
   @IsBoolean()
   extendPeriod?: boolean;
+
+  @ApiPropertyOptional({
+    enum: [1, 3, 6, 12],
+    description:
+      'Plan contratado (meses). El servidor congela la tarifa vigente de la tabla como nota legal del comprobante.',
+  })
+  @IsOptional()
+  @IsIn([1, 3, 6, 12])
+  termMonths?: 1 | 3 | 6 | 12;
+
+  @ApiPropertyOptional({ type: PaymentInstallmentDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PaymentInstallmentDto)
+  installment?: PaymentInstallmentDto;
 }
 
 export class UpsertBillingContactDto {
@@ -528,6 +597,8 @@ const PLATFORM_EXPENSE_CATEGORIES = [
 ] as const;
 
 const EXPENSE_KINDS = ['one_time', 'recurring'] as const;
+const EXPENSE_STATUSES = ['paid', 'pending'] as const;
+const EXPENSE_NATURES = ['recurring', 'variable', 'extraordinary'] as const;
 const RECURRENCES = ['weekly', 'monthly', 'quarterly', 'yearly'] as const;
 
 export class CreatePlatformExpenseDto {
@@ -546,7 +617,7 @@ export class CreatePlatformExpenseDto {
   vendor?: string;
 
   @ApiProperty({ example: 95000, description: 'Monto entero' })
-  @IsInt()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   amount!: number;
 
@@ -559,6 +630,29 @@ export class CreatePlatformExpenseDto {
   @IsOptional()
   @IsIn(EXPENSE_KINDS)
   kind?: (typeof EXPENSE_KINDS)[number];
+
+  @ApiPropertyOptional({ enum: EXPENSE_NATURES })
+  @IsOptional()
+  @IsIn(EXPENSE_NATURES)
+  nature?: (typeof EXPENSE_NATURES)[number];
+
+  @ApiPropertyOptional({
+    example: 3230,
+    description: 'TRM usada (COP por USD)',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(1)
+  exchangeRate?: number;
+
+  @ApiPropertyOptional({
+    enum: EXPENSE_STATUSES,
+    description:
+      "'pending' = factura por pagar (no suma al gasto) · 'paid' = ya salió la plata",
+  })
+  @IsOptional()
+  @IsIn(EXPENSE_STATUSES)
+  status?: (typeof EXPENSE_STATUSES)[number];
 
   @ApiProperty({
     example: '2026-06-09T00:00:00.000Z',
@@ -602,7 +696,7 @@ export class UpdatePlatformExpenseDto {
 
   @ApiPropertyOptional({ example: 95000 })
   @IsOptional()
-  @IsInt()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   amount?: number;
 
@@ -615,6 +709,29 @@ export class UpdatePlatformExpenseDto {
   @IsOptional()
   @IsIn(EXPENSE_KINDS)
   kind?: (typeof EXPENSE_KINDS)[number];
+
+  @ApiPropertyOptional({ enum: EXPENSE_NATURES })
+  @IsOptional()
+  @IsIn(EXPENSE_NATURES)
+  nature?: (typeof EXPENSE_NATURES)[number];
+
+  @ApiPropertyOptional({
+    example: 3230,
+    description: 'TRM usada (COP por USD)',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(1)
+  exchangeRate?: number;
+
+  @ApiPropertyOptional({
+    enum: EXPENSE_STATUSES,
+    description:
+      "'pending' = factura por pagar (no suma al gasto) · 'paid' = ya salió la plata",
+  })
+  @IsOptional()
+  @IsIn(EXPENSE_STATUSES)
+  status?: (typeof EXPENSE_STATUSES)[number];
 
   @ApiPropertyOptional({ example: '2026-06-09T00:00:00.000Z' })
   @IsOptional()
@@ -655,7 +772,7 @@ export class CreateRecurringExpenseDto {
   vendor?: string;
 
   @ApiProperty({ example: 52000 })
-  @IsInt()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   amount!: number;
 
@@ -719,7 +836,7 @@ export class UpdateRecurringExpenseDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsInt()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   amount?: number;
 

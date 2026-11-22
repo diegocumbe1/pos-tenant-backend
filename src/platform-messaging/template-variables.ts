@@ -111,6 +111,24 @@ export const TEMPLATE_VARIABLES: TemplateVariable[] = [
     group: 'suscripcion',
   },
 
+  {
+    // Distinta de `valor`: valor es lo que cuesta el plan; esta es lo que entró
+    // en el último pago (un abono de 363.000 sobre un plan anual de 726.000).
+    key: 'valor_pagado',
+    label: 'Valor del último pago registrado',
+    example: '$ 363.000',
+    group: 'suscripcion',
+  },
+  {
+    // Vacía si el pago no tiene comprobante. Con plan en cuotas trae abono,
+    // saldo y próximo abono. Siempre cierra con el enlace del comprobante.
+    key: 'detalle_comprobante',
+    label: 'Abono, saldo y enlace del comprobante (vacío si no hay)',
+    example:
+      '\n💳 Abono 1 de 2: $ 363.000\n💰 Saldo pendiente: $ 363.000\n📆 Próximo abono: $ 363.000 el 21/05/2027\n🧾 Comprobante de pago: https://uselynko.com/comprobante/…',
+    group: 'suscripcion',
+  },
+
   // Pago
   {
     key: 'medios_pago',
@@ -165,4 +183,7 @@ export function unknownVariables(body: string): string[] {
  * Variables que pueden quedar vacías sin bloquear el envío. Todas las demás,
  * vacías, son un dato que falta y el preview lo marca como bloqueo.
  */
-export const OPTIONAL_VARIABLES = new Set<string>(['detalle_plan']);
+export const OPTIONAL_VARIABLES = new Set<string>([
+  'detalle_plan',
+  'detalle_comprobante',
+]);

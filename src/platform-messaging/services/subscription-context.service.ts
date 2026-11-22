@@ -35,6 +35,8 @@ export interface SubscriptionContext {
   daysToDue: number | null;
   overdue: boolean;
   lastPaymentAt: Date | null;
+  /** Lo que entró en el último pago real (no el valor del plan). */
+  lastPaymentLabel: string;
   periodStart: Date | null;
   periodEnd: Date | null;
   /** Qué datos duros faltan para poder redactar el mensaje. */
@@ -44,6 +46,8 @@ export interface SubscriptionContext {
    * línea. Con esto `valor` es el total del combo y `detalle_plan` el desglose.
    */
   combo: ComboContext | null;
+  /** Comprobante del último pago real, si ya tiene enlace. */
+  receipt: ReceiptContext | null;
 }
 
 export interface ComboContext {
@@ -92,6 +96,47 @@ export function renderComboDetail(combo: ComboContext | null): string {
       ? `\n💰 Ahorras ${formatCOP(combo.discountAmount)} frente a pagarlos por separado`
       : '';
   return `\n\n*${combo.planLabel} · ${rows.length} negocios*\n${rows.join('\n')}${saving}`;
+}
+
+export interface ReceiptContext {
+  token: string;
+  installment: {
+    number: number;
+    total: number;
+    amount: number;
+    balance: number;
+    nextDueAt: Date | null;
+    nextDueAmount: number | null;
+  } | null;
+}
+
+/**
+ * Cierre del mensaje "Pago recibido": abono, saldo, próxima cuota y enlace del
+ * comprobante. Empieza con salto de línea; vacío si el pago aún no tiene
+ * comprobante (pagos viejos), para no mandar un renglón suelto.
+ */
+export function renderReceiptDetail(
+  receipt: ReceiptContext | null,
+  baseUrl: string,
+): string {
+  if (!receipt) return '';
+  const lines: string[] = [];
+  const i = receipt.installment;
+  if (i) {
+    lines.push(
+      `💳 Abono ${i.number} de ${i.total}: ${formatCOP(i.amount)}`,
+      i.balance > 0
+        ? `💰 Saldo pendiente: ${formatCOP(i.balance)}`
+        : '✅ Plan pagado completo, sin saldo pendiente',
+    );
+    if (i.balance > 0 && i.nextDueAt) {
+      lines.push(
+        `📆 Próximo abono: ${i.nextDueAmount ? formatCOP(i.nextDueAmount) : 'por definir'} el ${formatDateCO(i.nextDueAt)}`,
+      );
+    }
+  }
+  lines.push(`🧾 Comprobante de pago: ${baseUrl}/comprobante/${receipt.token}`);
+  return `\n${lines.join('\n')}`;
 }
 
 export function slugify(input: string): string {
@@ -231,10 +276,32 @@ export class SubscriptionContextService {
       daysToDue,
       overdue: daysToDue !== null && daysToDue < 0,
       lastPaymentAt: lastPayment?.paidAt ?? null,
+      lastPaymentLabel: lastPayment
+        ? lastPayment.currency === 'USD'
+          ? `US$ ${lastPayment.amount}`
+          : formatCOP(lastPayment.amount)
+        : '',
       periodStart: lastPayment?.periodStart ?? sub?.currentPeriodStart ?? null,
       periodEnd: lastPayment?.periodEnd ?? sub?.currentPeriodEnd ?? null,
       missing,
       combo,
+      receipt:
+        lastPayment?.receiptToken
+          ? {
+              token: lastPayment.receiptToken,
+              installment:
+                lastPayment.installmentNo && lastPayment.installmentsTotal
+                  ? {
+                      number: lastPayment.installmentNo,
+                      total: lastPayment.installmentsTotal,
+                      amount: lastPayment.amount,
+                      balance: lastPayment.balanceAfter ?? 0,
+                      nextDueAt: lastPayment.nextDueAt,
+                      nextDueAmount: lastPayment.nextDueAmount,
+                    }
+                  : null,
+            }
+          : null,
     };
   }
 
@@ -275,6 +342,11 @@ export class SubscriptionContextService {
           : '',
       ultimo_pago: ctx.lastPaymentAt ? formatDateCO(ctx.lastPaymentAt) : '',
       periodo: period,
+      valor_pagado: ctx.lastPaymentLabel,
+      detalle_comprobante: renderReceiptDetail(
+        ctx.receipt,
+        (process.env.PUBLIC_APP_URL || 'https://uselynko.com').replace(/\/+$/, ''),
+      ),
       url_app: `https://${ctx.slug}.${process.env.PLATFORM_APP_DOMAIN ?? 'uselynko.com'}`,
     };
   }

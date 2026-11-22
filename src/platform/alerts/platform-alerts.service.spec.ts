@@ -17,11 +17,14 @@ const sub = (tenantId: string, name: string, due: string, extra = {}) => ({
 
 function build(
   subscriptions: unknown[],
-  options: { configured?: boolean } = {},
+  options: { configured?: boolean; payments?: unknown[] } = {},
 ) {
   const alerts: any[] = [];
   const prisma = {
     subscription: { findMany: jest.fn().mockResolvedValue(subscriptions) },
+    subscriptionPayment: {
+      findMany: jest.fn().mockResolvedValue(options.payments ?? []),
+    },
     platformAlert: {
       create: jest.fn(async ({ data }) => {
         if (
@@ -178,5 +181,22 @@ describe('PlatformAlertsService', () => {
     ]);
     const { alerts } = await service.list();
     expect(alerts[0].open).toBe(false);
+  });
+
+  it('si el último pago dejó saldo, el aviso dice qué cuota toca', async () => {
+    const { service, alerts } = build([sub('t1', 'Jimcell', '2026-11-08')], {
+      payments: [
+        {
+          tenantId: 't1',
+          installmentNo: 1,
+          installmentsTotal: 2,
+          balanceAfter: 363000,
+          nextDueAmount: 363000,
+        },
+      ],
+    });
+    await service.run(NOW);
+    expect(alerts[0].title).toContain('Cuota 2 de 2');
+    expect(alerts[0].body).toContain('Saldo del plan');
   });
 });
