@@ -254,3 +254,73 @@ describe('flujo de caja de plataforma', () => {
     });
   });
 });
+
+describe('en camino al banco (datáfono)', () => {
+  const base = (): CashflowInput => ({
+    month: '2026-11',
+    now: d('2026-11-22'), // domingo: ya pagó el sábado, aún no llega
+    rate: 3230,
+    payments: [
+      {
+        tenantId: 'T',
+        amount: 363000,
+        currency: 'COP',
+        paidAt: d('2026-11-21'),
+        periodStart: d('2026-11-21'),
+        periodEnd: d('2027-11-21'),
+        kind: 'payment',
+        countsAsRevenue: true,
+        channel: 'DATAFONO',
+        settlementAccount: 'Bancolombia',
+        expectedSettlementAt: d('2026-11-23'),
+        settledAt: null,
+        feeCOP: 8553,
+        netCOP: 354447,
+      },
+    ],
+    expenses: [],
+    subscriptions: [
+      {
+        tenantId: 'T',
+        tenantName: '317 Rompe Tus Límites',
+        tenantStatus: 'ACTIVE',
+        status: 'ACTIVE',
+        billingCycle: 'monthly',
+        currentPeriodEnd: d('2027-11-21'),
+      },
+    ],
+    commitments: [],
+  });
+
+  it('el cliente ya pagó (caja del cliente) pero la plata va en camino al banco', () => {
+    const m = summarizeMonth(base(), '2026-11');
+    expect(m.income.received).toBe(363000);
+    expect(m.bank.inTransit).toBe(363000);
+    expect(m.bank.lines[0].account).toBe('Bancolombia');
+    expect(m.bank.lines[0].overdue).toBe(false);
+    expect(m.bank.fees).toBe(8553);
+    expect(m.income.clients[0].settlement?.settledAt).toBeNull();
+  });
+
+  it('al llegar deja de estar en camino', () => {
+    const input = base();
+    input.payments[0].settledAt = d('2026-11-23');
+    const m = summarizeMonth(input, '2026-11');
+    expect(m.bank.inTransit).toBe(0);
+    expect(m.income.received).toBe(363000);
+  });
+
+  it('pasado el día esperado sin confirmar queda atrasado', () => {
+    const input = base();
+    input.now = d('2026-11-25');
+    const m = summarizeMonth(input, '2026-11');
+    expect(m.bank.lines[0].overdue).toBe(true);
+  });
+
+  it('un pago sin trazabilidad no aparece en camino', () => {
+    const input = base();
+    input.payments[0].expectedSettlementAt = null;
+    input.payments[0].channel = null;
+    expect(summarizeMonth(input, '2026-11').bank.inTransit).toBe(0);
+  });
+});

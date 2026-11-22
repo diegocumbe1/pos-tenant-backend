@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, SubscriptionCharge } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
+import { addBusinessDaysFromDate } from '../../common/business-days';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformService } from '../../platform/platform.service';
 import { PlanPricingService } from '../../platform/pricing/plan-pricing.service';
@@ -47,16 +48,9 @@ function toFeeMethod(paymentMethodType: string | null): FeeMethod {
   }
 }
 
-/** Suma días hábiles (lun–vie). No contempla festivos colombianos. */
+/** Suma días hábiles de Colombia (lunes a viernes, sin festivos). */
 function addBusinessDays(from: Date, days: number): Date {
-  const result = new Date(from);
-  let remaining = days;
-  while (remaining > 0) {
-    result.setDate(result.getDate() + 1);
-    const day = result.getDay();
-    if (day !== 0 && day !== 6) remaining -= 1;
-  }
-  return result;
+  return addBusinessDaysFromDate(from, days);
 }
 
 /** Token del enlace público: 144 bits, base64url (24 caracteres). */

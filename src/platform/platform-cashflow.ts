@@ -1,4 +1,8 @@
-import { calendarMonthCO, dayStartCO } from '../common/date.util';
+import {
+  calendarDayCO,
+  calendarMonthCO,
+  dayStartCO,
+} from '../common/date.util';
 
 /**
  * Flujo de caja del superadmin: real (lo que ya pasó), esperado (cobros y
@@ -19,6 +23,13 @@ export type CashflowPayment = {
   periodEnd: Date;
   kind: string;
   countsAsRevenue: boolean;
+  /** Trazabilidad interna: cuándo se espera y cuándo llegó el abono al banco. */
+  channel?: string | null;
+  settlementAccount?: string | null;
+  expectedSettlementAt?: Date | null;
+  settledAt?: Date | null;
+  feeCOP?: number | null;
+  netCOP?: number | null;
 };
 
 export type CashflowExpense = {
@@ -115,6 +126,15 @@ export type ClientLine = {
    *  pending = vence en el mes y no se ha cobrado · overdue = ya vencido. */
   status: 'paid' | 'prepaid' | 'pending' | 'overdue';
   dueDate?: string;
+  /** Solo cobros con trazabilidad (datáfono, enlace): estado del abono al banco. */
+  settlement?: {
+    channel: string | null;
+    account: string | null;
+    expectedAt: string;
+    settledAt: string | null;
+    feeCOP: number | null;
+    netCOP: number | null;
+  };
 };
 
 export type ExpenseLine = {
@@ -188,6 +208,19 @@ export function summarizeMonth(input: CashflowInput, month: string) {
       tenantName: nameOf.get(p.tenantId) ?? p.tenantId,
       amountCOP: round2(cop),
       status: 'paid',
+      // Pagó el cliente (eso no cambia); aquí se ve si la plata ya llegó al banco.
+      ...(p.expectedSettlementAt
+        ? {
+            settlement: {
+              channel: p.channel ?? null,
+              account: p.settlementAccount ?? null,
+              expectedAt: p.expectedSettlementAt.toISOString(),
+              settledAt: p.settledAt ? p.settledAt.toISOString() : null,
+              feeCOP: p.feeCOP ?? null,
+              netCOP: p.netCOP ?? null,
+            },
+          }
+        : {}),
     });
   }
 
@@ -314,6 +347,40 @@ export function summarizeMonth(input: CashflowInput, month: string) {
     }
   }
 
+  // ── Banco: lo que los clientes ya pagaron pero aún no llega a la cuenta ──────
+  // Solo cobros con trazabilidad (datáfono, enlace). Se mira "hoy", no por mes:
+  // una cuota pagada el 30 que llega el 2 sigue en camino al cambiar de mes.
+  const today = calendarDayCO(input.now);
+  const transitLines: Array<{
+    tenantId: string;
+    tenantName: string;
+    channel: string | null;
+    account: string | null;
+    amountCOP: number;
+    expectedAt: string;
+    overdue: boolean;
+  }> = [];
+  if (month === currentMonth) {
+    for (const p of input.payments) {
+      if (!p.countsAsRevenue || p.amount <= 0) continue;
+      if (!p.expectedSettlementAt || p.settledAt) continue;
+      transitLines.push({
+        tenantId: p.tenantId,
+        tenantName: nameOf.get(p.tenantId) ?? p.tenantId,
+        channel: p.channel ?? null,
+        account: p.settlementAccount ?? null,
+        amountCOP: round2(toCop(p.amount, p.currency, rate)),
+        expectedAt: p.expectedSettlementAt.toISOString(),
+        // Atrasado = ya pasó el día esperado y nadie confirmó que llegó.
+        overdue: calendarDayCO(p.expectedSettlementAt) < today,
+      });
+    }
+  }
+  let monthFees = 0;
+  for (const p of input.payments) {
+    if (p.feeCOP && inMonth(p.paidAt)) monthFees += p.feeCOP;
+  }
+
   const expected = received + pending;
   const expensesTotal = paidExp + pendingExp + projectedExp;
   return {
@@ -336,6 +403,14 @@ export function summarizeMonth(input: CashflowInput, month: string) {
       projected: round2(projectedExp),
       total: round2(expensesTotal),
       lines: lines.sort((a, b) => a.date.localeCompare(b.date)),
+    },
+    /** Lo pagado por clientes que aún no llega al banco, y las comisiones del mes. */
+    bank: {
+      inTransit: round2(transitLines.reduce((s, l) => s + l.amountCOP, 0)),
+      lines: transitLines.sort((a, b) =>
+        a.expectedAt.localeCompare(b.expectedAt),
+      ),
+      fees: round2(monthFees),
     },
     /** Caja real: solo plata que ya entró menos plata que ya salió. */
     cashBalance: round2(received - paidExp),

@@ -319,6 +319,65 @@ export class SetUserPhoneDto {
 const CURRENCIES = ['COP', 'USD'] as const;
 const PAYMENT_KINDS = ['payment', 'bonus', 'credit'] as const;
 
+/** Canales de cobro con trazabilidad interna (cuenta de abono, comisión, fecha). */
+export const PAYMENT_CHANNELS = [
+  'DATAFONO',
+  'LINK',
+  'TRANSFER',
+  'CASH',
+  'OTHER',
+] as const;
+
+/** Trazabilidad interna de un pago: NO la ve el cliente ni cambia su comprobante. */
+export class UpdatePaymentTraceDto {
+  @ApiPropertyOptional({ enum: PAYMENT_CHANNELS })
+  @IsOptional()
+  @IsIn(PAYMENT_CHANNELS)
+  channel?: (typeof PAYMENT_CHANNELS)[number];
+
+  @ApiPropertyOptional({ example: 'Bancolombia' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  settlementAccount?: string;
+
+  @ApiPropertyOptional({ description: 'Comisión + IVA descontados (COP)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  feeCOP?: number;
+
+  @ApiPropertyOptional({ description: 'Lo que llegó neto a la cuenta (COP)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  netCOP?: number;
+
+  @ApiPropertyOptional({
+    example: '2026-11-23',
+    description: 'Día en que se espera el abono (YYYY-MM-DD)',
+  })
+  @IsOptional()
+  @IsISO8601()
+  expectedSettlementAt?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-11-23',
+    nullable: true,
+    description: 'Día en que llegó de verdad (YYYY-MM-DD). null = en camino.',
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsISO8601()
+  settledAt?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  internalNote?: string;
+}
+
 /** Plan pagado en cuotas: une este pago con los demás del mismo plan. */
 export class PaymentInstallmentDto {
   @ApiPropertyOptional({
@@ -475,6 +534,12 @@ export class CreatePaymentDto {
   @ValidateNested()
   @Type(() => PaymentInstallmentDto)
   installment?: PaymentInstallmentDto;
+
+  @ApiPropertyOptional({ type: UpdatePaymentTraceDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => UpdatePaymentTraceDto)
+  trace?: UpdatePaymentTraceDto;
 }
 
 export class UpsertBillingContactDto {

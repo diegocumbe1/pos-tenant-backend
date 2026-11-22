@@ -28,6 +28,7 @@ import {
   TermDiscountHistoryQueryDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
+  UpdatePaymentTraceDto,
   CreateRecurringExpenseDto,
   PlanPriceHistoryQueryDto,
   PlatformFinanceMonthQueryDto,
@@ -600,6 +601,20 @@ export class PlatformController {
     @Param('paymentId') paymentId: string,
   ) {
     return this.platform.ensureReceiptToken(id, paymentId);
+  }
+
+  @Patch('tenants/:id/payments/:paymentId/trace')
+  @ApiOperation({
+    summary:
+      'Trazabilidad interna de un pago: canal, cuenta, comisión, fecha esperada y real de abono',
+  })
+  updatePaymentTrace(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+    @Body() dto: UpdatePaymentTraceDto,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.platform.updatePaymentTrace(id, paymentId, dto, actor.id);
   }
 
   // ─── Contactos de cobro ─────────────────────────────────────────────────────────

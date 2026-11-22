@@ -20,6 +20,7 @@ import {
 } from '../common/date.util';
 import { normalizePhone } from '../platform-messaging/phone.util';
 import { GRACE_DAYS } from './platform.constants';
+import { addBusinessDaysFromDate } from '../common/business-days';
 import {
   computeInstallment,
   newInstallmentGroupId,
@@ -31,6 +32,7 @@ import {
   CreateTermDiscountDto,
   CreatePlatformExpenseDto,
   CreatePaymentDto,
+  UpdatePaymentTraceDto,
   CreateRecurringExpenseDto,
   PlatformFinanceQueryDto,
   SetFeatureOverrideDto,
@@ -102,6 +104,30 @@ const RECURRENCE_MONTHS: Record<string, number> = {
 const VALID_FEATURE_KEYS = new Set(Object.keys(PLAN_FEATURES.BASIC));
 const PLATFORM_PRICING_CONFIG_ID = 'singleton';
 const DEFAULT_USD_TO_COP_RATE = 3650;
+
+/** Lo que se escribe de trazabilidad: sirve igual para crear que para corregir. */
+interface TraceData {
+  channel?: string;
+  settlementAccount?: string | null;
+  internalNote?: string | null;
+  feeCOP?: number;
+  netCOP?: number;
+  settledAt?: Date | null;
+  expectedSettlementAt?: Date;
+}
+
+/** Canales que pasan por un adquirente y por eso tardan en llegar al banco. */
+const SETTLING_CHANNELS: Record<string, 'CARD_PRESENT' | 'CARD_ONLINE'> = {
+  DATAFONO: 'CARD_PRESENT',
+  LINK: 'CARD_ONLINE',
+};
+
+/** 'YYYY-MM-DD' → mediodía de Colombia (no corre de día); un instante pasa igual. */
+function settlementDay(value: string): Date {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(dayStartCO(value).getTime() + 12 * 60 * 60 * 1000)
+    : new Date(value);
+}
 
 /** Tarifa de la tabla vigente al contratar (columnas `tariff*` del pago). */
 interface TariffSnapshot {
@@ -1262,6 +1288,12 @@ export class PlatformService {
       }
     }
 
+    // Trazabilidad interna (datáfono, cuenta de abono, comisión). Opcional: sin
+    // canal el pago se trata como plata ya recibida, igual que antes.
+    const trace = dto.trace
+      ? await this.buildTraceData(dto.trace, paidAt, dto.amount)
+      : null;
+
     const payment = await this.prisma.$transaction(async (tx) => {
       // Un pago siempre debe quedar colgado de una suscripción: si el tenant no
       // tenía (signup no la creaba), la creamos antes de registrar el cobro.
@@ -1411,6 +1443,7 @@ export class PlatformService {
           // Todo pago nace con su comprobante: el enlace se manda tal cual.
           receiptToken: newReceiptToken(),
           ...(tariff ?? {}),
+          ...(trace ?? {}),
           ...(installmentData
             ? {
                 installmentGroupId: installmentData.installmentGroupId,
@@ -1711,6 +1744,12 @@ export class PlatformService {
             periodEnd: true,
             kind: true,
             countsAsRevenue: true,
+            channel: true,
+            settlementAccount: true,
+            expectedSettlementAt: true,
+            settledAt: true,
+            feeCOP: true,
+            netCOP: true,
           },
         }),
         this.prisma.platformExpense.findMany(),
@@ -2902,6 +2941,14 @@ export class PlatformService {
       createdByUserId: p.createdByUserId,
       createdAt: p.createdAt.toISOString(),
       receiptToken: p.receiptToken ?? undefined,
+      // Interno del superadmin: nunca sale por el comprobante público.
+      channel: p.channel ?? undefined,
+      settlementAccount: p.settlementAccount ?? undefined,
+      expectedSettlementAt: p.expectedSettlementAt?.toISOString(),
+      settledAt: p.settledAt?.toISOString(),
+      feeCOP: p.feeCOP ?? undefined,
+      netCOP: p.netCOP ?? undefined,
+      internalNote: p.internalNote ?? undefined,
       installment:
         p.installmentGroupId && p.installmentNo && p.installmentsTotal
           ? {
@@ -2916,6 +2963,96 @@ export class PlatformService {
             }
           : undefined,
     };
+  }
+
+  /**
+   * Datos de trazabilidad a guardar. Para los canales con adquirente (datáfono,
+   * enlace) calcula el día de abono esperado: `settlementDays` de la tarifa de
+   * ese medio, en días hábiles de Colombia (con festivos). Pagado el sábado, "1 día
+   * hábil" es el lunes.
+   */
+  private async buildTraceData(
+    t: UpdatePaymentTraceDto,
+    paidAt: Date,
+    amount: number,
+    current?: { channel: string | null; expectedSettlementAt: Date | null },
+  ) {
+    const channel = t.channel ?? current?.channel ?? null;
+    const data: TraceData = {};
+    if (t.channel !== undefined) data.channel = t.channel;
+    if (t.settlementAccount !== undefined)
+      data.settlementAccount = t.settlementAccount.trim() || null;
+    if (t.internalNote !== undefined)
+      data.internalNote = t.internalNote.trim() || null;
+    if (t.feeCOP !== undefined) {
+      data.feeCOP = t.feeCOP;
+      // Sin neto escrito, el neto es lo pagado menos la comisión.
+      data.netCOP = t.netCOP ?? Math.max(0, amount - t.feeCOP);
+    } else if (t.netCOP !== undefined) {
+      data.netCOP = t.netCOP;
+      data.feeCOP = Math.max(0, amount - t.netCOP);
+    }
+    if (t.settledAt !== undefined) {
+      data.settledAt = t.settledAt ? settlementDay(t.settledAt) : null;
+    }
+    if (t.expectedSettlementAt) {
+      data.expectedSettlementAt = settlementDay(t.expectedSettlementAt);
+    } else if (
+      channel &&
+      SETTLING_CHANNELS[channel] &&
+      !current?.expectedSettlementAt
+    ) {
+      const row = await this.prisma.platformGatewayFee.findFirst({
+        where: {
+          method: SETTLING_CHANNELS[channel],
+          effectiveFrom: { lte: paidAt },
+        },
+        orderBy: { effectiveFrom: 'desc' },
+        select: { settlementDays: true },
+      });
+      data.expectedSettlementAt = addBusinessDaysFromDate(
+        paidAt,
+        row?.settlementDays ?? 1,
+      );
+    }
+    return data;
+  }
+
+  /** Corrige o completa la trazabilidad interna de un pago ya registrado. */
+  async updatePaymentTrace(
+    tenantId: string,
+    paymentId: string,
+    dto: UpdatePaymentTraceDto,
+    actorUserId: string,
+  ) {
+    const payment = await this.prisma.subscriptionPayment.findFirst({
+      where: { id: paymentId, tenantId },
+    });
+    if (!payment) throw new NotFoundException('Pago no encontrado');
+    if (payment.kind !== 'payment') {
+      throw new BadRequestException(
+        'Solo un pago real tiene trazabilidad de abono.',
+      );
+    }
+    const data = await this.buildTraceData(
+      dto,
+      payment.paidAt,
+      payment.amount,
+      payment,
+    );
+    const updated = await this.prisma.subscriptionPayment.update({
+      where: { id: paymentId },
+      data,
+    });
+    await this.audit(
+      actorUserId,
+      'subscription.payment.trace',
+      'subscription',
+      tenantId,
+      null,
+      { paymentId, ...dto },
+    );
+    return this.toPaymentDto(updated);
   }
 
   /**

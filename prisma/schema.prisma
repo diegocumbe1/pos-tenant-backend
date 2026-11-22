@@ -2667,6 +2667,21 @@ model SubscriptionPayment {
   tariffDiscountBps  Int?
   tariffTableTotal   Int?
 
+  // Trazabilidad INTERNA del cobro (solo superadmin; el comprobante público no la
+  // muestra y no cambia nada del cliente). `paidAt` es cuándo pagó el cliente;
+  // esto responde "¿ya llegó la plata a la cuenta?":
+  //   channel              → DATAFONO | LINK | TRANSFER | CASH | OTHER
+  //   expectedSettlementAt → día hábil en que se espera el abono
+  //   settledAt            → cuándo llegó de verdad (NULL = en camino)
+  //   feeCOP / netCOP      → comisión + IVA descontados / lo que llegó neto
+  channel              String?
+  settlementAccount    String?
+  expectedSettlementAt DateTime?
+  settledAt            DateTime?
+  feeCOP               Int?
+  netCOP               Int?
+  internalNote         String?
+
   @@index([tenantId, paidAt])
   @@index([paidAt])
   @@index([subscriptionId])
