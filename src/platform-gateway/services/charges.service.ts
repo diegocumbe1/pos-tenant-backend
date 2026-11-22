@@ -59,6 +59,10 @@ function addBusinessDays(from: Date, days: number): Date {
   return result;
 }
 
+/** Token del enlace público: 144 bits, base64url (24 caracteres). */
+const newPublicToken = (): string => randomBytes(18).toString('base64url');
+const PUBLIC_TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
+
 /** Quién queda como autor del pago cuando lo registra la pasarela y no una persona. */
 const WEBHOOK_ACTOR = 'wompi-webhook';
 
@@ -195,10 +199,90 @@ export class ChargesService {
         amount,
         reference,
         checkoutUrl: checkout.url,
+        publicToken: newPublicToken(),
         expiresAt,
         createdByUserId: actorUserId,
       },
     });
+  }
+
+  /**
+   * Enlace público del ticket. Los cobros nuevos ya nacen con token; los
+   * anteriores no, y este método se lo pone la primera vez que el admin pide
+   * el enlace. Idempotente: si ya tiene, devuelve el mismo (el link que ya se
+   * mandó por WhatsApp no cambia).
+   */
+  async ensurePublicToken(chargeId: string): Promise<{ token: string }> {
+    const charge = await this.loadCharge(chargeId);
+    if (charge.publicToken) return { token: charge.publicToken };
+    // updateMany con la condición `publicToken: null` evita que dos clics
+    // simultáneos generen dos tokens distintos y el primero quede huérfano.
+    const token = newPublicToken();
+    await this.prisma.subscriptionCharge.updateMany({
+      where: { id: chargeId, publicToken: null },
+      data: { publicToken: token },
+    });
+    const fresh = await this.loadCharge(chargeId);
+    return { token: fresh.publicToken as string };
+  }
+
+  /**
+   * Lo que ve el cliente en `/cobro/<token>`. Sin login, así que aquí se decide
+   * qué sale: nada de comisiones, conciliación, ids de Wompi ni del tenant.
+   * El link de pago solo se entrega mientras el cobro se puede pagar.
+   */
+  async getPublicView(token: string) {
+    if (!PUBLIC_TOKEN_RE.test(token)) throw new NotFoundException();
+    const charge = await this.prisma.subscriptionCharge.findUnique({
+      where: { publicToken: token },
+      include: { tenant: { select: { name: true } } },
+    });
+    if (!charge) throw new NotFoundException();
+
+    const now = new Date();
+    const lapsed =
+      charge.status === 'pending' && !!charge.expiresAt && charge.expiresAt < now;
+    const status = lapsed ? 'expired' : charge.status;
+    const payable = status === 'pending' || status === 'failed';
+
+    // Medios manuales (Bre-B, Nequi, transferencia) solo si se puede pagar: en
+    // un cobro pagado o cancelado no tiene sentido mostrar a dónde transferir.
+    const methods = payable
+      ? await this.prisma.platformPaymentMethod.findMany({
+          where: { isActive: true, kind: { in: ['breb', 'nequi', 'bank_transfer'] } },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        })
+      : [];
+
+    return {
+      number: charge.reference,
+      businessName: charge.tenant.name,
+      plan: charge.plan,
+      termMonths: charge.termMonths,
+      periodStart: charge.periodStart,
+      periodEnd: charge.periodEnd,
+      listAmount: charge.listAmount ?? charge.amount,
+      discountAmount: charge.discountAmount,
+      discountReason: charge.discountReason,
+      amount: charge.amount,
+      currency: charge.currency,
+      status,
+      issuedAt: charge.createdAt,
+      expiresAt: charge.expiresAt,
+      paidAt: charge.paidAt,
+      // Tarjeta de crédito/débito, PSE y demás: todo va por el checkout.
+      checkoutUrl: payable ? charge.checkoutUrl : null,
+      paymentMethods: methods.map((m) => ({
+        kind: m.kind,
+        label: m.label,
+        holder: m.holder,
+        reference: m.reference,
+        bank: m.bank,
+        accountType: m.accountType,
+        instructions: m.instructions,
+        qrImageUrl: m.qrImageUrl,
+      })),
+    };
   }
 
   async cancel(chargeId: string) {

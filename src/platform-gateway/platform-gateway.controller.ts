@@ -156,6 +156,14 @@ export class PlatformGatewayController {
     return this.charges.verify(chargeId);
   }
 
+  @Post('charges/:id/public-link')
+  @ApiOperation({
+    summary: 'Token del ticket público /cobro/<token> (lo crea si no existe)',
+  })
+  publicLink(@Param('id') chargeId: string) {
+    return this.charges.ensurePublicToken(chargeId);
+  }
+
   @Post('charges/:id/cancel')
   cancelCharge(@Param('id') chargeId: string) {
     return this.charges.cancel(chargeId);
