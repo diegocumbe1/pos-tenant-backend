@@ -18,6 +18,8 @@ import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import {
+  CloseRetailStockCountDto,
+  LinkRetailStockCountSaleDto,
   UpdateAllySettingsDto,
   UpdateRetailStockCountDto,
 } from './dto/retail-stock-count.dto';
@@ -98,8 +100,24 @@ export class RetailStockCountsController {
   close(
     @CurrentTenant() ctx: TenantContext,
     @Param('countId') countId: string,
+    @Body() dto?: CloseRetailStockCountDto,
   ) {
-    return this.counts.close(ctx, countId);
+    return this.counts.close(ctx, countId, dto ?? {});
+  }
+
+  /**
+   * Asocia a una revista ya cerrada la venta que se hizo por separado en el
+   * mostrador (el doble proceso de antes). Con `dryRun` solo dice qué se
+   * corregiría en el inventario.
+   */
+  @Post('stock-counts/:countId/link-sale')
+  @RequirePermissions('retail:inventory:write')
+  linkSale(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('countId') countId: string,
+    @Body() dto: LinkRetailStockCountSaleDto,
+  ) {
+    return this.counts.linkSale(ctx, countId, dto);
   }
 
   @Delete('stock-counts/:countId')

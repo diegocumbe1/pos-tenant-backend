@@ -35,13 +35,27 @@ describe('resumen de una revista', () => {
     expect(summary.extraUnits).toBe(1);
   });
 
-  it('en exhibición lo que falta no se liquida', () => {
+  it('en exhibición lo que falta se vendió, sin descuento de aliado', () => {
+    // Se dejaron 4, quedan 3: falta 1, se vendió 1.
     const summary = summarize(
-      [{ countedQty: 1, expectedQty: 3, unitPriceCOP: 285_000 }],
+      [{ countedQty: 3, expectedQty: 4, unitPriceCOP: 285_000 }],
       'EXHIBITION',
       tiers,
     );
-    expect(summary.missingUnits).toBe(2);
+    expect(summary.missingUnits).toBe(1);
+    expect(summary.soldUnits).toBe(1);
+    expect(summary.soldValueCOP).toBe(285_000);
+    expect(summary.discountPct).toBe(0);
+    expect(summary.netCOP).toBe(285_000);
+  });
+
+  it('en la principal lo que falta es un ajuste, no una venta', () => {
+    const summary = summarize(
+      [{ countedQty: 3, expectedQty: 4, unitPriceCOP: 285_000 }],
+      'PRINCIPAL',
+      tiers,
+    );
+    expect(summary.missingUnits).toBe(1);
     expect(summary.soldUnits).toBe(0);
     expect(summary.netCOP).toBe(0);
   });

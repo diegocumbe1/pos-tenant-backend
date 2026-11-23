@@ -667,7 +667,9 @@ export class CreateGroupPaymentDto {
     description: 'Ventas que cubre este pago, en el orden en que se saldan.',
   })
   @IsArray()
-  @ArrayMinSize(2)
+  // Una sola venta también vale: el panel del cliente deja elegir las que se
+  // quieran y no tiene por qué obligar a marcar dos para abonar a una.
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => GroupPaymentSaleDto)
   sales!: GroupPaymentSaleDto[];

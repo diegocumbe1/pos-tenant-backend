@@ -121,6 +121,13 @@ export class RetailSalesController {
   })
   @ApiQuery({ name: 'locationId', required: false })
   @ApiQuery({
+    name: 'customerId',
+    required: false,
+    description:
+      'Solo las ventas de ese cliente. Existe porque buscar por nombre mezcla ' +
+      'a dos clientes homónimos en un mismo estado de cuenta.',
+  })
+  @ApiQuery({
     name: 'search',
     required: false,
     description:
@@ -138,9 +145,11 @@ export class RetailSalesController {
     @Query('paymentStatus') paymentStatus?: string,
     @Query('paymentMethod') paymentMethod?: string,
     @Query('locationId') locationId?: string,
+    @Query('customerId') customerId?: string,
   ) {
     return this.sales.listSales(ctx, {
       locationId: locationId || undefined,
+      customerId: customerId || undefined,
       from,
       to,
       limit: limit ? Number(limit) : undefined,

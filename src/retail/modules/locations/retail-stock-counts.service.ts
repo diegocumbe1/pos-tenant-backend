@@ -18,6 +18,8 @@ import {
 } from '../../shared/retail-stock-locations';
 import { RetailSalesService } from '../sales/retail-sales.service';
 import {
+  CloseRetailStockCountDto,
+  LinkRetailStockCountSaleDto,
   UpdateAllySettingsDto,
   UpdateRetailStockCountDto,
 } from './dto/retail-stock-count.dto';
@@ -41,11 +43,14 @@ type CountMode = 'PRINCIPAL' | 'EXHIBITION' | 'ALLY';
  * AL CERRAR, la diferencia se aplica según el sitio:
  *   - Principal: un AJUSTE de inventario (es la casa: lo que falta se perdió
  *     o estaba mal contado).
- *   - Exhibición: un TRASLADO contra la principal, igual que el conteo de
- *     siempre. Nada cambia para las bodegas que ya existían.
- *   - Aliado: lo que falta es LO QUE VENDIÓ. Se liquida como una venta
- *     pendiente de cobro, con su descuento por escala, a nombre del aliado.
- *     Lo que sobra entró sin registrarse y se trae de la principal.
+ *   - Exhibición y aliado: lo que falta es LO QUE SE VENDIÓ. Se registra como
+ *     una venta con el mismo motor del mostrador (sale de esa bodega), por
+ *     defecto POR COBRAR, aunque al cerrar se puede dejar pagada o con abono.
+ *     El aliado además lleva su descuento por escala. Lo que sobra entró sin
+ *     registrarse y se trae de la principal.
+ *     (Antes la exhibición solo trasladaba lo que faltaba a la principal, sin
+ *     venta, y había que rehacerla en el mostrador: doble proceso, y un doble
+ *     descuento si se hacía desde esa bodega.)
  */
 @Injectable()
 export class RetailStockCountsService {
@@ -138,12 +143,64 @@ export class RetailStockCountsService {
         })
       : [];
     const saleById = new Map(sales.map((sale) => [sale.id, sale]));
+
+    // Lo que había, lo que faltó y lo que quedó, a PRECIO DE VENTA. Sale de los
+    // renglones y no de los totales congelados: una revista cerrada con la regla
+    // anterior no tiene valor vendido guardado, pero sus renglones sí dicen qué
+    // faltó. Al cerrar, `expectedQty` queda refrescado contra el saldo real.
+    const lines = counts.length
+      ? await this.prisma.retailStockCountLine.findMany({
+          where: { countId: { in: counts.map((count) => count.id) } },
+          select: {
+            countId: true,
+            expectedQty: true,
+            countedQty: true,
+            unitPriceCOP: true,
+          },
+        })
+      : [];
+    const valuesByCount = new Map<
+      string,
+      {
+        expectedValueCOP: number;
+        remainingValueCOP: number;
+        missingValueCOP: number;
+        remainingUnits: number;
+        missingUnits: number;
+      }
+    >();
+    for (const line of lines) {
+      const row = valuesByCount.get(line.countId) ?? {
+        expectedValueCOP: 0,
+        remainingValueCOP: 0,
+        missingValueCOP: 0,
+        remainingUnits: 0,
+        missingUnits: 0,
+      };
+      const counted = effectiveCount(line);
+      row.expectedValueCOP += line.expectedQty * line.unitPriceCOP;
+      row.remainingValueCOP += counted * line.unitPriceCOP;
+      row.remainingUnits += counted;
+      if (counted < line.expectedQty) {
+        row.missingUnits += line.expectedQty - counted;
+        row.missingValueCOP += (line.expectedQty - counted) * line.unitPriceCOP;
+      }
+      valuesByCount.set(line.countId, row);
+    }
+
     return counts.map((count) => {
       const sale = count.settlementSaleId
         ? saleById.get(count.settlementSaleId)
         : undefined;
       return {
         ...count,
+        ...(valuesByCount.get(count.id) ?? {
+          expectedValueCOP: 0,
+          remainingValueCOP: 0,
+          missingValueCOP: 0,
+          remainingUnits: 0,
+          missingUnits: 0,
+        }),
         settlement: sale
           ? {
               saleId: sale.id,
@@ -307,7 +364,11 @@ export class RetailStockCountsService {
    * de cuando se abrió: entre abrir y cerrar pudo haber ventas o traslados, y
    * lo que se contó en el estante se compara contra lo que hay ahora.
    */
-  async close(ctx: TenantContext, countId: string) {
+  async close(
+    ctx: TenantContext,
+    countId: string,
+    opts: CloseRetailStockCountDto = {},
+  ) {
     const count = await this.findCount(ctx, countId);
     if (count.status !== 'DRAFT') {
       throw new BadRequestException('Esta revista ya está cerrada');
@@ -342,16 +403,21 @@ export class RetailStockCountsService {
       netCOP: summary.netCOP,
     };
 
-    // ALIADO: primero la liquidación, con el motor de ventas de siempre (stock,
-    // kardex, lotes, Por cobrar, finanzas). Va en su propia transacción porque
-    // `createSale` abre la suya; por eso se guarda enseguida en la revista, y
-    // si el resto del cierre falla, reintentar no la duplica.
+    // ALIADO o EXHIBICIÓN: primero la venta, con el motor de ventas de siempre
+    // (stock, kardex, lotes, Por cobrar, finanzas). Va en su propia transacción
+    // porque `createSale` abre la suya; por eso se guarda enseguida en la
+    // revista, y si el resto del cierre falla, reintentar no la duplica.
     let settlementSaleId = count.settlementSaleId;
     const sold = lines.filter(
       (line) => effectiveCount(line) < line.expectedQty,
     );
-    if (mode === 'ALLY' && sold.length > 0 && !settlementSaleId) {
-      const customerId = await this.ensureAllyCustomer(ctx, location);
+    if (mode !== 'PRINCIPAL' && sold.length > 0 && !settlementSaleId) {
+      const customerId = opts.customerId
+        ? await this.useCustomer(ctx, location, opts.customerId)
+        : await this.ensureAllyCustomer(ctx, location);
+      // Por defecto POR COBRAR, como en el mostrador cuando se fía. Pagada de
+      // una vez, o con un abono, solo si quien cierra lo elige.
+      const paid = opts.paymentStatus === 'PAID';
       const sale = await this.sales.createSale(ctx, {
         items: sold.map((line) => ({
           productId: line.productId,
@@ -363,10 +429,17 @@ export class RetailStockCountsService {
         customerId,
         saleType: 'RETAIL',
         deliveryStatus: 'DELIVERED',
-        paymentStatus: 'PENDING',
+        paymentStatus: paid ? 'PAID' : 'PENDING',
+        ...(paid ? { paymentMethod: opts.paymentMethod ?? 'CASH' } : {}),
+        ...(!paid && opts.depositCOP
+          ? {
+              depositCOP: opts.depositCOP,
+              depositMethod: opts.depositMethod ?? 'CASH',
+            }
+          : {}),
         discountCOP: summary.discountCOP,
         note:
-          `Liquidación de revista · ${location.name}` +
+          `${mode === 'ALLY' ? 'Liquidación' : 'Venta'} de revista · ${location.name}` +
           (summary.discountPct
             ? ` · descuento aliado ${summary.discountPct}%`
             : ''),
@@ -388,14 +461,10 @@ export class RetailStockCountsService {
         }
       } else {
         const principal = await ensureDefaultLocation(tx, ctx);
-        // Exhibición: todo lo contado se fija contra la principal. Aliado: solo
-        // lo que SOBRA (lo que falta ya salió en la liquidación).
+        // Lo que falta ya salió en la venta de arriba; aquí solo lo que SOBRA
+        // (entró sin registrarse): se trae de la principal.
         const items = lines
-          .filter((line) =>
-            mode === 'EXHIBITION'
-              ? line.countedQty !== null && line.countedQty !== line.expectedQty
-              : effectiveCount(line) > line.expectedQty,
-          )
+          .filter((line) => effectiveCount(line) > line.expectedQty)
           .map((line) => ({
             productId: line.productId,
             variantId: line.variantId ?? undefined,
@@ -449,7 +518,11 @@ export class RetailStockCountsService {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
         locationId,
-        type: 'TRANSFER',
+        // Traslados (lo entregado y lo devuelto) y también lo VENDIDO desde esta
+        // bodega: la revista ya no lo manda de vuelta a la principal, sale en una
+        // venta, y sin contarlo aquí "entregadas − devueltas" no cuadra con lo
+        // que quedó.
+        type: { in: ['TRANSFER', 'SALE', 'RETURN'] },
         ...(range.from || range.to
           ? {
               createdAt: {
@@ -480,6 +553,7 @@ export class RetailStockCountsService {
       variantLabel: string | null;
       delivered: number;
       returned: number;
+      sold: number;
     };
     const categories = new Map<
       string,
@@ -487,6 +561,7 @@ export class RetailStockCountsService {
         categoryName: string;
         delivered: number;
         returned: number;
+        sold: number;
         valueAtPriceCOP: number;
         valueAtCostCOP: number;
         products: Map<string, Row>;
@@ -498,6 +573,7 @@ export class RetailStockCountsService {
         categoryName,
         delivered: 0,
         returned: 0,
+        sold: 0,
         valueAtPriceCOP: 0,
         valueAtCostCOP: 0,
         products: new Map<string, Row>(),
@@ -509,8 +585,19 @@ export class RetailStockCountsService {
         variantLabel: movement.variant?.label ?? null,
         delivered: 0,
         returned: 0,
+        sold: 0,
       };
       const units = Math.abs(movement.quantity);
+      // Una venta saca (cantidad negativa) y su anulación devuelve (positiva):
+      // lo vendido es el neto. No es una entrega ni una devolución a la principal.
+      if (movement.type === 'SALE' || movement.type === 'RETURN') {
+        const net = movement.type === 'SALE' ? units : -units;
+        row.sold += net;
+        bucket.sold += net;
+        bucket.products.set(rowKey, row);
+        categories.set(categoryName, bucket);
+        continue;
+      }
       const sign = movement.quantity > 0 ? 1 : -1;
       if (sign > 0) {
         row.delivered += units;
@@ -542,6 +629,7 @@ export class RetailStockCountsService {
     return {
       delivered: list.reduce((sum, bucket) => sum + bucket.delivered, 0),
       returned: list.reduce((sum, bucket) => sum + bucket.returned, 0),
+      sold: list.reduce((sum, bucket) => sum + bucket.sold, 0),
       valueAtPriceCOP: list.reduce((sum, row) => sum + row.valueAtPriceCOP, 0),
       valueAtCostCOP: list.reduce((sum, row) => sum + row.valueAtCostCOP, 0),
       categories: list,
@@ -649,6 +737,150 @@ export class RetailStockCountsService {
     return customer.id;
   }
 
+  /** Un cliente elegido a mano para la venta; se recuerda en la bodega si no tenía. */
+  private async useCustomer(
+    ctx: TenantContext,
+    location: { id: string; customerId: string | null },
+    customerId: string,
+  ): Promise<string> {
+    const customer = await this.prisma.retailCustomer.findFirst({
+      where: {
+        id: customerId,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!customer) throw new BadRequestException('Ese cliente no existe');
+    if (!location.customerId) {
+      await this.prisma.retailStockLocation.update({
+        where: { id: location.id },
+        data: { customerId: customer.id },
+      });
+    }
+    return customer.id;
+  }
+
+  /**
+   * Asocia a una revista cerrada la venta que se hizo por separado en el
+   * mostrador, el doble proceso de antes.
+   *
+   * SOLO REVISTAS SIN VENTA. Una revista que ya creó la suya no se toca. Las que
+   * quedan sin venta son las de exhibición cerradas con la regla anterior, que
+   * movieron lo que faltaba a la principal.
+   *
+   * EL DOBLE DESCUENTO. Si la venta se hizo escogiendo la bodega, esas unidades
+   * salieron DOS veces de ella (la revista las movió a la principal y la venta
+   * las descontó otra vez) y la principal quedó con unidades que no existen.
+   * Con `fixInventory` se devuelven de la principal a la bodega, que es un
+   * traslado normal y deja rastro en el kardex. Una venta hecha desde la
+   * principal ya cuadra: solo se asocia.
+   */
+  async linkSale(
+    ctx: TenantContext,
+    countId: string,
+    dto: LinkRetailStockCountSaleDto,
+  ) {
+    await this.tenantHelper.assertRetailTenant(ctx.tenantId);
+    const count = await this.findCount(ctx, countId);
+    if (count.status !== 'CLOSED') {
+      throw new BadRequestException('Solo se asocia a una revista cerrada');
+    }
+    if (count.settlementSaleId) {
+      throw new BadRequestException('Esta revista ya tiene su venta');
+    }
+    if (modeOf(count.location) === 'PRINCIPAL') {
+      throw new BadRequestException(
+        'La bodega principal no genera ventas: su diferencia es un ajuste',
+      );
+    }
+    const sale = await this.prisma.retailSale.findFirst({
+      where: {
+        id: dto.saleId,
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+      },
+      include: { items: true },
+    });
+    if (!sale) throw new NotFoundException('Venta no encontrada');
+    if (sale.status === 'VOIDED') {
+      throw new BadRequestException('Esa venta está anulada');
+    }
+    const taken = await this.prisma.retailStockCount.findFirst({
+      where: { settlementSaleId: sale.id },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new BadRequestException('Esa venta ya está asociada a una revista');
+    }
+
+    // Lo que la revista sacó de la bodega por línea, contra lo que esa venta
+    // descontó de la misma bodega: el mínimo de las dos es lo que se contó doble.
+    const principal = await this.prisma.retailStockLocation.findFirst({
+      where: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        isDefault: true,
+      },
+      select: { id: true },
+    });
+    const corrections: {
+      productId: string;
+      variantId: string | null;
+      name: string;
+      variantLabel: string | null;
+      quantity: number;
+    }[] = [];
+    for (const line of count.lines) {
+      const missing = line.expectedQty - effectiveCount(line);
+      if (missing <= 0) continue;
+      const soldFromHere = sale.items
+        .filter(
+          (item) =>
+            item.productId === line.productId &&
+            (item.variantId ?? null) === (line.variantId ?? null) &&
+            item.locationId === count.locationId,
+        )
+        .reduce((sum, item) => sum + item.quantity, 0);
+      const quantity = Math.min(missing, soldFromHere);
+      if (quantity > 0) {
+        corrections.push({
+          productId: line.productId,
+          variantId: line.variantId ?? null,
+          name: line.name,
+          variantLabel: line.variantLabel ?? null,
+          quantity,
+        });
+      }
+    }
+
+    const result = {
+      sale: { id: sale.id, code: sale.code, totalCOP: sale.totalCOP },
+      corrections,
+      correctedUnits: corrections.reduce((sum, row) => sum + row.quantity, 0),
+    };
+    if (dto.dryRun) return { ...result, linked: false };
+
+    if (dto.fixInventory && corrections.length > 0 && principal) {
+      await this.locations.transfer(ctx, {
+        fromLocationId: principal.id,
+        toLocationId: count.locationId,
+        items: corrections.map((row) => ({
+          productId: row.productId,
+          variantId: row.variantId ?? undefined,
+          quantity: row.quantity,
+        })),
+        note: `Corrección: ${sale.code} ya descontó lo de la revista`,
+      });
+    }
+    await this.prisma.retailStockCount.update({
+      where: { id: count.id },
+      data: { settlementSaleId: sale.id },
+    });
+    return { ...result, linked: true, fixed: Boolean(dto.fixInventory) };
+  }
+
   /** Las del aliado si tiene propias; si no, las de la tienda. */
   private async tiersFor(
     ctx: TenantContext,
@@ -719,7 +951,10 @@ export function summarize(
       extraUnits += diff;
     }
   }
-  const soldValueCOP = mode === 'ALLY' ? missingValueCOP : 0;
+  // Lo que falta se vendió en toda bodega que no es la principal. El descuento
+  // por escala es solo del aliado.
+  const sells = mode !== 'PRINCIPAL';
+  const soldValueCOP = sells ? missingValueCOP : 0;
   const discountPct =
     mode === 'ALLY' ? allyDiscountPct(tiers, soldValueCOP) : 0;
   const discountCOP = Math.round((soldValueCOP * discountPct) / 100);
@@ -728,7 +963,7 @@ export function summarize(
     countedUnits,
     missingUnits,
     extraUnits,
-    soldUnits: mode === 'ALLY' ? missingUnits : 0,
+    soldUnits: sells ? missingUnits : 0,
     soldValueCOP,
     discountPct,
     discountCOP,

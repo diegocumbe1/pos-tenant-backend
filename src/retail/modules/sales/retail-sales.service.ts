@@ -225,6 +225,8 @@ export class RetailSalesService {
       search?: string;
       /** Ventas con al menos una línea que salió de esa bodega. */
       locationId?: string;
+      /** Solo las ventas de este cliente (estado de cuenta). */
+      customerId?: string;
     } = {},
   ) {
     await this.tenantHelper.assertRetailTenant(ctx.tenantId);
@@ -232,6 +234,7 @@ export class RetailSalesService {
       where: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        ...(filters.customerId ? { customerId: filters.customerId } : {}),
         ...this.searchWhere(filters.search),
         ...(filters.saleType ? { saleType: filters.saleType } : {}),
         ...locationWhere(filters.locationId),
