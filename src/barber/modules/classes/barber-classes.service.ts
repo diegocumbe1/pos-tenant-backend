@@ -27,6 +27,20 @@ import {
 } from './dto/barber-class.dto';
 
 /** Estados de cita que NO ocupan cupo: la persona ya no va. */
+/** Una persona que va a una clase, en resumen (para verla sin abrirla). */
+export interface ClassPerson {
+  customerId: string;
+  /** La cita de esta clase; null = fija que todavía no tiene cita. */
+  appointmentId: string | null;
+  name: string;
+  /** FIXED = inscripción fija · ONE_OFF = se agregó solo a esta clase. */
+  kind: 'FIXED' | 'ONE_OFF';
+  attended: boolean;
+  absent: boolean;
+  /** Sesiones que le quedan de su plan; null = sin plan o sin tope. */
+  sessionsLeft: number | null;
+}
+
 const FREED_STATUSES = ['CANCELLED', 'cancelled', 'REJECTED', 'rejected'];
 const MAX_RANGE_DAYS = 62;
 const WEEKDAY_NAMES = [
@@ -751,6 +765,7 @@ export class BarberClassesService {
     from: string,
     to: string,
     customerId?: string,
+    withPeople = false,
   ) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
     if (to < from) throw new BadRequestException('Rango inválido');
@@ -773,7 +788,7 @@ export class BarberClassesService {
             select: { id: true, name: true, color: true, priceCOP: true },
           },
           staff: { select: { id: true, name: true } },
-          enrollments: true,
+          enrollments: { include: { customer: { select: { name: true } } } },
         },
       }),
       this.prisma.barberClassSession.findMany({
@@ -783,7 +798,12 @@ export class BarberClassesService {
           staff: { select: { id: true, name: true } },
           attendees: {
             where: { status: { notIn: FREED_STATUSES } },
-            select: { customerId: true },
+            select: {
+              id: true,
+              customerId: true,
+              status: true,
+              customer: { select: { name: true } },
+            },
           },
         },
       }),
@@ -833,8 +853,69 @@ export class BarberClassesService {
       overBy: number;
       /** Con filtro por cliente: si va por inscripción fija o reserva puntual. */
       customerMatch?: 'FIXED' | 'BOOKED';
+      people?: ClassPerson[];
     };
     const rows: Row[] = [];
+
+    // Quiénes van: los que ya tienen cita (puntual o fija) y los fijos que aún
+    // no la tienen. Un fijo con cita cuenta como Fija.
+    const peopleOf = (
+      scheduleId: string | null,
+      day: string,
+      attendees: Array<{
+        id: string;
+        customerId: string | null;
+        status: string;
+        customer: { name: string } | null;
+      }>,
+    ): ClassPerson[] => {
+      const fixed = new Set(
+        (scheduleId ? (scheduleById.get(scheduleId)?.enrollments ?? []) : [])
+          .filter(
+            (e) =>
+              dayOf(e.activeFrom)! <= day &&
+              (!e.activeUntil || dayOf(e.activeUntil)! >= day),
+          )
+          .map((e) => e.customerId),
+      );
+      const out: ClassPerson[] = [];
+      const seen = new Set<string>();
+      for (const a of attendees) {
+        if (!a.customerId || seen.has(a.customerId)) continue;
+        seen.add(a.customerId);
+        const status = a.status.toUpperCase();
+        out.push({
+          customerId: a.customerId,
+          appointmentId: a.id,
+          name: a.customer?.name ?? 'Sin nombre',
+          kind: fixed.has(a.customerId) ? 'FIXED' : 'ONE_OFF',
+          attended: status === 'COMPLETED',
+          absent: status === 'NO_SHOW',
+          sessionsLeft: null,
+        });
+      }
+      for (const e of scheduleId
+        ? (scheduleById.get(scheduleId)?.enrollments ?? [])
+        : []) {
+        if (seen.has(e.customerId)) continue;
+        if (
+          dayOf(e.activeFrom)! > day ||
+          (e.activeUntil && dayOf(e.activeUntil)! < day)
+        )
+          continue;
+        seen.add(e.customerId);
+        out.push({
+          customerId: e.customerId,
+          appointmentId: null,
+          name: e.customer.name,
+          kind: 'FIXED',
+          attended: false,
+          absent: false,
+          sessionsLeft: null,
+        });
+      }
+      return out;
+    };
 
     const expectedFor = (
       scheduleId: string | null,
@@ -901,6 +982,9 @@ export class BarberClassesService {
         spotsLeft: Math.max(0, session.capacity - booked.size - expected),
         overBy: Math.max(0, booked.size + expected - session.capacity),
         customerMatch: match,
+        ...(withPeople
+          ? { people: peopleOf(session.scheduleId, day, session.attendees) }
+          : {}),
       });
     }
 
@@ -936,6 +1020,7 @@ export class BarberClassesService {
           spotsLeft: Math.max(0, schedule.capacity - expected),
           overBy: Math.max(0, expected - schedule.capacity),
           customerMatch: match,
+          ...(withPeople ? { people: peopleOf(schedule.id, day, []) } : {}),
         });
       }
     }
@@ -943,8 +1028,46 @@ export class BarberClassesService {
     // Un entrenador ve la clase si le toca a él, también cuando lo cambiaron solo
     // para ese día: manda el entrenador de la clase, no el del horario.
     const own = await this.tenantHelper.trainerStaffId(ctx);
-    return (own ? rows.filter((row) => row.staffId === own) : rows).sort(
-      (a, b) => a.startsAt.localeCompare(b.startsAt),
+    const visible = (
+      own ? rows.filter((row) => row.staffId === own) : rows
+    ).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    if (withPeople && !own) await this.fillSessionsLeft(ctx, visible);
+    return visible;
+  }
+
+  /**
+   * Cuántas sesiones le quedan a cada persona en su plan ese día. Una consulta
+   * por persona y día (con memoria), no por clase. El entrenador no lo ve.
+   */
+  private async fillSessionsLeft(
+    ctx: TenantContext,
+    rows: Array<{ startsAt: string; people?: ClassPerson[] }>,
+  ) {
+    const cache = new Map<string, Promise<number | null>>();
+    const left = (customerId: string, day: string) => {
+      const key = `${customerId}|${day}`;
+      let hit = cache.get(key);
+      if (!hit) {
+        hit = this.charges
+          .findCoveringCharge(this.prisma, ctx, customerId, day)
+          .then((c) =>
+            c && c.sessionsTotal !== null
+              ? c.sessionsTotal - c._count.coveredAppointments
+              : null,
+          );
+        cache.set(key, hit);
+      }
+      return hit;
+    };
+    await Promise.all(
+      rows.flatMap((row) =>
+        (row.people ?? []).map(async (p) => {
+          p.sessionsLeft = await left(
+            p.customerId,
+            calendarDayCO(new Date(row.startsAt)),
+          );
+        }),
+      ),
     );
   }
 

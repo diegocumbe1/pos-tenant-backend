@@ -97,7 +97,10 @@ export class BarberClassesController {
   // solo el dueño; se le da a otros roles desde Roles y permisos.
   @Delete('schedules/:id/permanent')
   @RequirePermissions('barber:classes:delete')
-  deleteSchedulePermanently(@CurrentTenant() ctx: TenantContext, @Param('id') id: string) {
+  deleteSchedulePermanently(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+  ) {
     return this.classes.deleteSchedulePermanently(ctx, id);
   }
 
@@ -148,7 +151,13 @@ export class BarberClassesController {
     @CurrentTenant() ctx: TenantContext,
     @Query() query: ListBarberClassSessionsQueryDto,
   ) {
-    return this.classes.listSessions(ctx, query.from, query.to, query.customerId);
+    return this.classes.listSessions(
+      ctx,
+      query.from,
+      query.to,
+      query.customerId,
+      query.people === 'true',
+    );
   }
 
   // La clase va por sessionId o por scheduleId + startsAt (si aún no existe).

@@ -105,6 +105,11 @@ export class ListBarberClassSessionsQueryDto {
   @IsOptional()
   @IsString()
   customerId?: string;
+
+  // 'true' = cada clase trae quiénes van (fija/puntual, vino, sesiones que le quedan).
+  @IsOptional()
+  @IsString()
+  people?: string;
 }
 
 /**
