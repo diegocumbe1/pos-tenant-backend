@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -16,8 +17,20 @@ import { resolvePublicBookingCopy } from '../../shared/public-booking-copy';
 import {
   BarberGalleryItemDto,
   BarberStatDto,
+  SaveLoyaltyDto,
   UpdateBarberSettingsDto,
 } from './dto/barber-settings.dto';
+import {
+  FeatureOverrides,
+  resolveFeatureValue,
+} from '../../../platform/plans/plan-features';
+
+export interface LoyaltyRule {
+  id: string;
+  everyNVisits: number;
+  discountPercent: number;
+  label: string;
+}
 
 type SettingsWithRelations = Prisma.BarberSettingsGetPayload<{
   include: {
@@ -36,6 +49,88 @@ export class BarberSettingsService {
   async getSettings(ctx: TenantContext) {
     const settings = await this.ensureSettings(ctx);
     return this.toSettingsDto(settings);
+  }
+
+  // ─── Lealtad ───────────────────────────────────────────────────────────────
+  //
+  // Solo se guardan las reglas: nada descuenta todavía. La función no viene de
+  // fábrica: la habilita el plan (`loyaltyProgram`) o el super-admin, fija o por
+  // días. Leer siempre se puede (devuelve `allowed`); guardar exige estar
+  // habilitada.
+
+  async getLoyalty(ctx: TenantContext) {
+    const settings = await this.ensureSettings(ctx);
+    return {
+      allowed: await this.loyaltyAllowed(ctx.tenantId),
+      enabled: settings.loyaltyEnabled,
+      rules: this.toLoyaltyRules(settings.loyaltyRules),
+    };
+  }
+
+  async saveLoyalty(ctx: TenantContext, dto: SaveLoyaltyDto) {
+    if (!(await this.loyaltyAllowed(ctx.tenantId))) {
+      throw new ForbiddenException(
+        'El programa de lealtad no está habilitado para este negocio',
+      );
+    }
+    await this.ensureSettings(ctx);
+    const rules: LoyaltyRule[] = dto.rules.map((rule) => ({
+      id: rule.id?.trim() || `rule-${randomUUID().slice(0, 8)}`,
+      everyNVisits: rule.everyNVisits,
+      discountPercent: rule.discountPercent,
+      label: rule.label.trim(),
+    }));
+    const updated = await this.prisma.barberSettings.update({
+      where: { branchId: ctx.branchId },
+      data: {
+        loyaltyEnabled: dto.enabled,
+        loyaltyRules: rules as unknown as Prisma.InputJsonValue,
+      },
+    });
+    return {
+      allowed: true,
+      enabled: updated.loyaltyEnabled,
+      rules: this.toLoyaltyRules(updated.loyaltyRules),
+    };
+  }
+
+  private async loyaltyAllowed(tenantId: string): Promise<boolean> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { plan: true, featureOverrides: true },
+    });
+    if (!tenant) return false;
+    return Boolean(
+      resolveFeatureValue(
+        tenant.plan,
+        'loyaltyProgram',
+        tenant.featureOverrides as FeatureOverrides | null,
+      ),
+    );
+  }
+
+  private toLoyaltyRules(value: Prisma.JsonValue | null): LoyaltyRule[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const rule = item as Record<string, unknown>;
+      if (
+        typeof rule.id !== 'string' ||
+        typeof rule.everyNVisits !== 'number' ||
+        typeof rule.discountPercent !== 'number' ||
+        typeof rule.label !== 'string'
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: rule.id,
+          everyNVisits: rule.everyNVisits,
+          discountPercent: rule.discountPercent,
+          label: rule.label,
+        },
+      ];
+    });
   }
 
   async updateSettings(ctx: TenantContext, dto: UpdateBarberSettingsDto) {

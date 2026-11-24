@@ -49,6 +49,7 @@ import {
 } from './dto/platform.dto';
 import {
   FeatureOverrides,
+  overrideUntilKey,
   PLAN_FEATURES,
   resolveEffectiveFeatures,
   resolveFeatureValue,
@@ -398,10 +399,21 @@ export class PlatformService {
     const overrides = this.readOverrides(tenant.featureOverrides);
     const before = { ...overrides };
 
+    // Cualquier cambio reemplaza una activación temporal anterior.
+    const untilKey = overrideUntilKey(dto.feature);
+    delete overrides[untilKey];
     if (dto.value === null) {
       delete overrides[dto.feature];
     } else {
       overrides[dto.feature] = dto.value;
+      if (dto.days != null) {
+        if (dto.value !== true) {
+          throw new BadRequestException(
+            'Los días de vigencia solo aplican al activar (value=true)',
+          );
+        }
+        overrides[untilKey] = Date.now() + dto.days * 24 * 60 * 60 * 1000;
+      }
     }
 
     const updated = await this.prisma.tenant.update({

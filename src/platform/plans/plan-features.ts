@@ -168,6 +168,36 @@ export function planDefaults(plan: string): Record<string, FeatureValue> {
   return { ...PLAN_FEATURES[code], ...(editedDefaults[code] ?? {}) };
 }
 
+// ─── Activación temporal de una feature ──────────────────────────────────────
+//
+// El super-admin puede encender una feature "por X días" (p. ej. probar la
+// lealtad antes de que el cliente pague el plan que la incluye). Se guarda en
+// el mismo JSON de overrides: `<feature>: true` + `<feature>Until: <epoch ms>`.
+// Pasada la fecha el override deja de contar y la feature vuelve a lo que diga
+// el plan. No hay job de limpieza: el vencimiento se evalúa al resolver.
+
+export const OVERRIDE_UNTIL_SUFFIX = 'Until';
+
+export function overrideUntilKey(feature: string): string {
+  return `${feature}${OVERRIDE_UNTIL_SUFFIX}`;
+}
+
+/** Overrides vigentes: sin los vencidos. Los `…Until` activos se conservan. */
+export function activeOverrides(
+  featureOverrides?: FeatureOverrides | null,
+  now: number = Date.now(),
+): FeatureOverrides {
+  const result: FeatureOverrides = { ...(featureOverrides ?? {}) };
+  for (const key of Object.keys(result)) {
+    if (!key.endsWith(OVERRIDE_UNTIL_SUFFIX)) continue;
+    const until = result[key];
+    if (typeof until !== 'number' || until > now) continue;
+    delete result[key];
+    delete result[key.slice(0, -OVERRIDE_UNTIL_SUFFIX.length)];
+  }
+  return result;
+}
+
 /**
  * Features efectivos de un tenant = defaults del plan + overrides del tenant.
  * Espeja `resolveTenantFeatures` del FE (`lib/plans.ts`).
@@ -180,7 +210,7 @@ export function resolveEffectiveFeatures(
 ): Record<string, FeatureValue> {
   const features = {
     ...planDefaults(plan),
-    ...(featureOverrides ?? {}),
+    ...activeOverrides(featureOverrides),
   };
   if (!assistantEnabledForVertical(vertical)) features.aiChat = false;
   return features;
@@ -197,7 +227,7 @@ export function resolveFeatureValue(
   vertical?: string | null,
 ): FeatureValue {
   if (feature === 'aiChat' && !assistantEnabledForVertical(vertical)) return false;
-  const override = featureOverrides?.[feature];
+  const override = activeOverrides(featureOverrides)[feature];
   if (override !== undefined) return override;
   return planDefaults(plan)[feature];
 }

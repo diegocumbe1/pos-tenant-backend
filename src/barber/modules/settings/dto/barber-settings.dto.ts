@@ -5,12 +5,16 @@ import {
   IsBoolean,
   IsHexColor,
   IsIn,
+  IsInt,
+  IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
   IsUrl,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -332,4 +336,38 @@ export class UpdateBarberSettingsDto {
   @ValidateNested()
   @Type(() => BarberInstagramDto)
   instagram?: BarberInstagramDto;
+}
+
+export class LoyaltyRuleDto {
+  // Opcional al crear: el servidor asigna uno.
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  id?: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  everyNVisits!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  discountPercent!: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(60)
+  label!: string;
+}
+
+export class SaveLoyaltyDto {
+  @IsBoolean()
+  enabled!: boolean;
+
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => LoyaltyRuleDto)
+  rules!: LoyaltyRuleDto[];
 }

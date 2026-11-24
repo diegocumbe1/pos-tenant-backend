@@ -223,6 +223,8 @@ model BarberSettings {
   publicProfilePublished Boolean  @default(true)
   whatsappEnabled        Boolean  @default(false)
   loyaltyEnabled         Boolean  @default(false)
+  // Reglas de fidelidad del negocio: [{ id, everyNVisits, discountPercent, label }].
+  loyaltyRules           Json     @default("[]")
   themeTemplateId        String   @default("studio")
   themePrimaryColor      String   @default("#6366f1")
   themeAccentColor       String   @default("#22c55e")

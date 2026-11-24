@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Put, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { CurrentTenant } from '../../../auth/decorators/current-tenant.decorator';
 import { RequirePermissions } from '../../../auth/decorators/require-permissions.decorator';
@@ -8,7 +8,10 @@ import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberSettingsService } from './barber-settings.service';
-import { UpdateBarberSettingsDto } from './dto/barber-settings.dto';
+import {
+  SaveLoyaltyDto,
+  UpdateBarberSettingsDto,
+} from './dto/barber-settings.dto';
 
 @ApiTags('Barber')
 @ApiBearerAuth()
@@ -32,5 +35,20 @@ export class BarberSettingsController {
     @Body() dto: UpdateBarberSettingsDto,
   ) {
     return this.settingsService.updateSettings(ctx, dto);
+  }
+
+  @Get('loyalty')
+  @RequirePermissions('barber:settings:read')
+  getLoyalty(@CurrentTenant() ctx: TenantContext) {
+    return this.settingsService.getLoyalty(ctx);
+  }
+
+  @Put('loyalty')
+  @RequirePermissions('barber:settings:write')
+  saveLoyalty(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: SaveLoyaltyDto,
+  ) {
+    return this.settingsService.saveLoyalty(ctx, dto);
   }
 }

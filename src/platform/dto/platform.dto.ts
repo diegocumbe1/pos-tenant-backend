@@ -205,6 +205,15 @@ export class SetFeatureOverrideDto {
   })
   @Allow()
   value!: boolean | number | null;
+
+  // Solo con value=true: la feature queda activa por esa cantidad de días y
+  // luego vuelve a lo que diga el plan. Sin días, queda hasta que se cambie.
+  @ApiPropertyOptional({ description: 'Días de vigencia (solo con value=true)' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  days?: number;
 }
 
 export class SetTenantStatusDto {
