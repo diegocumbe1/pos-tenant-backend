@@ -32,7 +32,8 @@
     "db:seed": "ts-node prisma/seed.ts",
     "seed:jimcell": "ts-node scripts/seed-jimcell.ts",
     "seed:casehub": "ts-node scripts/seed-casehub.ts",
-    "seed:qa-showcase": "ts-node scripts/seed-qa-showcase.ts"
+    "seed:qa-showcase": "ts-node scripts/seed-qa-showcase.ts",
+    "demo:new": "ts-node scripts/demo-new.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

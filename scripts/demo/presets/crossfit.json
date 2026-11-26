@@ -1,0 +1,72 @@
+{
+  "id": "crossfit",
+  "label": "Box de CrossFit (clases por hora + open box)",
+  "vertical": "vertical-barber",
+  "bookingMode": "fitness",
+  "tagline": "Reserva tu clase en un minuto",
+  "highlights": ["Reserva en línea", "Cupos por clase", "Recordatorio por WhatsApp"],
+  "theme": { "primary": "#0f766e", "accent": "#d4a017", "ink": "#0b1215" },
+  "hours": {
+    "monday": [{ "start": "05:00", "end": "21:00" }],
+    "tuesday": [{ "start": "05:00", "end": "21:00" }],
+    "wednesday": [{ "start": "05:00", "end": "21:00" }],
+    "thursday": [{ "start": "05:00", "end": "21:00" }],
+    "friday": [{ "start": "05:00", "end": "21:00" }],
+    "saturday": [{ "start": "07:00", "end": "10:00" }],
+    "sunday": []
+  },
+  "staff": [
+    { "name": "Coach Demo 1", "color": "#0f766e" },
+    { "name": "Coach Demo 2", "color": "#d4a017" }
+  ],
+  "classes": [
+    {
+      "name": "Clase de CrossFit",
+      "description": "Clase dirigida de una hora: calentamiento, fuerza y WOD.",
+      "durationMin": 60,
+      "capacity": 14,
+      "priceCOP": 15000,
+      "color": "#0f766e",
+      "slots": [
+        { "weekday": [1, 2, 3, 4, 5], "time": "05:00", "coach": 0 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "06:00", "coach": 0 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "07:00", "coach": 0 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "08:00", "coach": 0 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "17:00", "coach": 1 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "18:00", "coach": 1 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "19:00", "coach": 1 },
+        { "weekday": [1, 2, 3, 4, 5], "time": "20:00", "coach": 1 },
+        { "weekday": 6, "time": "07:00", "coach": 0 }
+      ]
+    },
+    {
+      "name": "Open de box",
+      "description": "Espacio libre para entrenar por tu cuenta con el box abierto.",
+      "durationMin": 120,
+      "capacity": 20,
+      "priceCOP": 10000,
+      "color": "#d4a017",
+      "slots": [
+        { "weekday": [1, 2, 3, 4, 5], "time": "09:00", "coach": 0 },
+        { "weekday": 6, "time": "08:00", "coach": 0 }
+      ]
+    }
+  ],
+  "plans": [
+    { "name": "Mensualidad ilimitada", "kind": "PLAN", "priceCOP": 130000, "validityDays": 30, "description": "Todas las clases y el open de box del mes." },
+    { "name": "Plan 12 clases al mes", "kind": "PLAN", "priceCOP": 100000, "validityDays": 30, "sessionsPerMonth": 12, "description": "Hasta 12 clases por mes de plan." },
+    { "name": "Paquete 10 clases", "kind": "PACKAGE", "priceCOP": 120000, "validityDays": 60, "sessionsIncluded": 10, "description": "10 clases para usar en 60 días." }
+  ],
+  "customers": [
+    { "plan": 0, "startedDaysAgo": 12, "paid": "full", "attendance": 0.9 },
+    { "plan": 0, "startedDaysAgo": 27, "paid": "full", "attendance": 0.7 },
+    { "plan": 0, "startedDaysAgo": 5, "paid": "full", "attendance": 0.8 },
+    { "plan": 1, "startedDaysAgo": 8, "paid": "full", "attendance": 0.6 },
+    { "plan": 1, "startedDaysAgo": 20, "paid": "partial", "attendance": 0.5 },
+    { "plan": 2, "startedDaysAgo": 15, "paid": "full", "attendance": 0.4 },
+    { "plan": 0, "startedDaysAgo": 29, "paid": "full", "attendance": 0.3 },
+    { "plan": 1, "startedDaysAgo": 3, "paid": "full", "attendance": 0.6 },
+    { "plan": null, "startedDaysAgo": 0, "paid": "none", "attendance": 0.2 },
+    { "plan": null, "startedDaysAgo": 0, "paid": "none", "attendance": 0.2 }
+  ]
+}

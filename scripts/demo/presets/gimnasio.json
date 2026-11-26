@@ -1,0 +1,81 @@
+{
+  "id": "gimnasio",
+  "label": "Gimnasio / box con clases",
+  "vertical": "vertical-barber",
+  "bookingMode": "fitness",
+  "tagline": "Reserva tu clase en un minuto",
+  "highlights": ["Reserva en línea", "Cupos por clase", "Recordatorio por WhatsApp"],
+  "theme": { "primary": "#ea580c", "accent": "#facc15", "ink": "#1c1917" },
+  "hours": {
+    "monday": [{ "start": "05:30", "end": "21:00" }],
+    "tuesday": [{ "start": "05:30", "end": "21:00" }],
+    "wednesday": [{ "start": "05:30", "end": "21:00" }],
+    "thursday": [{ "start": "05:30", "end": "21:00" }],
+    "friday": [{ "start": "05:30", "end": "20:00" }],
+    "saturday": [{ "start": "07:00", "end": "13:00" }],
+    "sunday": []
+  },
+  "staff": [
+    { "name": "Coach Demo 1", "color": "#f97316" },
+    { "name": "Coach Demo 2", "color": "#3b82f6" }
+  ],
+  "classes": [
+    {
+      "name": "CrossFit",
+      "description": "Entrenamiento funcional de alta intensidad.",
+      "durationMin": 60,
+      "capacity": 12,
+      "priceCOP": 25000,
+      "color": "#ea580c",
+      "slots": [
+        { "weekday": 1, "time": "06:00", "coach": 0 },
+        { "weekday": 3, "time": "06:00", "coach": 0 },
+        { "weekday": 5, "time": "06:00", "coach": 0 },
+        { "weekday": 1, "time": "18:00", "coach": 1 },
+        { "weekday": 2, "time": "18:00", "coach": 1 },
+        { "weekday": 3, "time": "18:00", "coach": 1 },
+        { "weekday": 4, "time": "18:00", "coach": 1 }
+      ]
+    },
+    {
+      "name": "Funcional",
+      "description": "Fuerza y movilidad para todos los niveles.",
+      "durationMin": 50,
+      "capacity": 10,
+      "priceCOP": 20000,
+      "color": "#3b82f6",
+      "slots": [
+        { "weekday": 2, "time": "07:00", "coach": 1 },
+        { "weekday": 4, "time": "07:00", "coach": 1 },
+        { "weekday": 6, "time": "08:00", "coach": 0 }
+      ]
+    },
+    {
+      "name": "Cardio y core",
+      "description": "Resistencia y abdomen en 45 minutos.",
+      "durationMin": 45,
+      "capacity": 15,
+      "priceCOP": 18000,
+      "color": "#22c55e",
+      "slots": [
+        { "weekday": 1, "time": "19:00", "coach": 0 },
+        { "weekday": 3, "time": "19:00", "coach": 0 }
+      ]
+    }
+  ],
+  "plans": [
+    { "name": "Plan mensual ilimitado", "kind": "PLAN", "priceCOP": 140000, "validityDays": 30, "description": "Todas las clases del mes." },
+    { "name": "Plan 12 clases al mes", "kind": "PLAN", "priceCOP": 110000, "validityDays": 30, "sessionsPerMonth": 12, "description": "Hasta 12 clases por mes de plan." },
+    { "name": "Paquete 10 clases", "kind": "PACKAGE", "priceCOP": 160000, "validityDays": 60, "sessionsIncluded": 10, "description": "10 clases para usar en 60 días." }
+  ],
+  "customers": [
+    { "plan": 0, "startedDaysAgo": 12, "paid": "full", "attendance": 0.8 },
+    { "plan": 0, "startedDaysAgo": 27, "paid": "full", "attendance": 0.6 },
+    { "plan": 1, "startedDaysAgo": 8, "paid": "full", "attendance": 0.7 },
+    { "plan": 1, "startedDaysAgo": 20, "paid": "partial", "attendance": 0.5 },
+    { "plan": 2, "startedDaysAgo": 15, "paid": "full", "attendance": 0.4 },
+    { "plan": 0, "startedDaysAgo": 29, "paid": "full", "attendance": 0.3 },
+    { "plan": null, "startedDaysAgo": 0, "paid": "none", "attendance": 0.2 },
+    { "plan": null, "startedDaysAgo": 0, "paid": "none", "attendance": 0.2 }
+  ]
+}
