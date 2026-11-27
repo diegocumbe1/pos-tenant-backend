@@ -65,6 +65,20 @@ export class TenantMembershipsController {
     return this.memberships.grant(id, dto, actor.id);
   }
 
+  @Post(':membershipId/make-primary')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Make this business the primary one for that person (swaps with the old primary)',
+  })
+  makePrimary(
+    @Param('id') id: string,
+    @Param('membershipId') membershipId: string,
+    @PlatformActor() actor: AuthenticatedUser,
+  ) {
+    return this.memberships.makePrimary(id, membershipId, actor.id);
+  }
+
   @Delete(':membershipId')
   @ApiOperation({ summary: 'Remove that access' })
   revoke(

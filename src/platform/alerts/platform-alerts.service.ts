@@ -18,6 +18,13 @@ import {
   billingGroupText,
   PendingInstallment,
 } from './billing-alert-rules';
+import {
+  ACTIVATION_REQUEST_ALERT,
+  PlatformPushMessage,
+  VERTICAL_ADDED_ALERT,
+  PushResult,
+  sendPlatformPush,
+} from './platform-push';
 
 const TICK_MS = 15 * 60_000;
 /** Un aviso de cobro a las 3 a. m. no le sirve a nadie. */
@@ -26,11 +33,7 @@ const LAST_HOUR = 20;
 const OPEN_STATUSES = ['TRIALING', 'ACTIVE', 'PAST_DUE'] as const;
 const ALERTS_PAGE = '/admin/alerts';
 
-export interface PushResult {
-  sent: number;
-  failed: number;
-  inactive: number;
-}
+export type { PushResult } from './platform-push';
 
 const tenantUrl = (tenantId: string) => `/admin/tenants/${tenantId}`;
 
@@ -259,8 +262,24 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
         nextPaymentDueAt: true,
         currentPeriodEnd: true,
         graceEndsAt: true,
+        tenant: { select: { status: true } },
       },
     });
+    // Una solicitud de activación sigue abierta mientras el negocio siga sin poder
+    // operar; al activarlo desde la ficha queda resuelta sola.
+    const locked = new Map(
+      subscriptions.map((sub) => [
+        sub.tenantId,
+        sub.tenant.status !== 'ACTIVE' ||
+          !(OPEN_STATUSES as readonly string[]).includes(sub.status),
+      ]),
+    );
+    const trialing = new Map(
+      subscriptions.map((sub) => [
+        sub.tenantId,
+        sub.tenant.status === 'ACTIVE' && sub.status === 'TRIALING',
+      ]),
+    );
     const currentDue = new Map(
       subscriptions.map((sub) => [
         sub.tenantId,
@@ -272,6 +291,17 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
     const unread = await this.prisma.platformAlert.count({
       where: { readAt: null },
     });
+    const isOpen = (alert: (typeof alerts)[number]) => {
+      if (alert.type === ACTIVATION_REQUEST_ALERT) {
+        return locked.get(alert.tenantId) ?? true;
+      }
+      if (alert.type === VERTICAL_ADDED_ALERT) {
+        // Sigue abierta mientras el negocio nuevo siga en prueba sin decidir.
+        return trialing.get(alert.tenantId) ?? false;
+      }
+      // Si el vencimiento ya no es ese, pagó o se suspendió: ya no hay nada que hacer.
+      return currentDue.get(alert.tenantId) === alert.dueDay;
+    };
     return {
       unread,
       alerts: alerts.map((alert) => ({
@@ -284,8 +314,7 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
         url: alert.url,
         read: !!alert.readAt,
         createdAt: alert.createdAt.toISOString(),
-        // Si el vencimiento ya no es ese, pagó o se suspendió: ya no hay nada que hacer.
-        open: currentDue.get(alert.tenantId) === alert.dueDay,
+        open: isOpen(alert),
       })),
     };
   }
@@ -351,59 +380,16 @@ export class PlatformAlertsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** A los super-admin activos, salvo que se pida uno. Nunca lanza por un dispositivo. */
-  private async sendPush(
-    message: {
-      title: string;
-      body: string;
-      url: string;
-      data: Record<string, unknown>;
-    },
+  private sendPush(
+    message: PlatformPushMessage,
     onlyUserId?: string,
   ): Promise<PushResult> {
-    const result: PushResult = { sent: 0, failed: 0, inactive: 0 };
-    if (!this.webPush.isConfigured()) {
-      if (onlyUserId) this.webPush.getPublicKey();
-      this.logger.warn('Avisos de cobro sin push: faltan las claves VAPID');
-      return result;
-    }
-    const admins = await this.prisma.user.findMany({
-      where: {
-        isPlatformAdmin: true,
-        isActive: true,
-        ...(onlyUserId ? { id: onlyUserId } : {}),
-      },
-      select: { id: true },
-    });
-    const devices = await this.prisma.platformPushSubscription.findMany({
-      where: { userId: { in: admins.map((a) => a.id) }, isActive: true },
-    });
-    for (const device of devices) {
-      try {
-        await this.webPush.send(
-          {
-            endpoint: device.endpoint,
-            p256dh: device.p256dh,
-            auth: device.auth,
-          },
-          message,
-        );
-        result.sent += 1;
-      } catch (error) {
-        const statusCode = (error as { statusCode?: number })?.statusCode;
-        if (statusCode === 404 || statusCode === 410) {
-          result.inactive += 1;
-          await this.prisma.platformPushSubscription.update({
-            where: { id: device.id },
-            data: { isActive: false, lastSeenAt: new Date() },
-          });
-        } else {
-          result.failed += 1;
-          this.logger.warn(
-            `Push de plataforma falló: ${error instanceof Error ? error.message : 'desconocido'}`,
-          );
-        }
-      }
-    }
-    return result;
+    return sendPlatformPush(
+      this.prisma,
+      this.webPush,
+      this.logger,
+      message,
+      onlyUserId,
+    );
   }
 }

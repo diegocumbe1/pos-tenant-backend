@@ -34,6 +34,7 @@ import { SupabaseJwtPayload } from '../types/jwt-payload.interface';
 import { AuthenticatedUser } from '../types/tenant-context.interface';
 import { resolveEffectiveFeatures } from '../../platform/plans/plan-features';
 import { PermissionsCacheService } from './permissions-cache.service';
+import { isTenantLocked } from './activation-request.service';
 import {
   ActiveSupportSession,
   SupportSessionService,
@@ -95,6 +96,8 @@ type BusinessAccess = {
   roleCode: string;
   roleName: string;
   isPrimary: boolean;
+  /** Suspendido, cancelado o vencido: sale en el switch con candado. */
+  locked: boolean;
 };
 
 type AuthProfile = {
@@ -731,7 +734,8 @@ export class AuthService {
     if (!tenantActive || !subOk) {
       throw new ForbiddenException({
         code: 'ACCOUNT_INACTIVE',
-        message: 'La cuenta no está activa. Contacta a soporte.',
+        message:
+          'Este negocio no está activo. Escríbenos por WhatsApp para validar el pago y reactivarlo.',
         tenantStatus: tenant.status,
         subscriptionStatus: tenant.subscriptionStatus,
       });
@@ -978,7 +982,13 @@ export class AuthService {
       where: { id: userId },
       select: {
         tenant: {
-          select: { id: true, name: true, vertical: { select: { code: true } } },
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            subscription: { select: { status: true } },
+            vertical: { select: { code: true } },
+          },
         },
         role: { select: { code: true, name: true } },
         tenantMemberships: {
@@ -986,7 +996,13 @@ export class AuthService {
           orderBy: { createdAt: 'asc' },
           select: {
             tenant: {
-              select: { id: true, name: true, vertical: { select: { code: true } } },
+              select: {
+            id: true,
+            name: true,
+            status: true,
+            subscription: { select: { status: true } },
+            vertical: { select: { code: true } },
+          },
             },
             role: { select: { code: true, name: true } },
           },
@@ -1002,6 +1018,7 @@ export class AuthService {
       roleCode: user.role.code,
       roleName: user.role.name,
       isPrimary: true,
+      locked: isTenantLocked(user.tenant),
     };
     return [
       primary,
@@ -1014,6 +1031,7 @@ export class AuthService {
           roleCode: m.role.code,
           roleName: m.role.name,
           isPrimary: false,
+          locked: isTenantLocked(m.tenant),
         })),
     ];
   }

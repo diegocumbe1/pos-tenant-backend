@@ -4,6 +4,9 @@ import { PassportModule } from '@nestjs/passport';
 import { AdminModule } from '../admin/admin.module';
 import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
 import { AuthController } from './auth.controller';
+import { BusinessRequestsController } from './business-requests.controller';
+import { ActivationRequestService } from './services/activation-request.service';
+import { WebPushProvider } from '../notifications/web-push.provider';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PasswordSetGuard } from './guards/password-set.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
@@ -18,7 +21,11 @@ import { SupportSessionService } from './support/support-session.service';
 @Global()
 @Module({
   imports: [PassportModule.register({ defaultStrategy: 'jwt' }), AdminModule],
-  controllers: [AuthController, SupportSessionController],
+  controllers: [
+    AuthController,
+    SupportSessionController,
+    BusinessRequestsController,
+  ],
   providers: [
     AuthService,
     SupportSessionService,
@@ -32,6 +39,10 @@ import { SupportSessionService } from './support/support-session.service';
     // Provisto aquí y no importando PlatformModule: Platform → Alexa →
     // Assistant → Auth cerraría un ciclo. Es stateless (solo Prisma).
     PlanPricingService,
+    // Solicitudes de activación al super-admin. WebPushProvider es stateless
+    // (solo lee las claves VAPID), así que se provee aquí sin importar Notifications.
+    ActivationRequestService,
+    WebPushProvider,
   ],
   exports: [
     JwtAuthGuard,

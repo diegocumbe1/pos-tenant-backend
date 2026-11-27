@@ -30,6 +30,11 @@ function build(opts: { group?: boolean } = {}) {
     userTenantMembership: { create: jest.fn() },
     userBranch: { createMany: jest.fn() },
     platformAuditLog: { create: jest.fn() },
+    platformAlert: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({ id: 'a1' }),
+      update: jest.fn(),
+    },
     tenantTx: { create: jest.fn() },
     $transaction: jest.fn(async (arg: unknown) =>
       typeof arg === 'function'
@@ -53,6 +58,7 @@ function build(opts: { group?: boolean } = {}) {
   };
   const service = new TenantAddVerticalService(
     prisma as never, admin as never, groups as never, pricing as never,
+    { isConfigured: () => false, getPublicKey: jest.fn() } as never,
   );
   return { service, prisma, admin, groups };
 }
@@ -115,5 +121,14 @@ describe('TenantAddVerticalService', () => {
     const { service, groups } = build({ group: true });
     await service.add(ctx(), { vertical: 'restaurant' }).catch(() => undefined);
     expect(groups.create).not.toHaveBeenCalled();
+  });
+
+  it('le avisa al super-admin para validar el cobro del negocio nuevo', async () => {
+    const { service, prisma } = build();
+    const r = await service.add(ctx(), { vertical: 'restaurant' });
+    const data = (prisma.platformAlert.create.mock.calls[0] as any[])[0].data;
+    expect(data.type).toBe('vertical.added');
+    expect(data.tenantId).toBe(r.tenant.id);
+    expect(data.url).toBe(`/admin/tenants/${r.tenant.id}`);
   });
 });

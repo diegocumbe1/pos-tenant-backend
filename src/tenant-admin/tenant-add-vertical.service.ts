@@ -7,6 +7,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebPushProvider } from '../notifications/web-push.provider';
+import {
+  VERTICAL_ADDED_ALERT,
+  recordPlatformAlert,
+} from '../platform/alerts/platform-push';
 import { AdminService } from '../admin/admin.service';
 import { BillingGroupsService } from '../platform/billing-groups/billing-groups.service';
 import { PlanPricingService, usdToCop } from '../platform/pricing/plan-pricing.service';
@@ -44,6 +49,7 @@ export class TenantAddVerticalService {
     private readonly admin: AdminService,
     private readonly groups: BillingGroupsService,
     private readonly pricing: PlanPricingService,
+    private readonly webPush: WebPushProvider,
   ) {}
 
   /**
@@ -268,6 +274,23 @@ export class TenantAddVerticalService {
       plan: selectedPlan.code,
     });
     this.logger.log(`add-vertical ${ctx.tenantId} -> ${tenantId} (${code})`);
+
+    // Aviso al super-admin para validar el cobro: el negocio nuevo nace en prueba
+    // y la alerta sigue abierta hasta que alguien lo active, suspenda o cancele.
+    try {
+      const label = VERTICAL_LABEL[code] ?? code;
+      await recordPlatformAlert(this.prisma, this.webPush, this.logger, {
+        type: VERTICAL_ADDED_ALERT,
+        tenantId,
+        title: `${tenant.name.trim()} agregó ${label}`,
+        body: `El dueño sumó ${label} desde Tu plan: ${businessName} quedó en prueba hasta el ${periodEnd.toISOString().slice(0, 10)} y en su combo. Valida el pago y actívalo, o suspéndelo si no lo va a pagar.`,
+        url: `/admin/tenants/${tenantId}`,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Alerta de vertical nueva falló: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     return {
       ok: true,

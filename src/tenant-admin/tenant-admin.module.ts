@@ -6,6 +6,7 @@ import { TenantAdminService } from './tenant-admin.service';
 import { TenantPlanService } from './tenant-plan.service';
 import { BillingGroupsService } from '../platform/billing-groups/billing-groups.service';
 import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
+import { WebPushProvider } from '../notifications/web-push.provider';
 
 @Module({
   imports: [AdminModule],
@@ -18,6 +19,8 @@ import { PlanPricingService } from '../platform/pricing/plan-pricing.service';
     TenantAddVerticalService,
     PlanPricingService,
     BillingGroupsService,
+    // Stateless (claves VAPID): para avisarle al super-admin de una vertical nueva.
+    WebPushProvider,
   ],
   exports: [TenantAdminService],
 })

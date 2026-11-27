@@ -165,6 +165,89 @@ export class TenantMembershipsService {
     return { ok: true };
   }
 
+  /**
+   * Vuelve principal este negocio para esa persona e intercambia: el que era su
+   * principal queda como acceso adicional, con el mismo rol que tenía.
+   *
+   * Sirve para el combo en el que paga una sola vertical: el login valida el
+   * negocio PRINCIPAL, así que suspender el adicional solo lo bloquea en el
+   * switch; suspender el principal la deja sin entrar a ninguno.
+   *
+   * No mueve datos ni sedes: los dos negocios siguen iguales. El JWT no cambia
+   * (se valida contra la base en cada petición), así que aplica en la próxima
+   * recarga de la app.
+   */
+  async makePrimary(
+    tenantId: string,
+    membershipId: string,
+    actorUserId: string,
+  ) {
+    const membership = await this.prisma.userTenantMembership.findFirst({
+      where: { id: membershipId, tenantId },
+      select: {
+        id: true,
+        isActive: true,
+        roleId: true,
+        userId: true,
+        user: {
+          select: { tenantId: true, roleId: true, isPlatformAdmin: true },
+        },
+      },
+    });
+    if (!membership) throw new NotFoundException('Acceso no encontrado');
+    if (!membership.isActive) {
+      throw new BadRequestException(
+        'Ese acceso está quitado. Reactívalo antes de volverlo principal.',
+      );
+    }
+    const oldPrimaryTenantId = membership.user.tenantId;
+    const oldPrimaryRoleId = membership.user.roleId;
+    if (!oldPrimaryTenantId || membership.user.isPlatformAdmin) {
+      throw new BadRequestException('Esa persona no tiene negocio principal.');
+    }
+    if (oldPrimaryTenantId === tenantId) {
+      throw new ConflictException('Este ya es su negocio principal.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // El principal de antes pasa a ser acceso adicional, con su mismo rol.
+      await tx.userTenantMembership.upsert({
+        where: {
+          userId_tenantId: {
+            userId: membership.userId,
+            tenantId: oldPrimaryTenantId,
+          },
+        },
+        create: {
+          userId: membership.userId,
+          tenantId: oldPrimaryTenantId,
+          roleId: oldPrimaryRoleId,
+          grantedBy: actorUserId,
+        },
+        update: {
+          roleId: oldPrimaryRoleId,
+          isActive: true,
+          grantedBy: actorUserId,
+        },
+      });
+      await tx.user.update({
+        where: { id: membership.userId },
+        data: { tenantId, roleId: membership.roleId },
+      });
+      // El principal no vive en memberships: si quedara la fila, saldría dos veces.
+      await tx.userTenantMembership.delete({ where: { id: membership.id } });
+    });
+
+    await this.audit(
+      actorUserId,
+      'membership.make_primary',
+      membership.id,
+      { userId: membership.userId, primaryTenantId: oldPrimaryTenantId },
+      { userId: membership.userId, primaryTenantId: tenantId },
+    );
+    return { ok: true, previousPrimaryTenantId: oldPrimaryTenantId };
+  }
+
   private async assertTenant(tenantId: string) {
     const tenant = await this.prisma.tenant.findFirst({
       where: { id: tenantId, deletedAt: null },
