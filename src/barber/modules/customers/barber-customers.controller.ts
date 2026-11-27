@@ -22,7 +22,10 @@ import {
   CreateBarberCustomerDto,
   UpdateBarberCustomerDto,
 } from './dto/barber-customer.dto';
-import { BarberCustomerSegmentQueryDto } from './dto/barber-customer-segment.dto';
+import {
+  BarberCustomerRankingQueryDto,
+  BarberCustomerSegmentQueryDto,
+} from './dto/barber-customer-segment.dto';
 
 @ApiTags('Barber')
 @ApiBearerAuth()
@@ -51,6 +54,16 @@ export class BarberCustomersController {
     @Query() query: BarberCustomerSegmentQueryDto,
   ) {
     return this.customersService.listSegments(ctx, query);
+  }
+
+  /** Mejores clientes: por plata pagada o por servicios, en un periodo. */
+  @Get('ranking')
+  @RequirePermissions('barber:customers:read')
+  ranking(
+    @CurrentTenant() ctx: TenantContext,
+    @Query() query: BarberCustomerRankingQueryDto,
+  ) {
+    return this.customersService.ranking(ctx, query);
   }
 
   @Post()

@@ -3,12 +3,14 @@ import { Prisma } from '@prisma/client';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { dayEndCO, dayStartCO } from '../../../common/date.util';
+import { customerPaidSql, unassignedPaidSql } from './customer-paid.sql';
 import { BarberTenantHelper } from '../../shared/barber-tenant.helper';
 import {
   CreateBarberCustomerDto,
   UpdateBarberCustomerDto,
 } from './dto/barber-customer.dto';
 import {
+  BarberCustomerRankingQueryDto,
   BarberCustomerSegmentQueryDto,
   BarberCustomerSegmentResult,
   BarberCustomerSegmentRow,
@@ -40,10 +42,136 @@ export class BarberCustomersService {
 
   async listCustomers(ctx: TenantContext) {
     await this.tenantHelper.assertBarberTenant(ctx.tenantId);
-    return this.prisma.barberCustomer.findMany({
-      where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
-      orderBy: [{ name: 'asc' }],
-    });
+    const [customers, paid] = await Promise.all([
+      this.prisma.barberCustomer.findMany({
+        where: { tenantId: ctx.tenantId, branchId: ctx.branchId },
+        orderBy: [{ name: 'asc' }],
+      }),
+      this.prisma.$queryRaw<{ customerId: string; paid: number }[]>(
+        customerPaidSql(ctx.tenantId, ctx.branchId),
+      ),
+    ]);
+    // "Total gastado" nunca llegaba (el front lo dejaba en 0). Ahora es lo
+    // pagado, con la misma regla de Finanzas.
+    const paidBy = new Map(paid.map((r) => [r.customerId, r.paid]));
+    return customers.map((c) => ({ ...c, totalSpent: paidBy.get(c.id) ?? 0 }));
+  }
+
+  /**
+   * Mejores clientes del periodo, por plata pagada o por servicios realizados,
+   * más las métricas para leerlo: qué parte del ingreso deja el top 10, nuevos
+   * vs. recurrentes y cuánto quedó sin cliente registrado.
+   *
+   * Una consulta trae a todos los clientes con actividad en el periodo y el
+   * orden se hace aquí: un negocio de agenda tiene cientos, no millones.
+   */
+  async ranking(ctx: TenantContext, query: BarberCustomerRankingQueryDto) {
+    await this.tenantHelper.assertBarberTenant(ctx.tenantId);
+    const from = query.from ? new Date(dayStartCO(query.from)) : undefined;
+    const to = query.to ? new Date(dayEndCO(query.to)) : undefined;
+    const by = query.by ?? 'money';
+    const limit = query.limit ?? 20;
+    const branchId = ctx.branchId;
+
+    const servedWindow = Prisma.sql`
+      ${from ? Prisma.sql`AND COALESCE(a."servedAt", a."scheduledAt") >= ${from}` : Prisma.empty}
+      ${to ? Prisma.sql`AND COALESCE(a."servedAt", a."scheduledAt") <= ${to}` : Prisma.empty}
+    `;
+    const [rows, unassigned] = await Promise.all([
+      this.prisma.$queryRaw<
+        {
+          id: string;
+          name: string;
+          phone: string;
+          paid: number;
+          services: number;
+          last_at: Date | null;
+          first_at: Date | null;
+        }[]
+      >`
+        WITH paid AS (${customerPaidSql(ctx.tenantId, branchId, from, to)}),
+        served AS (
+          SELECT a."customerId", COUNT(*)::int AS services,
+                 MAX(COALESCE(a."servedAt", a."scheduledAt")) AS last_at
+          FROM "barber_appointments" a
+          WHERE a."tenantId" = ${ctx.tenantId}
+            AND a."branchId" = ${branchId}
+            AND LOWER(a."status") = 'completed'
+            AND a."customerId" IS NOT NULL
+            ${servedWindow}
+          GROUP BY a."customerId"
+        ),
+        firsts AS (
+          SELECT a."customerId", MIN(COALESCE(a."servedAt", a."scheduledAt")) AS first_at
+          FROM "barber_appointments" a
+          WHERE a."tenantId" = ${ctx.tenantId}
+            AND a."branchId" = ${branchId}
+            AND LOWER(a."status") = 'completed'
+            AND a."customerId" IS NOT NULL
+          GROUP BY a."customerId"
+        )
+        SELECT c."id", c."name", c."phone",
+               COALESCE(p.paid, 0)::int AS paid,
+               COALESCE(sv.services, 0)::int AS services,
+               sv.last_at, f.first_at
+        FROM "barber_customers" c
+        LEFT JOIN paid   p  ON p."customerId" = c."id"
+        LEFT JOIN served sv ON sv."customerId" = c."id"
+        LEFT JOIN firsts f  ON f."customerId" = c."id"
+        WHERE c."tenantId" = ${ctx.tenantId}
+          AND c."branchId" = ${branchId}
+          AND (COALESCE(p.paid, 0) > 0 OR COALESCE(sv.services, 0) > 0)
+      `,
+      this.prisma.$queryRaw<{ paid: number }[]>(
+        unassignedPaidSql(ctx.tenantId, branchId, from, to),
+      ),
+    ]);
+
+    const byMoney = [...rows].sort(
+      (a, b) => b.paid - a.paid || b.services - a.services,
+    );
+    const ordered =
+      by === 'services'
+        ? [...rows].sort((a, b) => b.services - a.services || b.paid - a.paid)
+        : byMoney;
+    const totalPaidCOP = rows.reduce((acc, r) => acc + r.paid, 0);
+    const top10PaidCOP = byMoney
+      .slice(0, 10)
+      .reduce((acc, r) => acc + r.paid, 0);
+    // "Nuevo" = su primer servicio cayó dentro del periodo.
+    const isNew = (r: (typeof rows)[number]) =>
+      !!r.first_at &&
+      (!from || r.first_at >= from) &&
+      (!to || r.first_at <= to);
+    const withServices = rows.filter((r) => r.services > 0);
+
+    return {
+      by,
+      from: query.from ?? null,
+      to: query.to ?? null,
+      summary: {
+        customersCount: rows.length,
+        totalPaidCOP,
+        top10PaidCOP,
+        /** Fracción del ingreso con cliente que deja el top 10 (0–1). */
+        top10Share: totalPaidCOP > 0 ? top10PaidCOP / totalPaidCOP : 0,
+        newCustomers: withServices.filter(isNew).length,
+        returningCustomers: withServices.filter((r) => !isNew(r)).length,
+        unassignedPaidCOP: unassigned[0]?.paid ?? 0,
+      },
+      rows: ordered.slice(0, limit).map((r, idx) => ({
+        position: idx + 1,
+        customerId: r.id,
+        name: r.name,
+        phone: r.phone,
+        paidCOP: r.paid,
+        servicesCount: r.services,
+        avgTicketCOP: r.services > 0 ? Math.round(r.paid / r.services) : null,
+        lastVisitAt: r.last_at?.toISOString() ?? null,
+        firstVisitAt: r.first_at?.toISOString() ?? null,
+        isNew: isNew(r),
+      })),
+    };
   }
 
   /**
@@ -98,9 +226,10 @@ export class BarberCustomersService {
           -- Citas agendadas sin cliente registrado no son de nadie.
           AND a."customerId" IS NOT NULL
       ),
+      -- Lo PAGADO (regla de Finanzas), no la suma de precios de lo completado.
       totals AS (
-        SELECT "customerId", SUM(price)::int AS total_spent
-        FROM completed GROUP BY "customerId"
+        SELECT q."customerId", q.paid AS total_spent
+        FROM (${customerPaidSql(ctx.tenantId, ctx.branchId)}) q
       ),
       last_visit AS (
         SELECT * FROM completed WHERE rn = 1

@@ -18,12 +18,16 @@ import { PermissionsGuard } from '../../../auth/guards/permissions.guard';
 import { TenantGuard } from '../../../auth/guards/tenant.guard';
 import { TenantContext } from '../../../auth/types/tenant-context.interface';
 import { BarberChargesService } from './barber-charges.service';
+import { BarberCustomerAccountService } from './barber-customer-account.service';
 import {
   BarberAttendanceCheckQueryDto,
   BarberPaymentInputDto,
   CoverAppointmentDto,
   CoverOverQuotaDto,
   CreateBarberChargeDto,
+  CreateBarberGroupChargeDto,
+  CustomerPaymentDto,
+  ReleaseGroupAppointmentDto,
   FreezeBarberChargeDto,
   ListBarberChargesQueryDto,
   ListBarberMembershipsQueryDto,
@@ -49,7 +53,10 @@ import {
 )
 @Controller('barber/charges')
 export class BarberChargesController {
-  constructor(private readonly chargesService: BarberChargesService) {}
+  constructor(
+    private readonly chargesService: BarberChargesService,
+    private readonly accountService: BarberCustomerAccountService,
+  ) {}
 
   @Get()
   @RequirePermissions('barber:appointments:read')
@@ -87,7 +94,12 @@ export class BarberChargesController {
     @CurrentTenant() ctx: TenantContext,
     @Query() query: BarberAttendanceCheckQueryDto,
   ) {
-    return this.chargesService.attendanceCheck(ctx, query.customerId, query.day, query.appointmentId);
+    return this.chargesService.attendanceCheck(
+      ctx,
+      query.customerId,
+      query.day,
+      query.appointmentId,
+    );
   }
 
   // Estado de cuenta por meses de plan: pagados, debidos y sesiones de cada uno.
@@ -118,6 +130,49 @@ export class BarberChargesController {
     @Param('appointmentId') appointmentId: string,
   ) {
     return this.chargesService.uncover(ctx, appointmentId);
+  }
+
+  // Cuenta del cliente: por aprobar, próximas, por cobrar, saldos, historial
+  // y lo que ha dejado. Va antes de ':id' para que "customer" no se lea como id.
+  @Get('customer/:customerId/account')
+  @RequirePermissions('barber:appointments:read')
+  customerAccount(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('customerId') customerId: string,
+  ) {
+    return this.accountService.account(ctx, customerId);
+  }
+
+  // Un abono del cliente repartido entre sus cobros con saldo.
+  @Post('customer/:customerId/payments')
+  @RequirePermissions('barber:appointments:write')
+  payCustomer(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('customerId') customerId: string,
+    @Body() dto: CustomerPaymentDto,
+  ) {
+    return this.accountService.pay(ctx, customerId, dto);
+  }
+
+  // Cobro agrupado: varias citas del mismo cliente en un solo cobro.
+  @Post('group')
+  @RequirePermissions('barber:appointments:write')
+  createGroup(
+    @CurrentTenant() ctx: TenantContext,
+    @Body() dto: CreateBarberGroupChargeDto,
+  ) {
+    return this.chargesService.createGroup(ctx, dto);
+  }
+
+  // Saca una cita de un cobro agrupado (el total baja lo que ella valía).
+  @Post(':id/release')
+  @RequirePermissions('barber:appointments:write')
+  release(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: ReleaseGroupAppointmentDto,
+  ) {
+    return this.chargesService.releaseFromGroup(ctx, id, dto.appointmentId);
   }
 
   @Get(':id')
@@ -206,7 +261,12 @@ export class BarberChargesController {
     @Param('id') id: string,
     @Body() dto: CoverOverQuotaDto,
   ) {
-    return this.chargesService.coverOverQuota(ctx, id, dto.appointmentId, dto.mode);
+    return this.chargesService.coverOverQuota(
+      ctx,
+      id,
+      dto.appointmentId,
+      dto.mode,
+    );
   }
 
   @Patch(':id/void')

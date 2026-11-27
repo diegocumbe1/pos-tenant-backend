@@ -330,3 +330,92 @@ export class CoverOverQuotaDto {
   @IsIn(['NEXT_CYCLE', 'COURTESY'])
   mode!: 'NEXT_CYCLE' | 'COURTESY';
 }
+
+/**
+ * Cobro agrupado: varias citas del mismo cliente (de cualquier servicio,
+ * pasadas o futuras) en UN cobro. Sirve para "cejas + labios" y para el
+ * anticipo de una sesión y su retoque.
+ */
+export class CreateBarberGroupChargeDto {
+  @IsString()
+  customerId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  appointmentIds!: string[];
+
+  // Lo que no se cobra. El total queda en (suma de precios − descuento).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountCOP?: number;
+
+  // Sin dato = los servicios unidos con " + ".
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  concept?: string;
+
+  @IsOptional()
+  @Matches(DAY_RE)
+  dueOn?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => BarberPaymentInputDto)
+  payments?: BarberPaymentInputDto[];
+}
+
+export class ReleaseGroupAppointmentDto {
+  @IsString()
+  appointmentId!: string;
+}
+
+export class CustomerPaymentAllocationDto {
+  @IsString()
+  chargeId!: string;
+
+  @IsInt()
+  @Min(1)
+  amountCOP!: number;
+}
+
+/**
+ * Un abono del cliente repartido entre sus cobros con saldo:
+ *   OLDEST → al cobro más antiguo primero, hasta que alcance.
+ *   MANUAL → exactamente como dice `allocations`.
+ */
+export class CustomerPaymentDto {
+  @IsInt()
+  @Min(1)
+  amountCOP!: number;
+
+  @Matches(BARBER_PAYMENT_METHOD_RE)
+  method!: BarberPaymentMethod;
+
+  @IsOptional()
+  @Matches(DAY_OR_ISO_RE)
+  paidAt?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsIn(['OLDEST', 'MANUAL'])
+  mode!: 'OLDEST' | 'MANUAL';
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => CustomerPaymentAllocationDto)
+  allocations?: CustomerPaymentAllocationDto[];
+}

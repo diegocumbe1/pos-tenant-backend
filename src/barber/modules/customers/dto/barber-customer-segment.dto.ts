@@ -130,3 +130,26 @@ export interface BarberCustomerSegmentResult {
    */
   pendingRetouchCOP: number;
 }
+
+/** `GET /barber/customers/ranking`: mejores clientes del periodo. */
+export class BarberCustomerRankingQueryDto {
+  @IsOptional()
+  @IsIn(['money', 'services'])
+  by?: 'money' | 'services';
+
+  // Días 'YYYY-MM-DD' en hora Colombia. Sin `from` ni `to` = desde siempre.
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}

@@ -28,6 +28,7 @@ import {
 import {
   BarberPaymentInputDto,
   CreateBarberChargeDto,
+  CreateBarberGroupChargeDto,
   FreezeBarberChargeDto,
   ListBarberChargesQueryDto,
   ListBarberMembershipsQueryDto,
@@ -42,7 +43,7 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
  * Estados de cita que NO gastan una sesión del paquete: lo que no se prestó no
  * se descuenta. `status` es texto libre con variantes de mayúsculas.
  */
-const NOT_CONSUMED_STATUSES = [
+export const NOT_CONSUMED_STATUSES = [
   'CANCELLED',
   'cancelled',
   'REJECTED',
@@ -51,7 +52,7 @@ const NOT_CONSUMED_STATUSES = [
   'no_show',
 ];
 
-const CHARGE_INCLUDE = {
+export const CHARGE_INCLUDE = {
   payments: { orderBy: { paidAt: 'asc' } },
   customer: { select: { id: true, name: true, phone: true } },
   service: {
@@ -81,7 +82,7 @@ const CHARGE_INCLUDE = {
   freezes: { orderBy: { startsOn: 'asc' } },
 } satisfies Prisma.BarberChargeInclude;
 
-type ChargeRow = Prisma.BarberChargeGetPayload<{
+export type ChargeRow = Prisma.BarberChargeGetPayload<{
   include: typeof CHARGE_INCLUDE;
 }>;
 
@@ -785,6 +786,32 @@ export class BarberChargesService {
       appointmentId,
       'Appointment',
     );
+    // En un cobro agrupado, sacar la cita también baja el total del cobro.
+    const covering = await this.prisma.barberAppointment.findUnique({
+      where: { id: appointmentId },
+      select: {
+        coveredByCharge: {
+          select: {
+            id: true,
+            endsOn: true,
+            sessionsTotal: true,
+            appointmentId: true,
+            serviceId: true,
+          },
+        },
+      },
+    });
+    const charge = covering?.coveredByCharge;
+    if (
+      charge &&
+      !charge.endsOn &&
+      charge.sessionsTotal === null &&
+      !charge.appointmentId &&
+      !charge.serviceId
+    ) {
+      await this.releaseFromGroup(ctx, charge.id, appointmentId);
+      return { ok: true };
+    }
     await this.prisma.barberAppointment.update({
       where: { id: appointmentId },
       data: { coveredByChargeId: null, quotaMode: null },
@@ -1389,9 +1416,28 @@ export class BarberChargesService {
     if (current.voidedAt) {
       throw new BadRequestException('El cobro ya está anulado');
     }
-    await this.prisma.barberCharge.update({
-      where: { id },
-      data: { voidedAt: new Date(), voidedReason: reason, voidedBy: ctx.name },
+    const isGroup =
+      !current.endsOn &&
+      current.sessionsTotal === null &&
+      !current.appointmentId &&
+      !current.serviceId;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.barberCharge.update({
+        where: { id },
+        data: {
+          voidedAt: new Date(),
+          voidedReason: reason,
+          voidedBy: ctx.name,
+        },
+      });
+      // Anular un cobro agrupado suelta sus citas: vuelven a quedar por cobrar.
+      // (Un plan anulado no las suelta: eso sigue siendo decisión manual.)
+      if (isGroup) {
+        await tx.barberAppointment.updateMany({
+          where: { coveredByChargeId: id },
+          data: { coveredByChargeId: null, quotaMode: null },
+        });
+      }
     });
     return this.findOne(ctx, id);
   }
@@ -1424,12 +1470,311 @@ export class BarberChargesService {
       include: CHARGE_INCLUDE,
     });
     if (!row) throw new NotFoundException(`Charge ${id} not found`);
-    return this.toDto(row, calendarDayCO(new Date()));
+    const dto = this.toDto(row, calendarDayCO(new Date()));
+    if (!dto.isGroup) return dto;
+    const items = await this.groupItems([id]);
+    return { ...dto, items: items.get(id) ?? [] };
+  }
+
+  // ─── Cobro agrupado ────────────────────────────────────────────────────────
+
+  /**
+   * Las citas de cada cobro agrupado, con lo que vale cada una. Incluye las que
+   * después se cancelaron (salen marcadas): siguen dentro del cobro hasta que
+   * alguien las separe.
+   */
+  async groupItems(chargeIds: string[]) {
+    const result = new Map<
+      string,
+      Array<{
+        appointmentId: string;
+        serviceId: string;
+        serviceName: string;
+        color: string | null;
+        scheduledAt: string;
+        servedAt: string | null;
+        status: string;
+        priceCOP: number;
+        staffName: string | null;
+      }>
+    >();
+    if (chargeIds.length === 0) return result;
+    const appts = await this.prisma.barberAppointment.findMany({
+      where: { coveredByChargeId: { in: chargeIds } },
+      select: {
+        id: true,
+        coveredByChargeId: true,
+        serviceId: true,
+        scheduledAt: true,
+        scheduledEnd: true,
+        servedAt: true,
+        status: true,
+        priceCOP: true,
+        staff: { select: { name: true } },
+        service: {
+          select: {
+            name: true,
+            color: true,
+            priceCOP: true,
+            durationMin: true,
+            durationOptions: true,
+          },
+        },
+      },
+      orderBy: { scheduledAt: 'asc' },
+    });
+    for (const a of appts) {
+      const list = result.get(a.coveredByChargeId!) ?? [];
+      list.push({
+        appointmentId: a.id,
+        serviceId: a.serviceId,
+        serviceName: a.service.name,
+        color: a.service.color ?? null,
+        scheduledAt: a.scheduledAt.toISOString(),
+        servedAt: a.servedAt?.toISOString() ?? null,
+        status: a.status.toLowerCase(),
+        priceCOP: appointmentPriceCOP(a),
+        staffName: a.staff?.name ?? null,
+      });
+      result.set(a.coveredByChargeId!, list);
+    }
+    return result;
+  }
+
+  /**
+   * Junta varias citas del mismo cliente en UN cobro: total = suma de sus
+   * precios − descuento. Las citas quedan cubiertas por él (Finanzas ya no las
+   * cuenta como "completada sin cobro" y no se pueden cobrar sueltas), pero
+   * CONSERVAN su precio: es lo que vale cada servicio y lo que paga comisión.
+   *
+   * A diferencia de `settleSessions` (planes de gimnasio), acepta servicios
+   * distintos y citas futuras: es el anticipo de "cejas + labios".
+   */
+  async createGroup(ctx: TenantContext, dto: CreateBarberGroupChargeDto) {
+    await this.tenantHelper.assertBarberTenant(ctx.tenantId);
+    await this.tenantHelper.assertScopedRecord(
+      'barberCustomer',
+      ctx,
+      dto.customerId,
+      'Customer',
+    );
+    const ids = [...new Set(dto.appointmentIds)];
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const appts = await tx.barberAppointment.findMany({
+        where: {
+          id: { in: ids },
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+        },
+        select: {
+          id: true,
+          customerId: true,
+          status: true,
+          priceCOP: true,
+          scheduledAt: true,
+          scheduledEnd: true,
+          classSessionId: true,
+          coveredByChargeId: true,
+          charges: { where: { voidedAt: null }, select: { id: true } },
+          service: {
+            select: {
+              name: true,
+              priceCOP: true,
+              durationMin: true,
+              durationOptions: true,
+            },
+          },
+        },
+        orderBy: { scheduledAt: 'asc' },
+      });
+      if (appts.length !== ids.length) {
+        throw new NotFoundException('Alguna cita no existe');
+      }
+      for (const a of appts) {
+        if (a.customerId !== dto.customerId) {
+          throw new BadRequestException('Hay citas de otro cliente');
+        }
+        if (NOT_CONSUMED_STATUSES.includes(a.status)) {
+          throw new BadRequestException(
+            'Hay citas canceladas, rechazadas o en las que no vino',
+          );
+        }
+        if (a.classSessionId) {
+          throw new BadRequestException('Las clases se cobran desde Clases');
+        }
+        if (a.coveredByChargeId || a.charges.length > 0) {
+          throw new ConflictException({
+            code: 'ALREADY_CHARGED',
+            message: 'Alguna cita ya tiene cobro o está en otro cobro',
+          });
+        }
+      }
+
+      const prices = appts.map((a) => ({
+        id: a.id,
+        price: appointmentPriceCOP(a),
+      }));
+      const listCOP = prices.reduce((acc, p) => acc + p.price, 0);
+      const discountCOP = dto.discountCOP ?? 0;
+      if (discountCOP > listCOP) {
+        throw new BadRequestException('El descuento es mayor que el total');
+      }
+      const totalCOP = listCOP - discountCOP;
+      const payments = dto.payments ?? [];
+      const paidCOP = payments.reduce((acc, p) => acc + p.amountCOP, 0);
+      if (paidCOP > totalCOP) {
+        throw new BadRequestException(
+          'El pago no puede ser mayor que el valor del cobro',
+        );
+      }
+      const concept = (
+        dto.concept?.trim() || appts.map((a) => a.service.name).join(' + ')
+      ).slice(0, 200);
+
+      const charge = await tx.barberCharge.create({
+        data: {
+          tenantId: ctx.tenantId,
+          branchId: ctx.branchId,
+          customerId: dto.customerId,
+          concept,
+          totalCOP,
+          discountCOP,
+          dueOn: dto.dueOn ? dateOf(dto.dueOn) : null,
+          note: dto.note ?? null,
+          userId: ctx.userId,
+          userName: ctx.name,
+        },
+      });
+      // Se congela el precio de cada cita (las viejas pueden no tenerlo): así
+      // separar una después resta exactamente lo que sumó.
+      for (const p of prices) {
+        await tx.barberAppointment.update({
+          where: { id: p.id },
+          data: { coveredByChargeId: charge.id, priceCOP: p.price },
+        });
+      }
+      for (const payment of payments) {
+        await this.insertPayment(tx, ctx, charge.id, payment);
+      }
+      return charge;
+    });
+
+    return this.findOne(ctx, created.id);
+  }
+
+  /**
+   * Saca una cita de un cobro agrupado: vuelve a cobrarse suelta y el total del
+   * cobro baja lo que ella valía. No deja el cobro por debajo de lo ya pagado ni
+   * vacío (para eso está anular).
+   */
+  async releaseFromGroup(
+    ctx: TenantContext,
+    chargeId: string,
+    appointmentId: string,
+  ) {
+    await this.findScoped(ctx, chargeId);
+    await this.prisma.$transaction(async (tx) => {
+      const charge = await tx.barberCharge.findUniqueOrThrow({
+        where: { id: chargeId },
+        include: {
+          payments: true,
+          coveredAppointments: {
+            select: {
+              id: true,
+              priceCOP: true,
+              scheduledAt: true,
+              scheduledEnd: true,
+              service: {
+                select: {
+                  priceCOP: true,
+                  durationMin: true,
+                  durationOptions: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      if (charge.voidedAt)
+        throw new BadRequestException('El cobro está anulado');
+      if (
+        charge.endsOn ||
+        charge.sessionsTotal !== null ||
+        charge.appointmentId ||
+        charge.serviceId
+      ) {
+        throw new BadRequestException('Este cobro no es un cobro agrupado');
+      }
+      const appt = charge.coveredAppointments.find(
+        (a) => a.id === appointmentId,
+      );
+      if (!appt) throw new NotFoundException('La cita no está en este cobro');
+      if (charge.coveredAppointments.length === 1) {
+        throw new BadRequestException(
+          'Es la única cita del cobro: anula el cobro en vez de separarla.',
+        );
+      }
+      const price = appointmentPriceCOP(appt);
+      const newList = charge.totalCOP + charge.discountCOP - price;
+      const discountCOP = Math.min(charge.discountCOP, Math.max(0, newList));
+      const totalCOP = Math.max(0, newList - discountCOP);
+      if (this.paidOf(charge) > totalCOP) {
+        throw new BadRequestException(
+          'Ya se pagó más de lo que quedaría el cobro. Anula un pago antes de separarla.',
+        );
+      }
+      await tx.barberCharge.update({
+        where: { id: chargeId },
+        data: {
+          totalCOP,
+          discountCOP,
+          concept: await this.groupConcept(
+            tx,
+            chargeId,
+            appointmentId,
+            charge.concept,
+          ),
+        },
+      });
+      await tx.barberAppointment.update({
+        where: { id: appointmentId },
+        data: { coveredByChargeId: null, quotaMode: null },
+      });
+    });
+    return this.findOne(ctx, chargeId);
+  }
+
+  /**
+   * El concepto se rehace solo si era el automático ("A + B + C"): si alguien
+   * escribió uno propio, se respeta.
+   */
+  private async groupConcept(
+    tx: Prisma.TransactionClient,
+    chargeId: string,
+    removedId: string,
+    current: string,
+  ) {
+    const covered = await tx.barberAppointment.findMany({
+      where: { coveredByChargeId: chargeId },
+      select: { id: true, service: { select: { name: true } } },
+      orderBy: { scheduledAt: 'asc' },
+    });
+    const auto = covered
+      .map((a) => a.service.name)
+      .join(' + ')
+      .slice(0, 200);
+    if (auto !== current) return current;
+    return covered
+      .filter((a) => a.id !== removedId)
+      .map((a) => a.service.name)
+      .join(' + ')
+      .slice(0, 200);
   }
 
   // ─── Internos ──────────────────────────────────────────────────────────────
 
-  private toDto(row: ChargeRow, today: string) {
+  toDto(row: ChargeRow, today: string) {
     const paidCOP = this.paidOf(row);
     const balanceCOP = row.voidedAt ? 0 : Math.max(0, row.totalCOP - paidCOP);
     const dueOn = dayOf(row.dueOn);
@@ -1442,6 +1787,12 @@ export class BarberChargesService {
         ? null
         : Math.max(0, row.sessionsTotal - sessionsUsed);
     const isMembership = row.endsOn !== null || row.sessionsTotal !== null;
+    // Cobro agrupado: varias citas en un cobro, sin plan ni cita propia.
+    const isGroup =
+      !isMembership &&
+      !row.appointmentId &&
+      !row.serviceId &&
+      row._count.coveredAppointments > 0;
     // Mes de plan de hoy (o del último día del plan, si ya venció).
     const cycleDay = endsOn && endsOn < today ? endsOn : today;
     const cycle =
@@ -1486,6 +1837,7 @@ export class BarberChargesService {
       isActive: endsOn ? endsOn >= today : null,
       kind: row.service?.kind ?? null,
       isMembership,
+      isGroup,
       // Ancho a propósito: `memberships()` lo sube a EXPIRING con la ventana.
       membershipState: membershipState as BarberMembershipState | null,
       sessionsTotal: row.sessionsTotal,
@@ -1770,7 +2122,7 @@ export class BarberChargesService {
    * medianoche: así cae dentro del día que se quiso y no en el borde. Misma
    * regla que la fecha de servicio de las citas.
    */
-  private resolveInstant(value: string): Date {
+  resolveInstant(value: string): Date {
     const now = new Date();
     const parsed = DAY_RE.test(value)
       ? new Date(`${value}T${clockTimeCO(now)}${CO_UTC_OFFSET}`)
